@@ -11,21 +11,15 @@ ModelSphere is an open-source LLM inference platform designed to make production
 
 ![features](docs/features.png)
 
-## Technical Highlights
+## Highlights
 
 - **Intelligent Auto Scaling.** Dynamically adjusts inference replicas and compute resources based on real-time service demand, while prioritizing resources for high-priority models to improve overall GPU utilization.
-
-- **Fault-Tolerant Generation.** Automatically fails over to healthy serving nodes when failures occur and continues generation from previously generated content, minimizing user-visible interruptions.
-
 - **Quality-Aware Dynamic Throttling.** Goes beyond traditional RPM/TPM limits by dynamically controlling traffic based on real-time service metrics such as TTFT and output speed, maintaining service quality under changing workloads.
-
 - **Advanced Serving Architecture.** Supports advanced inference architectures such as Prefill/Decode disaggregation and a unified L3 KV cache pool, enabling efficient cache sharing and higher resource utilization across serving instances.
-
 - **Performance-Tuned Day-0 Deployment.** Rapidly supports newly released models with production-ready, performance-tuned deployment configurations optimized for real-world serving workloads. Please refer to our [model catalog](https://github.com/modelsphere/model-catalog) for more information.
-
-- **Workload-Driven AutoTune.** Uses real production workloads to automatically explore better serving configurations during idle compute periods, validates improvements through online A/B experiments, and promotes proven configurations to production for continuous performance evolution.
-
 - **Broad Heterogeneous Accelerator Support.** Provides a unified serving stack across NVIDIA GPUs, Huawei Ascend, Iluvatar CoreX, and dozens of other AI accelerators, together with mainstream inference frameworks such as SGLang and vLLM.
+- **Workload-Driven AutoTune (preview version).** Uses real production workloads to automatically explore better serving configurations during idle compute periods ([read more](https://github.com/modelsphere/llm-autotune)).
+- **Seamless In-Flight Generation Recovery (coming soon).** When a serving pod fails mid-generation, ModelSphere transfers the in-flight request to a healthy pod and resumes generation from the interruption point, without restarting the request or disrupting the client stream.
 
 ## Quick start
 
