@@ -627,6 +627,20 @@ kubectl get node <gpu node> -o jsonpath='{.status.allocatable.nvidia\.com/gpu}'
 
 ---
 
+## After the install: configuring and operating it
+
+[`docs/configuration.md`](docs/configuration.md) is the entry point. It covers:
+
+| | |
+|---|---|
+| [`docs/deploy-a-model.md`](docs/deploy-a-model.md) | step 8 in full: engines, topologies, every value you are expected to set, removal, troubleshooting |
+| [`docs/routing-and-rate-limiting.md`](docs/routing-and-rate-limiting.md) | the routing layer: how a route comes to exist, concurrency and token-rate limits, SLO-declared limits, API keys, health checks |
+| [`docs/cart.md`](docs/cart.md) | every parameter of the cache-aware router, and which of them reload without a restart |
+| [`docs/autoscaling.md`](docs/autoscaling.md) | replica decisions: LLMScaler, SLO requirements, decision-gen, and how to pause it |
+| [`docs/rolling-updates.md`](docs/rolling-updates.md) | updating each component without dropping requests, with measured results |
+
+---
+
 ## Makefile reference
 
 ```bash
