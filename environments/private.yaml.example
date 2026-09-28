@@ -47,8 +47,34 @@
 #
 # With cilium off, the whole `cilium:` block below is unused; it is kept here
 # for the clusters that do turn it on.
-# enabled:
-#   cilium: true
+
+# What this cluster installs. default.yaml turns on seven upstream components
+# besides ours -- a cluster that already has its own keeps it by switching the
+# release off here, which is what this block does. With all of them off an apply
+# installs six releases, all ours: openresty, bodylog, bodylog-exporter,
+# autoconfig, llmscaleoperator and llm-slo. That is enough to serve a model.
+#
+# Turn one back on by deleting its line. What each costs you when off:
+enabled:
+  cilium: false               # the CNI. See above: true if this helmfile is to
+                              # install it, and permanently true afterwards.
+  gpuOperator: false          # drivers + the NVIDIA device plugin. Off assumes
+                              # your nodes already advertise nvidia.com/gpu --
+                              # without that the engine pod stays Pending.
+  dcgmCustomMetrics: false    # GPU metrics for the above.
+  networkOperator: false      # RDMA / GPUDirect. Only for a fabric.
+  kubePrometheusStack: false  # Prometheus, Alertmanager, Grafana. Off also
+                              # means no ServiceMonitors from our charts (they
+                              # follow this flag) and no metrics for the
+                              # autoscaler to read, so it will not scale.
+  llmAlerts: false            # PrometheusRules -- needs the CRD above.
+  llmDashboards: false        # Grafana dashboards -- same.
+  nodeProblemDetector: false  # turns node faults into conditions.
+  descheduler: false          # moves pods off nodes that drifted.
+  lws: false                  # LeaderWorkerSet: only for an engine instance
+                              # that spans several nodes.
+  volcano: false              # gang scheduling, for the same case.
+  volcanoPdb: false
 
 # cilium:
 #   clusterName: my-cluster
