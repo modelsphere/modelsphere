@@ -9,7 +9,7 @@
 
 ModelSphere is an open-source LLM inference platform designed to make production-grade model serving simple, efficient, and continuously optimized. It provides instant deployment across heterogeneous accelerators, stays ready for the latest models through a flexible inference architecture, and continuously improves serving performance based on real-world workloads.
 
-![over_features](/Users/mianlu/Projects/modelsphere/docs/over_features.png)
+![features](docs/features.png)
 
 ## Technical Highlights
 
@@ -73,7 +73,7 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 
 ## Architecture
 
-![arch](/Users/mianlu/Projects/modelsphere/docs/arch.png)
+![arch](docs/arch.png)
 
 
 ## Components
