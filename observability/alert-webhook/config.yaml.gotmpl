@@ -1,0 +1,75 @@
+{{- if not (hasKey .Values "name") }}{{ fail (printf "`name` is not set for environment %q: alert-webhook prefixes every alert message with it. Add it to environments/%s.yaml, or set enabled.alertWebhook: false." .Environment.Name .Environment.Name) }}{{ end }}
+{{- if not .Values.name }}{{ fail (printf "`name` is empty for environment %q: alert-webhook prefixes every alert message with it. Set it in environments/%s.yaml, or set enabled.alertWebhook: false." .Environment.Name .Environment.Name) }}{{ end }}
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: nvidia.com/gpu.product
+          operator: DoesNotExist
+routing:
+  enabled: true
+  ignore:
+  - alertname:
+    - KubeProxyDown
+    - etcdInsufficientMembers
+  routes:
+  - match:
+      channel:
+      - business
+    to: business
+  - match:
+      channel:
+      - infra
+    to: infra
+  - match:
+      severity:
+      - critical
+    to: infra
+  - match:
+      namespace:
+      - cert-manager
+      - node-problem-detector
+      - cilium-secrets
+      - default
+      - gateway-secrets
+      - gpu-operator
+      - kimi
+      - kube-node-lease
+      - kube-public
+      - kube-system
+      - llm-route
+      - llm-scaler
+      - llmscaleoperator-system
+      - lws-system
+      - modelforge
+      - modelforge-01-glm
+      - modelforge-02-kimi
+      - minimax-h3
+      - volcano-system
+      - monitoring
+      - nvidia-network-operator
+      - rdma-injector
+    to: infra
+  - match:
+      alertname:
+      - KubeNodeNotReady
+    to: infra
+  upstreams:
+  - msgPrefix: {{ .Values.name }} Kubernetes
+    name: infra
+    urlEnv: WEBHOOK_URL
+  - msgPrefix: {{ .Values.name }} LLM 服务
+    name: business
+    urlEnv: WEBHOOK_URL_BUSINESS
+webhook:
+  create: true
+  secretName: alertmanager-webhook
+  # Filled from the environment's alertWebhook.urls (a map, e.g.
+  # WEBHOOK_URL / WEBHOOK_URL_BUSINESS). Left empty, the chart fails at template
+  # time on purpose. `--set webhook.urls.X=...` does NOT work here: helm cannot
+  # nest a key under this null placeholder ("interface {} is nil").
+  urls:
+{{- with .Values.alertWebhook.urls }}
+{{ toYaml . | indent 4 }}
+{{- end }}

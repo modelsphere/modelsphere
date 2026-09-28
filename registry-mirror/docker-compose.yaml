@@ -1,0 +1,101 @@
+# A pull-through cache per upstream registry, so a site pulls each image once.
+#
+# Defaults reach the upstreams directly and need nothing set. Two variables
+# cover the cases that do not:
+#   UPSTREAM_PROXY=http://<host>:<port>   an egress proxy, where one is needed
+#   REGISTRY_IMAGE / DOCKER_UPSTREAM      a regional mirror, where one is faster
+#
+# Ports: 5001 docker.io · 5002 registry.k8s.io · 5003 quay.io · 5004 gcr.io
+# · 5005 ghcr.io · 5006 nvcr.io
+
+
+services:
+  registry-docker:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: ${DOCKER_UPSTREAM:-https://registry-1.docker.io}
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - cache-docker:/var/lib/registry
+
+  registry-k8s:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5002:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://registry.k8s.io
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      HTTP_PROXY: ${UPSTREAM_PROXY:-}
+      HTTPS_PROXY: ${UPSTREAM_PROXY:-}
+    volumes:
+      - cache-k8s:/var/lib/registry
+
+  registry-quay:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5003:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://quay.io
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      HTTP_PROXY: ${UPSTREAM_PROXY:-}
+      HTTPS_PROXY: ${UPSTREAM_PROXY:-}
+    volumes:
+      - cache-quay:/var/lib/registry
+
+  registry-gcr:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5004:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://gcr.io
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      HTTP_PROXY: ${UPSTREAM_PROXY:-}
+      HTTPS_PROXY: ${UPSTREAM_PROXY:-}
+    volumes:
+      - cache-gcr:/var/lib/registry
+
+  registry-ghcr:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5005:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://ghcr.io
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      HTTP_PROXY: ${UPSTREAM_PROXY:-}
+      HTTPS_PROXY: ${UPSTREAM_PROXY:-}
+    volumes:
+      - cache-ghcr:/var/lib/registry
+
+  registry-nvcr:
+    image: ${REGISTRY_IMAGE:-registry:3}
+    restart: unless-stopped
+    ports:
+      - "5006:5000"
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://nvcr.io
+      REGISTRY_PROXY_TTL: 2160h
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      HTTP_PROXY: ${UPSTREAM_PROXY:-}
+      HTTPS_PROXY: ${UPSTREAM_PROXY:-}
+    volumes:
+      - cache-nvcr:/var/lib/registry
+
+volumes:
+  cache-docker:
+  cache-k8s:
+  cache-quay:
+  cache-gcr:
+  cache-ghcr:
+  cache-nvcr:

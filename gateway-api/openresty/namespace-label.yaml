@@ -1,0 +1,15 @@
+# The openresty Gateway admits routes by namespace label
+# (allowedRoutes.namespaces.from: Selector), so a namespace that is not labelled
+# has its HTTPRoutes rejected with Accepted=False (NotAllowedByListeners) and the
+# gateway silently carries zero routes. helm creates this namespace via
+# createNamespace and does not label it, so the label ships here, next to the
+# Gateway that requires it.
+#
+# Add a copy for every additional namespace that should attach -- an openresty
+# canary namespace, for one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-route
+  labels:
+    gateway-openresty: enable

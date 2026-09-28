@@ -1,0 +1,928 @@
+{
+  "uid": "h3-video",
+  "title": "H3 视频生成",
+  "tags": [
+    "h3",
+    "video",
+    "minimax"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 42,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "graphTooltip": 2,
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 2,
+      "title": "当前状态",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "table",
+      "id": 3,
+      "title": "当前状态",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "每个工作负载一行。状态:UP(就绪≥期望)/降级(有就绪但不足期望)/DOWN。正在执行=该池各副本手上的任务数之和(单副本最多 1);积压=queued+running;错误24h=过去 24 小时进入 failed 终态的任务数(按能力池拆开,不是集群级的 h3_queue_completed_24h —— 那个按服务拆会重复计数)。router 没有业务指标,这几列恒为 0 属正常。",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})",
+          "legendFormat": "就绪",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (deployment) (kube_deployment_status_replicas{namespace=\"minimax-h3\"})",
+          "legendFormat": "期望",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}) > bool 0) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}) >= bool sum by (deployment) (kube_deployment_status_replicas{namespace=\"minimax-h3\"}))",
+          "legendFormat": "状态",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (deployment) (label_replace(h3_queue_running_on_instance, \"deployment\", \"$1\", \"h3_instance\", \"(.*)-[^-]+-[^-]+\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "legendFormat": "正在执行",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "sum by (deployment) (label_replace(max by (capability,status) (h3_queue_tasks{status=~\"queued|running\"}), \"deployment\", \"h3-minimax-h3-server-$1\", \"capability\", \"(.*)\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "legendFormat": "积压",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "expr": "round(sum by (deployment) (label_replace(delta(max by (capability,status) (h3_queue_tasks{status=\"failed\"})[24h:5m]), \"deployment\", \"h3-minimax-h3-server-$1\", \"capability\", \"(.*)\"))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "legendFormat": "错误24h",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "G",
+          "expr": "round(sum by (deployment) (increase(label_replace(kube_pod_container_status_restarts_total{namespace=\"minimax-h3\",pod=~\"h3-minimax-h3-.*-[a-f0-9]{8,10}-[a-z0-9]{5}\"}, \"deployment\", \"$1\", \"pod\", \"^(.*)-[a-f0-9]{8,10}-[a-z0-9]{5}$\")[24h:1h]))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "legendFormat": "重启24h",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "工作负载"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "就绪"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "期望"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "正在执行"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "积压"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误24h"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "降级",
+                        "color": "orange"
+                      },
+                      "2": {
+                        "text": "UP",
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "积压"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 5
+                    },
+                    {
+                      "color": "red",
+                      "value": 20
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误24h"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 5
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "就绪",
+              "Value #B": "期望",
+              "Value #C": "状态",
+              "Value #D": "正在执行",
+              "Value #E": "积压",
+              "Value #F": "错误24h",
+              "Value #G": "重启24h",
+              "deployment": "工作负载"
+            },
+            "indexByName": {
+              "deployment": 0,
+              "Value #C": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6,
+              "Value #G": 7
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "工作负载"
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "id": 4,
+      "title": "积压与吞吐",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "积压任务(按能力池 × 状态)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "**只画 queued/running**:h3_queue_tasks 含历史累计的 succeeded,一起画会被存量压平、看不出积压。堆叠,所以顶端就是总积压;分组同时按能力池(fl2va 文生视频 / ref2va 参考图)和状态拆开,一张图既看得出总量抬头,也看得出是哪个池、卡在排队还是在跑。空闲时补 0(而不是 No data),这样能区分「真没积压」和「采集挂了」—— h3_queue_tasks 只上报**实际存在的** (capability,status) 组合,空闲时那两行整个不存在;补零用 h3_queue_backend_up(每个 capability 恒有)再 label_replace 补上 status,这样补出来的 0 标签集与真实 series 一致,图例不会多出没名字的一条。这张图抬头 = 产能跟不上或有任务卡住。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (capability,status) (h3_queue_tasks{status=\"queued\"}) or label_replace(0 * max by (capability) (h3_queue_backend_up), \"status\", \"queued\", \"\", \"\")",
+          "legendFormat": "{{capability}} {{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max by (capability,status) (h3_queue_tasks{status=\"running\"}) or label_replace(0 * max by (capability) (h3_queue_backend_up), \"status\", \"running\", \"\", \"\")",
+          "legendFormat": "{{capability}} {{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "完成量(每 10 分钟)+ 历史累计",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "两组线,两个纵轴:\n\n**实线(左轴)= 当前出活速度**,每 10 分钟进入终态的任务数。取自 h3_queue_tasks(累计值)的速率,不是 24h 滚动存量 —— 后者忙完之后会平在高位、看不出此刻有没有在出活。窗口跟着缩放走($__rate_interval,下限 10 分钟),所以任何时间范围下都不漏采(写死窗口时看 2 天会漏掉 20%+,failed 甚至整条消失);下限 10 分钟是因为完成是稀疏离散事件,窗口再短就会在 0/1 之间高频跳变糊成一片。偶尔出现小数是 rate 对窗口边界的外推(Prometheus 只存累计值快照,求增量必然外推),不是精度问题。\n\n**虚线(右轴)= 历史累计**,建库以来各终态的总数,只增不减。斜率就是左轴那条线。\n\n速率归零 = 当前没有任务完成(是空闲还是卡住,看左边的积压图和最老任务年龄)。拉长时间范围会被窗口平滑,速率峰值变矮属正常。failed/cancelled 抬头是质量信号。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(max by (capability,status) (h3_queue_tasks{status=~\"succeeded|failed|cancelled\"})[$__rate_interval:])) * 600",
+          "legendFormat": "{{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (status) (max by (capability,status) (h3_queue_tasks{status=~\"succeeded|failed|cancelled\"}))",
+          "legendFormat": "{{status}} 累计",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 累计$"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    8
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "succeeded"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "succeeded 累计"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed 累计"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cancelled"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cancelled 累计"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "10m"
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "最老任务年龄(空闲时无数据)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "没有排队/运行中的任务时**不上报**,所以空闲时是 No data —— 这里**故意不补 0**:0 表示「有任务、刚进来」,与「没有任务」语义不同,补零会让判断失真。运行中那条一直涨 = 有任务卡住。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(h3_queue_oldest_queued_age_seconds)",
+          "legendFormat": "最老排队",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max(h3_queue_oldest_running_age_seconds)",
+          "legendFormat": "最老运行中",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 8,
+      "title": "运行与健康",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "各副本正在执行的任务",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "每个副本手上正在跑的任务数(单副本最多 1)。既能看负载分布,也能看出谁在干活、谁闲着。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (h3_instance) (h3_queue_running_on_instance)",
+          "legendFormat": "{{h3_instance}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "副本数(期望 / 就绪)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "来自 kube-state-metrics。就绪 < 期望 = 正在滚动或有副本起不来(**包含 SGLang 没就绪**的情况,因为 sglang 容器有自己的 readinessProbe);滚动更新时 maxSurge=1 会短暂出现就绪 > 期望。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "kube_deployment_status_replicas{namespace=\"minimax-h3\"}",
+          "legendFormat": "{{deployment}} 期望",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}",
+          "legendFormat": "{{deployment}} 就绪",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "异常任务",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "两条都是**持续大于 0 才算问题**。等待接管:租约过期/为空、等别副本接手 —— 持续大于 0 = 该能力池副本全挂或全卡(滚动时短暂抬头正常)。与 SGLang 失联:running 但连不上后端、仍在租约内重试。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(h3_queue_waiting_takeover)",
+          "legendFormat": "等待接管",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max(h3_queue_backend_unavailable)",
+          "legendFormat": "与 SGLang 失联",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{{- if eq .Values.kind "Deployment" }}
+{{- if eq .Values.service.enabled true }}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "descheduler.labels" . | nindent 4 }}
+  name: {{ template "descheduler.fullname" . }}
+  namespace: {{ include "descheduler.namespace" . }}
+spec:
+  clusterIP: None
+  {{- if .Values.service.ipFamilyPolicy }}
+  ipFamilyPolicy: {{ .Values.service.ipFamilyPolicy }}
+  {{- end }}
+  {{- if .Values.service.ipFamilies }}
+  ipFamilies: {{ toYaml .Values.service.ipFamilies | nindent 4 }}
+  {{- end }}
+  ports:
+  - name: http-metrics
+    port: 10258
+    protocol: TCP
+    targetPort: 10258
+  selector:
+    {{- include "descheduler.selectorLabels" . | nindent 4 }}
+  type: ClusterIP
+{{- end }}
+{{- end }}

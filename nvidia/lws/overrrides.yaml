@@ -1,0 +1,5 @@
+# kube-prometheus-stack not able to select lws sevicemonitor, off now
+enablePrometheus: false
+
+gangSchedulingManagement:
+  schedulerProvider: volcano

@@ -1,0 +1,9 @@
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+  config:
+    name: custom-dcgm-exporter-metrics
+    create: false

@@ -1,0 +1,5 @@
+# The image address for condition2taint. See the note in
+# observability/alert-webhook/images.yaml.gotmpl -- our own charts pin a full
+# private-registry address that `registry` does not reach, in every environment.
+image:
+  repository: {{ .Values.registry }}/condition2taint

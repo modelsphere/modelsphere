@@ -1,0 +1,12 @@
+# The operator image follows registry (public Docker Hub by default in
+# default.yaml, overridden to a private registry where a cluster has one).
+#
+# Before this, the release had no values in helmfile at all: the image address
+# was decided entirely by the chart's default, so a new chart release moved it
+# with nothing to catch it.
+#
+# tag is not pinned here: it follows the chart's appVersion, so an upgrade is
+# a one-line change to versions.llmOperator, a single source of truth.
+manager:
+  image:
+    repository: {{ .Values.registry }}/llm-operator

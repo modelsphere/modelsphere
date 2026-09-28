@@ -1,0 +1,73 @@
+# Template for a cluster's environment -- the README starts every cluster
+# here, connected or not. Copy to environments/<name>.yaml, add an entry
+# pointing at it under helmfile.yaml.gotmpl's environments:, loaded alongside
+# default.yaml.
+#
+# default.yaml's defaults face the public internet: images on Docker Hub,
+# charts on GitHub Pages. A cluster that reaches those keeps them, which is why
+# the three keys below are commented out: a copy of this file is correct for a
+# connected cluster as it stands, and only the cilium values further down need
+# filling in. A cluster that cannot reach the internet uncomments them, points
+# them at its own repositories, and follows docs/offline-install.md.
+#
+# Things that vary per cluster whether or not it is air-gapped -- node names,
+# disk paths -- go in this file too, one per cluster. The ones below have no
+# sensible default, so the values template refuses to render without them and
+# names this file when it does. That is the intended way to find them; they are
+# listed here so you do not have to.
+
+# Image registry prefix. Every image we build lives under the same name in
+# both registries, just a different prefix.
+# registry: my-registry.example.com/my-project
+
+# Repository for our own charts. Public default is GitHub Pages; point this
+# back at your own ChartMuseum or OCI registry.
+# chartRepo: https://charts.example.com/my-project
+
+# `rewrite` when the cluster has no outbound network: the third-party charts and
+# images then come from the two addresses above as well, instead of from their
+# upstreams. Load the bundle into them first -- docs/offline-install.md has the
+# steps, and `mirror`, the other offline mode.
+#
+# An internal registry that can still reach the internet does NOT need this:
+# leave it at default.yaml's `upstream` and the third-party images keep their
+# upstream addresses.
+# registryMode: rewrite
+
+# The CNI is an ordinary helmfile release, installed by README step 6 in the
+# same pass as everything else, and enabled.cilium is already true in default.yaml.
+# Repeated here only as a reminder of what false would mean: the next full
+# `helmfile sync` UNINSTALLS cilium out from under the running cluster --
+# measured, every pod then sits in ContainerCreating with "unable to connect to
+# Cilium agent" and the node goes NotReady.
+enabled:
+  cilium: true
+
+cilium:
+  clusterName: my-cluster
+  k8sServiceHost: <the apiserver address>
+  k8sServicePort: 6443
+  podCIDR: <the kubeadm podSubnet>
+  serviceMonitors: false      # until kube-prometheus-stack is installed
+
+# bodylog keeps its records on one node's local disk, so both halves of the
+# routing layer have to be pinned to that node. Required whenever bodylog or
+# bodylog-exporter is enabled, which they are by default.
+llmGateway:
+  node: <the node that keeps the records>
+  hostPath: <a directory on that node, e.g. /mnt/disk0/bodylog-sinks>
+
+# Required only with the releases that ask for them:
+#
+#   ceph.nodes   with rookCephCluster -- the nodes and their raw devices. The
+#                template refuses an empty list rather than building a cluster
+#                with zero OSDs.
+#   name         with alertWebhook -- it prefixes every alert, so an alert says
+#                which cluster it came from.
+#
+# ceph:
+#   nodes:
+#     - name: <node>
+#       devices:
+#         - name: <device>
+# name: "MY-CLUSTER"

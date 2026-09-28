@@ -1,0 +1,65 @@
+# Air-gapped image addresses for the network-operator release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# Three shapes in one chart:
+#   - the operator itself splits repository/image, like gpu-operator;
+#   - node-feature-discovery and maintenance-operator-chart are subcharts whose
+#     image keys the parent does expose;
+#   - sriov-network-operator is a subchart that names its images in a flat
+#     `images:` map of FULL addresses, so each entry carries the whole path.
+#
+# sriovNetworkOperator.enabled is true in nvidia/network-operator/overrides.yaml.gotmpl,
+# so those twelve are live images, not dormant defaults.
+#
+# ⚠️ The sriov addresses below are the PARENT's, not the subchart's. The
+#    subchart defaults to ghcr.io/k8snetworkplumbingwg/* with no tag, but the
+#    parent's values.yaml overrides nine of them to nvcr.io/nvidia/mellanox/*
+#    pinned at network-operator-v26.4.1, and those are what the release
+#    actually deploys -- they reach the operator as SRIOV_*_IMAGE env vars.
+#
+#    Writing the subchart's ghcr defaults here looks right and is not: it
+#    changes the host AND drops the tag, moving the deployment to :latest.
+#    Worse, it is invisible to a prefix check. An address with no tag is not
+#    pullable, so it falls out of the extracted image list entirely and the
+#    bundle reports "nothing outside the internal registry" while missing nine
+#    images. Measured when this file had it wrong: the list went 66 -> 57.
+#
+#    resourcesInjector and metricsExporter are the two the parent does NOT
+#    override, so they stay on ghcr -- matching what actually renders.
+#    metricsExporter carries no tag upstream at all, so overrides.yaml pins it
+#    at v1.2.0 for the online path and this file repeats that tag behind the
+#    internal prefix. Both must move together.
+operator:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+  ofedDriver:
+    initContainer:
+      repository: {{ .Values.registry }}/nvidia/mellanox
+
+node-feature-discovery:
+  image:
+    repository: {{ .Values.registry }}/nvidia/mellanox/node-feature-discovery
+
+maintenance-operator-chart:
+  operator:
+    image:
+      repository: {{ .Values.registry }}/nvidia/mellanox
+
+{{- $nvTag := "network-operator-v26.4.1" }}
+sriov-network-operator:
+  images:
+    operator: {{ .Values.registry }}/nvidia/mellanox/sriov-network-operator:{{ $nvTag }}
+    sriovConfigDaemon: {{ .Values.registry }}/nvidia/mellanox/sriov-network-operator-config-daemon:{{ $nvTag }}
+    sriovCni: {{ .Values.registry }}/nvidia/mellanox/sriov-cni:{{ $nvTag }}
+    ibSriovCni: {{ .Values.registry }}/nvidia/mellanox/ib-sriov-cni:{{ $nvTag }}
+    ovsCni: {{ .Values.registry }}/nvidia/mellanox/ovs-cni-plugin:{{ $nvTag }}
+    rdmaCni: {{ .Values.registry }}/nvidia/mellanox/rdma-cni:{{ $nvTag }}
+    sriovDevicePlugin: {{ .Values.registry }}/nvidia/mellanox/sriov-network-device-plugin:{{ $nvTag }}
+    sriovDraDriver: {{ .Values.registry }}/nvidia/mellanox/dra-driver-sriov:{{ $nvTag }}
+    webhook: {{ .Values.registry }}/nvidia/mellanox/sriov-network-operator-webhook:{{ $nvTag }}
+    # The two the parent leaves on ghcr. metricsExporter carries no tag upstream
+    # at all, so its tag is versions.sriovMetricsExporter -- the same value
+    # overrides.yaml.gotmpl puts behind the upstream host, so there is one place
+    # to change rather than two to keep in step.
+    resourcesInjector: {{ .Values.registry }}/k8snetworkplumbingwg/network-resources-injector:v1.7.0
+    metricsExporter: {{ .Values.registry }}/k8snetworkplumbingwg/sriov-network-metrics-exporter:{{ .Values.versions.sriovMetricsExporter }}
+    metricsExporterKubeRbacProxy: {{ .Values.registry }}/brancz/kube-rbac-proxy:v0.21.2

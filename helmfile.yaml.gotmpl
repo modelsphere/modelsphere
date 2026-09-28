@@ -1,0 +1,888 @@
+# Declarative install of everything this cluster runs on top of kubeadm.
+#
+#   make helm-bootstrap    # CRDs + PriorityClasses (kubectl, not helm)
+#   make helm-diff         # what would change
+#   make helm-apply        # apply it
+#
+# Ordering is expressed with `needs`, not by file order: storage before the
+# monitoring stack (Prometheus/Grafana/Alertmanager all want ceph-block PVCs),
+# monitoring before the GPU and node agents (their values ask for ServiceMonitors
+# and PrometheusRules, whose CRDs the stack owns). helmfile walks that graph, so
+# a single `helmfile apply` on an empty cluster comes up in the right order.
+#
+# Versions, namespaces and on/off switches live in environments/default.yaml.
+# Chart values are the existing per-component overrides files — this file adds no
+# new source of truth for them, it only wires them to a chart and a namespace.
+#
+# NOT covered here, on purpose:
+#   - node prep: kernel, containerd, disks, registry mirrors, RDMA/peermem
+#     (Ansible — `make setup-all`, `make gpu-prep`)
+#   - kubeadm itself (docs/kubeadm-cluster-init.md)
+#   - Gateway/HTTPRoute objects under gateway-api/ (kubectl)
+#
+# Model services ARE covered, as releases declared in a file of their own that
+# is passed on the command line -- `--state-values-file
+# models/examples/sglang-qwen.yaml`, or `MODELS=` through the Makefile. They
+# were the one workload left outside, and that put their images outside
+# `registryMode: rewrite` too. They are not in the environment files: which
+# models a site runs is not a property of its cluster.
+
+# environments/default.yaml is the BASE for every environment, not just `default`
+# — each cluster file is layered on top of it and carries only what differs. That
+# is why the three files are not near-identical copies any more.
+#
+# helmfile merges these left to right: maps key by key, lists replaced wholesale.
+environments:
+  # The Makefile defaults to ENV=default, so this has to exist: without it every
+  # helm target fails with `map has no entry for key "chartRepo"` before doing
+  # anything at all, which is no way to meet the repository.
+  #
+  # It carries the base values only, which is enough to inspect the state --
+  # `helm-list`, `helm-template` of a single release -- but not to apply: the
+  # per-cluster values that have no sensible default still guard themselves, so
+  # `helmfile -e default template` stops at `llmGateway.node is empty`. A real
+  # cluster copies environments/private.yaml.example, fills those in, and
+  # registers itself here.
+  default:
+    values:
+      - environments/default.yaml
+  # Two air-gapped environments, one per registry mode. The files themselves are
+  # NOT in the repo -- they describe one particular cluster, which is nobody
+  # else's business -- so copy environments/offline.yaml.example to
+  # environments/offline-<mode>.yaml and fill it in. Until you do, selecting one
+  # of these two fails with the file it wants; every other environment is
+  # unaffected.
+  #
+  # `missingFileHandler: Warn` looks like the tidy way to say that, and is not:
+  # measured on helmfile 1.7.4, an entry written in that form is IGNORED ENTIRELY
+  # -- with the file present, cilium still rendered the default cluster name. A
+  # values file that silently does not load is worse than one that is missing.
+  offline-mirror:
+    values:
+      - environments/default.yaml
+      - environments/offline-mirror.yaml
+  offline-rewrite:
+    values:
+      - environments/default.yaml
+      - environments/offline-rewrite.yaml
+
+---
+
+{{- /*
+     Where charts and images come from. environments/default.yaml documents the
+     values; the two booleans below are what the rest of this file reads, so a
+     third mode is added in one place.
+
+     Failing on an unknown value matters more than it looks: the old flag was a
+     boolean named `offline`, and a stale `offline: true` left in an environment
+     file would be silently ignored here -- an air-gapped cluster would render
+     with every upstream address intact and only fail on the node, pulling from
+     quay.io. So reject the old key by name.
+*/}}
+{{- if hasKey .Values "offline" }}
+{{-   fail "environments/*.yaml still sets `offline`. It is now `registryMode`: offline: true -> registryMode: rewrite, offline: false -> registryMode: upstream." }}
+{{- end }}
+{{- $mode := .Values.registryMode | default "" }}
+{{- if not (has $mode (list "upstream" "rewrite" "mirror")) }}
+{{-   fail (printf "registryMode: %q is not a mode. Use `upstream` (each chart and image from its own source), `rewrite` (every address rewritten under registry) or `mirror` (addresses left alone, the nodes redirect)." $mode) }}
+{{- end }}
+{{- /* Charts from chartRepo alone -- true for both offline modes: helm does not
+       go through containerd, so a mirror does nothing for a chart. */}}
+{{- $localCharts := ne $mode "upstream" }}
+{{- /* Third-party image addresses rewritten to sit under .Values.registry.
+       Deliberately FALSE under mirror: there the addresses stay upstream and
+       the redirect happens on the node, in /etc/containerd/certs.d. */}}
+{{- $rewrite := eq $mode "rewrite" }}
+
+{{- /*
+     Charts from local .tgz files when they are there, from a repository when
+     they are not.
+
+     An air-gapped site already has the charts on disk -- the bundle carries
+     them -- and standing up a chart repository just to hand them back is a
+     whole moving part (a registry that also serves charts, a path prefix so
+     charts and images do not overwrite each other, credentials) for no gain.
+     A .tgz is a chart; helm installs one directly.
+
+     chartRepo still works and is still the fallback: a local file only takes
+     precedence when it is actually present, so an online install is untouched
+     and a site that prefers a repository leaves chartsDir empty.
+*/}}
+{{- define "chartref" -}}
+{{- $f := printf "%s-%s.tgz" .name .ver -}}
+{{- if hasKey .local $f }}{{ index .local $f }}{{ else }}{{ .fallback }}{{ end -}}
+{{- end -}}
+{{- $chartsDir := .Values.chartsDir | default "" }}
+{{- $local := dict }}
+{{- if $chartsDir }}
+{{-   range (splitList "\n" (exec "sh" (list "-c" (printf "ls %s 2>/dev/null || true" $chartsDir)))) }}
+{{-     if . }}{{ $_ := set $local . (printf "%s/%s" $chartsDir .) }}{{ end }}
+{{-   end }}
+{{- end }}
+
+# ⚠️ A repo alias must not collide with a top-level directory in this repo:
+#    helmfile resolves `chart: <a>/<b>` as a local path before a repo alias, so
+#    `nvidia/gpu-operator` would quietly install the vendored copy under
+#    nvidia/ instead of the chart from NGC. Hence `nvidia-ngc`.
+repositories:
+{{- if not $localCharts }}
+  - name: cilium
+    url: https://helm.cilium.io/
+  - name: rook-release
+    url: https://charts.rook.io/release
+  - name: ceph-csi
+    url: https://ceph.github.io/ceph-csi-operator
+  - name: nvidia-ngc
+    url: https://helm.ngc.nvidia.com/nvidia
+  - name: descheduler
+    url: https://kubernetes-sigs.github.io/descheduler/
+{{- end }}
+  # Our own charts. The URL is an environment value: public GitHub Pages by
+  # default, a private chart repository in a cluster's own environment file.
+  # The alias is deliberately not the internal group name -- it shows up in
+  # every `chart:` line below and in `helm repo add`, so it has to make sense
+  # outside our network too.
+  #
+  # With registryMode: rewrite this is the ONLY entry left: an air-gapped cluster has
+  # one chart repo, and the bundle put every chart -- ours and upstream's --
+  # into it.
+  # An `oci://` chartRepo is a registry, not an index: helmfile needs `oci: true`
+  # and a url with the scheme stripped. That is how one `registry:2` container
+  # can serve both halves of an air-gapped install -- charts under one path
+  # prefix, images under the rest. (A chart and an image sharing one path would
+  # silently overwrite each other, hence the prefix.)
+  - name: modelsphere
+{{- if hasPrefix "oci://" .Values.chartRepo }}
+    url: {{ trimPrefix "oci://" .Values.chartRepo }}
+    oci: true
+{{- else }}
+    url: {{ .Values.chartRepo }}
+{{- end }}
+{{- if not $localCharts }}
+  - name: volcano-sh
+    url: https://volcano-sh.github.io/helm-charts
+  # kube-prometheus-stack, node-problem-detector and lws are pulled straight from
+  # OCI registries (oci:// in `chart:` below) and need no entry here.
+{{- end }}
+
+# Where each third-party chart comes from: its own upstream normally, the
+# `modelsphere` alias above when the charts are taken locally. Held in variables
+# so the `chart:` lines below read identically in every mode -- and so that
+# registryMode: upstream renders byte-for-byte what it did before this flag
+# existed.
+{{- $cilium  := ternary "modelsphere" "cilium"       $localCharts }}
+{{- $rook    := ternary "modelsphere" "rook-release" $localCharts }}
+{{- $cephCsi := ternary "modelsphere" "ceph-csi"     $localCharts }}
+{{- $ngc     := ternary "modelsphere" "nvidia-ngc"   $localCharts }}
+{{- $desched := ternary "modelsphere" "descheduler"  $localCharts }}
+{{- $volcano := ternary "modelsphere" "volcano-sh"   $localCharts }}
+# These three have no repo alias to swap -- they are pulled by full OCI URL --
+# so the entire `chart:` value changes rather than just its first segment.
+{{- $kps := ternary "modelsphere/kube-prometheus-stack" "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack" $localCharts }}
+{{- $npd := ternary "modelsphere/node-problem-detector" "oci://ghcr.io/deliveryhero/helm-charts/node-problem-detector" $localCharts }}
+{{- $lws := ternary "modelsphere/lws" "oci://registry.k8s.io/lws/charts/lws" $localCharts }}
+
+helmDefaults:
+  # Diff against what is actually running, not just against the previous
+  # manifest. Three-way merge is what surfaces drift: a field somebody
+  # kubectl-edited by hand shows up as a change, where the default two-way diff
+  # (old manifest vs new manifest) silently agrees with itself and reports
+  # nothing. Applies to `helmfile diff` and to the diff `helmfile apply` runs
+  # before syncing.
+  #
+  # Same effect as HELM_DIFF_THREE_WAY_MERGE=true, or
+  # `--diff-args "--three-way-merge"` on the command line. It has to be a list;
+  # a bare string fails with `cannot unmarshal !!str into []string`. This is a
+  # helmDefaults-only key — there is no per-release diffArgs, so to scope it,
+  # pass --diff-args together with -l.
+  #
+  # ⚠️ Helm 4 gap, and --server-side does NOT close it. helm-diff's three-way
+  #    path builds a *strategic merge* patch and replays it as a server dry-run
+  #    (manifest/generate.go: CreateThreeWayMergePatch -> helper.ServerDryRun).
+  #    The real `helm upgrade` on Helm 4 may instead reconcile via server-side
+  #    apply — `--server-side` defaults to "auto", inheriting the previous
+  #    release's method — which decides by managedFields ownership. A `kubectl
+  #    edit` that took ownership of a chart-managed field can therefore fail the
+  #    apply with a field conflict that this diff never predicted; `helm upgrade
+  #    --force-conflicts` is the escape hatch.
+  #
+  #    Passing `--server-side` to helmfile does not help here: helm-diff only
+  #    forwards it to the render step, and both `helm template` and
+  #    `helm upgrade --dry-run` bail out before the apply where SSA is consulted
+  #    (see the serverSideFlags comment in helm-diff cmd/helm.go). It is
+  #    accepted for flag compatibility, not for diff fidelity.
+  diffArgs:
+    - --three-way-merge
+    # Chart hooks are deleted once they succeed and are not kept in the stored
+    # manifest, so diffing them reports every one as "added" on every run.
+    # - --no-hooks
+    # - --normalize-manifests   # also ignore style-only noise (key order, whitespace)
+  createNamespace: true
+  # Wait for resources to become ready, so `needs` means "is actually up" and not
+  # just "helm returned". Overridden per release where that is the wrong bet.
+  wait: false
+  timeout: 600
+  cleanupOnFail: true
+  historyMax: 10
+
+releases:
+
+  # ─────────────────────────────────────────────────────────────────────── CNI
+  - name: cilium
+    namespace: {{ .Values.namespaces.cilium }}
+    chart: {{ template "chartref" (dict "local" $local "name" "cilium" "ver" .Values.versions.cilium "fallback" (printf "%s/cilium" $cilium)) }}
+    version: {{ .Values.versions.cilium | quote }}
+    installed: {{ .Values.enabled.cilium }}
+    # The only release with wait -- helmDefaults.wait is false, so every other
+    # release returns as soon as its objects exist. This one must not: until the
+    # agent DaemonSet is Ready no node is Ready, and cilium holds
+    # node.cilium.io/agent-not-ready:NoSchedule, so a chart whose install runs a
+    # hook Job cannot complete. With this, one `helmfile apply` installs the CNI
+    # and the rest of the stack in a single pass -- measured from a cluster with
+    # no CNI and both nodes NotReady: 13 of 13 releases, nodes Ready, 81s.
+    wait: true
+    timeout: 900
+    labels:
+      tier: cni
+    values:
+      - cni/overrides.yaml.gotmpl
+    # Per-cluster values (control-plane endpoint, pod CIDR, whether
+    # ServiceMonitors are asked for) come from `cilium:` in the environment file.
+    #
+    # `helmfile template -l name=cilium` fails without a cluster to talk to
+    # whenever cilium.serviceMonitors is true: the chart refuses to render a
+    # ServiceMonitor unless it can see monitoring.coreos.com/v1 in the API. That
+    # is the same constraint as the bootstrap note above, showing up at template
+    # time. Use `helmfile diff -l name=cilium` against the live cluster instead,
+    # or render with `--state-values-set cilium.serviceMonitors=false`.
+{{- if dig "gatewayAPI" false .Values.cilium }}
+    hooks:
+      # cilium-operator registers its Gateway API controller only if the Gateway
+      # API CRDs are present WHEN IT STARTS. Install them afterwards and the
+      # operator never picks the feature up: GatewayClass sits at
+      # `Accepted=Unknown, reason: Pending, Waiting for controller`, every
+      # Gateway stays Pending with no Service, and nothing else complains.
+      # Measured: CRDs created 49s after the operator started, and the gateway
+      # was dead until `kubectl rollout restart deploy/cilium-operator`.
+      #
+      # README's step 5 (`make helm-bootstrap`) applies them before step 6
+      # installs cilium, so this only fires when that order was not followed.
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["get", "crd", "gateways.gateway.networking.k8s.io"]
+{{- end }}
+
+  # ─────────────────────────────────────────────────────────────────────── storage
+  - name: rook-ceph
+    namespace: {{ .Values.namespaces.rook }}
+    chart: {{ template "chartref" (dict "local" $local "name" "rook-ceph" "ver" .Values.versions.rookCeph "fallback" (printf "%s/rook-ceph" $rook)) }}
+    version: {{ .Values.versions.rookCeph | quote }}
+    installed: {{ .Values.enabled.rookCeph }}
+    labels:
+      tier: storage
+{{- if $rewrite }}
+    # This release had no values at all: its images, including the eight csi.*
+    # ones that become rook-csi-operator-image-set-configmap, came straight from
+    # the chart. Offline they have to be named.
+    values:
+      - ceph/rook-offline-images.yaml.gotmpl
+{{- end }}
+
+  - name: rook-ceph-cluster
+    namespace: {{ .Values.namespaces.rook }}
+    chart: {{ template "chartref" (dict "local" $local "name" "rook-ceph-cluster" "ver" .Values.versions.rookCeph "fallback" (printf "%s/rook-ceph-cluster" $rook)) }}
+    version: {{ .Values.versions.rookCeph | quote }}
+    installed: {{ .Values.enabled.rookCephCluster }}
+    needs:
+      - {{ .Values.namespaces.rook }}/rook-ceph
+    labels:
+      tier: storage
+    values:
+      - ceph/ceph-cluster-override.yaml.gotmpl
+{{- if $rewrite }}
+      - ceph/rook-cluster-offline-images.yaml.gotmpl
+{{- end }}
+    # `wait: false` is deliberate. This release creates a CephCluster CR and then
+    # returns; mons, mgr and 18 OSDs come up asynchronously and helm has no
+    # readiness signal for that. Waiting here just burns the timeout and then
+    # reports a failure for a cluster that is converging fine. Watch it instead:
+    #     kubectl -n {{ .Values.namespaces.rook }} get cephcluster -w
+    wait: false
+
+  - name: ceph-csi-drivers
+    namespace: {{ .Values.namespaces.rook }}
+    chart: {{ template "chartref" (dict "local" $local "name" "ceph-csi-drivers" "ver" .Values.versions.cephCsiDrivers "fallback" (printf "%s/ceph-csi-drivers" $cephCsi)) }}
+    version: {{ .Values.versions.cephCsiDrivers | quote }}
+    installed: {{ .Values.enabled.cephCsiDrivers }}
+    needs:
+      - {{ .Values.namespaces.rook }}/rook-ceph
+    labels:
+      tier: storage
+    values:
+      - ceph/csi/values.yaml
+
+  # ───────────────────────────────────────────────────────────────── observability
+  - name: kube-prometheus-stack
+    namespace: {{ .Values.namespaces.monitoring }}
+    chart: {{ template "chartref" (dict "local" $local "name" "kube-prometheus-stack" "ver" .Values.versions.kubePrometheusStack "fallback" $kps) }}
+    version: {{ .Values.versions.kubePrometheusStack | quote }}
+    installed: {{ .Values.enabled.kubePrometheusStack }}
+    # One `needs:` block, or the state file has a duplicate key and every
+    # environment that renders both fails to parse.
+    #
+    #  - cilium: this release's install runs pre-install hook Jobs (the admission
+    #    webhook certificates), and a Job cannot be scheduled before the CNI is
+    #    up. The other releases need no such edge -- their pods simply stay
+    #    Pending until the CNI arrives.
+    #  - rook-ceph-cluster (when storage is on): Prometheus, Alertmanager, Thanos
+    #    Ruler and Grafana all bind PVCs of storage.className, which that release
+    #    creates. Without it they install fine and then sit Pending on unbound
+    #    claims.
+    needs:
+      - {{ $.Values.namespaces.cilium }}/cilium
+{{- if .Values.enabled.rookCephCluster }}
+      - {{ .Values.namespaces.rook }}/rook-ceph-cluster
+{{- end }}
+    labels:
+      tier: observability
+    # CRD-heavy chart with three StatefulSets behind it; 600s is not enough on a
+    # cold cluster that still has to pull the images.
+    timeout: 1200
+    values:
+      - observability/prom-stack/overrides.yaml.gotmpl
+{{- if $rewrite }}
+      # Half of this stack's images come from subcharts, which the parent's
+      # per-component registry keys do not reach. See the file's header.
+      - observability/prom-stack/offline-images.yaml.gotmpl
+{{- end }}
+      # observability/prom-stack/README.md lists two cluster facts that the
+      # overrides file does not yet encode. Left commented rather than switched on
+      # silently — turning either into a live value changes what alerts fire:
+      #
+      #   1. This cluster runs kubeProxyReplacement, so there is no kube-proxy to
+      #      scrape and KubeProxyDown will fire forever:
+      # - kubeProxy:
+      #     enabled: false
+      #
+      #   2. etcd / scheduler / controller-manager listen on the node IP, not
+      #      127.0.0.1 — that part is a kubeadm-side setting, see
+      #      docs/kubeadm-cluster-init.md.
+    hooks:
+{{- if .Values.storage.persistence }}
+      # Four PVCs in this release ask for storage.className, and a missing class
+      # fails in a way nothing else reports: prometheus-operator looks the
+      # StorageClass up, refuses to create the StatefulSet, and writes
+      # `storage class "<name>" does not exist` into the Prometheus CR -- while
+      # helm still says deployed and `helm list` still says deployed. Measured on
+      # a cluster with no storage backend: Prometheus and Alertmanager simply
+      # never existed, with no Pending pod or unbound PVC to notice. A PV that
+      # carries the same storageClassName string does not satisfy the lookup;
+      # the class object itself has to be there.
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["get", "storageclass", {{ .Values.storage.className | quote }}]
+{{- end }}
+{{- if .Values.enabled.llmAlerts }}
+      # The LLM business rules are PrometheusRule objects, not part of the chart —
+      # same thing `make rules` does, folded in so one apply leaves the cluster
+      # complete. They carry `namespace: monitoring` and the
+      # `release: kube-prometheus-stack` label the ruleSelector matches, so a
+      # plain apply is enough. postsync => the CRD is already there.
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "observability/prom-stack/alerts/"]
+{{- end }}
+{{- if .Values.enabled.llmDashboards }}
+      # LLM 推理的 Grafana dashboard,同样不属于 chart —— 等同 `make dashboards`,
+      # 折进来让一次 apply 就把集群配齐。每个 JSON 一个 ConfigMap(label
+      # grafana_dashboard=1),由 chart 自带的 grafana sidecar 加载,约 5s 生效。
+      # 与上面 alerts 那条的两处不同:
+      #   · -k 而非 -f —— dashboards/ 下是 kustomization,由它生成 ConfigMap;
+      #   · --server-side 必须加 —— dashboard JSON 几十 KB,client-side apply 会把整份
+      #     再塞进 last-applied-configuration 注解,而注解总大小上限 256KiB,面板长大后
+      #     apply 直接失败。field-manager 与 Makefile 里保持同名,否则两条路径下发会
+      #     互相抢字段所有权。
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "--server-side", "--field-manager=inference-stack-k8s",
+               "-k", "observability/prom-stack/dashboards/"]
+{{- end }}
+
+  - name: condition2taint
+    namespace: {{ .Values.namespaces.condition2taint }}
+    chart: {{ template "chartref" (dict "local" $local "name" "condition2taint" "ver" .Values.versions.condition2taint "fallback" "modelsphere/condition2taint") }}
+    version: {{  .Values.versions.condition2taint | quote  }}
+    installed: {{ .Values.enabled.condition2taint }}
+    labels:
+      tier: observability
+    values:
+    - config:
+        descheduler:
+          enabled: true
+    - observability/condition2taint-images.yaml.gotmpl
+
+  - name: alert-webhook
+    namespace: {{ .Values.namespaces.alertWebhook }}
+    chart: {{ template "chartref" (dict "local" $local "name" "alert-webhook" "ver" .Values.versions.alertWebhook "fallback" "modelsphere/alert-webhook") }}
+    version: {{  .Values.versions.alertWebhook | quote  }}
+    installed: {{ .Values.enabled.alertWebhook }}
+    labels:
+      tier: observability
+    values:
+    - observability/alert-webhook/config.yaml.gotmpl
+    - observability/alert-webhook/images.yaml.gotmpl
+{{- if $rewrite }}
+    # The `helm test` probe is the one image the chart does not take from its own
+    # server key. The bundle's image list comes from a render made with
+    # --skip-tests, on purpose, so no test hook is ever seen -- and this address
+    # only survives because grafana's initChownData happens to use the same tag.
+    # Measured: a --skip-tests render still names library/busybox:1.38.0 once,
+    # from grafana. That is an accident, and it breaks the day grafana moves.
+    #
+    # Switching the hook off is not available: the chart has no tests.enabled,
+    # it renders templates/tests/test-connection.yaml unconditionally. So the
+    # address is named here and offline_bundle.sh adds it to the image list
+    # itself, which makes the bundle carry it on purpose rather than by luck.
+    - tests:
+        image:
+          repository: {{ .Values.registry }}/library/busybox
+          tag: "1.38.0"
+{{- end }}
+
+  - name: node-problem-detector
+    namespace: {{ .Values.namespaces.npd }}
+    # Same chart as the vendored copy under observability/npd/. deliveryhero's
+    # https index (charts.deliveryhero.io) stops at 2.3.14 / NPD v0.8.19; only
+    # their OCI registry carries 2.4.1 / NPD v1.35.1, which is what the overrides
+    # below are written against.
+    chart: {{ template "chartref" (dict "local" $local "name" "node-problem-detector" "ver" .Values.versions.nodeProblemDetector "fallback" $npd) }}
+    version: {{ .Values.versions.nodeProblemDetector | quote }}
+    installed: {{ .Values.enabled.nodeProblemDetector }}
+{{- if .Values.enabled.kubePrometheusStack }}
+    # overrides.yaml turns on a ServiceMonitor and a PrometheusRule.
+    needs:
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
+{{- end }}
+    labels:
+      tier: observability
+    values:
+      - observability/npd/overrides.yaml
+{{- if $rewrite }}
+      - observability/npd/offline-images.yaml.gotmpl
+{{- end }}
+
+  - name: descheduler
+    namespace: {{ .Values.namespaces.descheduler }}
+    chart: {{ template "chartref" (dict "local" $local "name" "descheduler" "ver" .Values.versions.descheduler "fallback" (printf "%s/descheduler" $desched)) }}
+    version: {{ .Values.versions.descheduler | quote }}
+    installed: {{ .Values.enabled.descheduler }}
+    labels:
+      tier: observability
+    values:
+      - observability/descheduler/overrides.yaml
+{{- if $rewrite }}
+      - observability/descheduler/offline-images.yaml.gotmpl
+{{- end }}
+    # kind: CronJob — nothing to wait for, the Deployment path is not in play.
+    wait: false
+    # ⚠️ This one can evict inference-prod pods. Read the header of
+    #    observability/descheduler/overrides.yaml before changing its policy, and
+    #    dry-run first:
+    #      helmfile apply -l name=descheduler --set cmdOptions.dry-run=true
+
+  # ────────────────────────────────────────────────────────────────── GPU fabric
+  - name: gpu-operator
+    namespace: {{ .Values.namespaces.gpuOperator }}
+    chart: {{ template "chartref" (dict "local" $local "name" "gpu-operator" "ver" .Values.versions.gpuOperator "fallback" (printf "%s/gpu-operator" $ngc)) }}
+    version: {{ .Values.versions.gpuOperator | quote }}
+    installed: {{ .Values.enabled.gpuOperator }}
+{{- if .Values.enabled.kubePrometheusStack }}
+    # nvidia/overrides.yaml enables the dcgm-exporter ServiceMonitor.
+    needs:
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
+{{- end }}
+    labels:
+      tier: gpu
+    # Driver validation + toolkit install on every GPU node, from a cold image
+    # cache. This is the slowest release in the file.
+    timeout: 1800
+    values:
+      - nvidia/overrides.yaml
+{{- if $rewrite }}
+      # node-feature-discovery is a subchart here and has to be named separately
+      # -- the parent's nvcr.io repositories do not cover it.
+      - nvidia/gpu-operator-offline-images.yaml.gotmpl
+{{- end }}
+    hooks:
+{{- if .Values.enabled.dcgmCustomMetrics }}
+      # nvidia/overrides.yaml sets dcgmExporter.config.create=false and names
+      # custom-dcgm-exporter-metrics, i.e. the chart expects a ConfigMap it does
+      # not own. The key must be dcgm-metrics.csv — that is the filename
+      # dcgm-exporter is pointed at (see the chart's dcgm_exporter_config.yaml).
+      # presync, because dcgm-exporter mounts it at startup.
+      - events: ["presync"]
+        showlogs: true
+        command: "bash"
+        args:
+          - -ec
+          - |
+            kubectl create namespace {{ .Values.namespaces.gpuOperator }} \
+              --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create configmap custom-dcgm-exporter-metrics \
+              --namespace {{ .Values.namespaces.gpuOperator }} \
+              --from-file=dcgm-metrics.csv=nvidia/custom-metrics.csv \
+              --dry-run=client -o yaml | kubectl apply -f -
+{{- end }}
+
+  - name: network-operator
+    namespace: {{ .Values.namespaces.networkOperator }}
+    chart: {{ template "chartref" (dict "local" $local "name" "network-operator" "ver" .Values.versions.networkOperator "fallback" (printf "%s/network-operator" $ngc)) }}
+    version: {{ .Values.versions.networkOperator | quote }}
+    installed: {{ .Values.enabled.networkOperator }}
+{{- if .Values.enabled.gpuOperator }}
+    # The chart renders a NodeFeatureRule, and that CRD comes from
+    # node-feature-discovery -- a gpu-operator subchart here. Without the
+    # ordering both land in helmfile's first batch and the install dies with
+    # "no matches for kind NodeFeatureRule ... ensure CRDs are installed first".
+    needs:
+      - {{ .Values.namespaces.gpuOperator }}/gpu-operator
+{{- end }}
+    labels:
+      tier: gpu
+    timeout: 1200
+    values:
+      - nvidia/network-operator/overrides.yaml.gotmpl
+{{- if $rewrite }}
+      # sriovNetworkOperator is enabled above, and that subchart names its
+      # twelve images in a flat map of its own. See the file's header.
+      - nvidia/network-operator/offline-images.yaml.gotmpl
+{{- end }}
+    hooks:
+{{- if .Values.enabled.nicClusterPolicy }}
+      # NicClusterPolicy is a cluster-scoped CR the operator reconciles; the chart
+      # does not render it. postsync so the CRD and the webhook are up first.
+{{- if $rewrite }}
+      # That manifest is static, not chart output: no values file rewrites its
+      # `repository: nvcr.io/nvidia/mellanox`, and the bundle -- derived from
+      # the render -- never sees it either. Applied unchanged on an air-gapped
+      # cluster, every RDMA node's device-plugin pod sits in ImagePullBackOff
+      # against nvcr.io. Rewritten here by the same rule the values files use:
+      # host stripped, path kept.
+      - events: ["postsync"]
+        showlogs: true
+        command: "bash"
+        args:
+          - "-ec"
+          - "sed 's#nvcr.io/nvidia/mellanox#{{ .Values.registry }}/nvidia/mellanox#g' nvidia/network-operator/nic-cluster-policy.yaml | kubectl apply -f -"
+{{- else }}
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "nvidia/network-operator/nic-cluster-policy.yaml"]
+{{- end }}
+{{- end }}
+
+  # Ascend NPU nodes (off by default: only clusters that have one need it).
+  # Huawei's own MindCluster deploy-tool chart, vendored because it ships as a
+  # tgz attached to a GitCode release rather than from a helm repo. Kept as the
+  # upstream .tgz, byte for byte, so that "we did not patch the vendor chart" is
+  # verifiable rather than asserted -- unpack it and it is a 131-file tree nobody
+  # can eyeball in a diff. sha256 966e9abc74c8dce157fc70c48f99ab563eaa3245a4d5600d0d9f9215b07b2440
+  #
+  # It is an umbrella over every MindCluster component; ascend/overrides.yaml
+  # enables the device plugin alone. Note the chart creates the mindx-dl and
+  # cluster-system namespaces unconditionally (with resource-policy: keep, so
+  # they outlive an uninstall); they stay empty when only the device plugin runs.
+  # That is upstream behaviour and patching it would defeat the point above.
+  # Node prep is not helm's job: see docs/add-ascend-node.md.
+  - name: ascend-device-plugin
+    namespace: {{ .Values.namespaces.ascendDevicePlugin }}
+    chart: ./ascend/mindcluster-deploy-tool-26.1.0.tgz
+    version: {{ .Values.versions.mindCluster | quote }}
+    installed: {{ .Values.enabled.ascendDevicePlugin }}
+    labels:
+      tier: gpu
+    values:
+      - ascend/overrides.yaml
+
+  - name: lws
+    namespace: {{ .Values.namespaces.lws }}
+    chart: {{ template "chartref" (dict "local" $local "name" "lws" "ver" .Values.versions.lws "fallback" $lws) }}
+    version: {{ .Values.versions.lws | quote }}
+    installed: {{ .Values.enabled.lws }}
+    labels:
+      tier: gpu
+    values:
+      - nvidia/lws/overrrides.yaml
+{{- if $rewrite }}
+      - nvidia/lws/offline-images.yaml.gotmpl
+{{- end }}
+
+  - name: openresty
+    namespace: {{ .Values.namespaces.llmRoute }}
+    chart: {{ template "chartref" (dict "local" $local "name" "openresty" "ver" .Values.versions.openresty "fallback" "modelsphere/openresty") }}
+    version: {{ .Values.versions.openresty | quote }}
+    installed: {{ .Values.enabled.openresty }}
+    labels:
+      tier: llmgate
+    values:
+      - llmgateway/openresty.yaml.gotmpl
+
+  - name: bodylog
+    namespace: {{ .Values.namespaces.llmRoute }}
+    chart: {{ template "chartref" (dict "local" $local "name" "bodylog" "ver" .Values.versions.bodylog "fallback" "modelsphere/bodylog") }}
+    version: {{ .Values.versions.bodylog | quote }}
+    installed: {{ .Values.enabled.bodylog }}
+    labels:
+      tier: llmgate
+    values:
+      - llmgateway/bodylog-overrides.yaml.gotmpl
+
+  - name: bodylog-exporter
+    namespace: {{ .Values.namespaces.llmRoute }}
+    chart: {{ template "chartref" (dict "local" $local "name" "bodylog-exporter" "ver" .Values.versions.bodylogExporter "fallback" "modelsphere/bodylog-exporter") }}
+    version: {{ .Values.versions.bodylogExporter | quote }}
+    installed: {{ .Values.enabled.bodylogExporter }}
+{{- if .Values.enabled.kubePrometheusStack }}
+    # Renders a ServiceMonitor; that CRD ships with kube-prometheus-stack.
+    needs:
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
+{{- end }}
+    labels:
+      tier: llmgate
+    values:
+      - llmgateway/bodylog-exporter.yaml.gotmpl
+
+  - name: autoconfig
+    namespace: {{ .Values.namespaces.llmRoute }}
+    chart: {{ template "chartref" (dict "local" $local "name" "autoconfig" "ver" .Values.versions.autoconfig "fallback" "modelsphere/autoconfig") }}
+    version: {{ .Values.versions.autoconfig | quote }}
+    installed: {{ .Values.enabled.autoconfig }}
+{{- if .Values.enabled.kubePrometheusStack }}
+    # Renders a ServiceMonitor; that CRD ships with kube-prometheus-stack.
+    # Losing autoconfig is not a lone missing pod: it is the controller that
+    # writes each CART's workers.yaml from its ModelRoute, so every CART then
+    # crash-loops on "Failed to read config file /workspace/configs/workers.yaml".
+    needs:
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
+{{- end }}
+    labels:
+      tier: llmgate
+    values:
+      # Repository only. The chart's own values say why, in as many words:
+      # `tag: ""` means Chart.appVersion, which its CI rewrites on every
+      # release tag -- "别写死版本号 ... 写死会让 chart 升版后 image.tag 仍停在
+      # 旧值". This file had it written down as 0.3.45 beside a chart pinned at
+      # 0.3.47, which is that failure exactly. A registry holding both tags means no
+      # internal cluster noticed; Docker Hub holds only 0.3.47, so a cluster
+      # on this repo's public defaults got ImagePullBackOff on the release
+      # that writes every CART's worker list. Measured.
+      - image:
+          repository: {{ .Values.registry }}/autoconfig
+        # A ServiceMonitor needs monitoring.coreos.com/v1, and the chart
+        # defaults it on -- so on a cluster with no prometheus-operator the
+        # apply failed on a CRD nobody asked for. `autoconfig.serviceMonitor`
+        # decides: empty follows whether this stack installs the monitoring
+        # stack, and a cluster with its own operator sets it true.
+        metrics:
+          serviceMonitor:
+            enabled: {{ if kindIs "bool" (dig "serviceMonitor" "" .Values.autoconfig) }}{{ dig "serviceMonitor" false .Values.autoconfig }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
+
+  # ────────────────────────────────────────────────────────────────── operators
+  - name: llm-slo
+    namespace: {{ .Values.namespaces.llmslo }}
+    # This chart renders its own Namespace object, unconditionally -- there is
+    # no value to switch it off -- and that collides with the namespace helm
+    # has to have before it can write its release secret. Both obvious settings
+    # fail, each in one state:
+    #
+    #   createNamespace: false   works only where the namespace already exists;
+    #                            on a fresh cluster helm cannot write its own
+    #                            release secret ("namespaces llm-scaler not
+    #                            found").
+    #   createNamespace: true    works only where it does not: --create-namespace
+    #                            makes a namespace with no helm ownership
+    #                            metadata, so the chart's own copy is refused as
+    #                            "already exists".
+    #
+    # The namespace is therefore created here, already carrying the ownership
+    # label and annotations helm looks for, which makes the chart's copy an
+    # adoption rather than a conflict. Idempotent, and it runs before the sync.
+    createNamespace: false
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "bash"
+        args:
+          - -ec
+          - |
+            ns={{ .Values.namespaces.llmslo }}
+            kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
+            kubectl label namespace "$ns" app.kubernetes.io/managed-by=Helm --overwrite
+            kubectl annotate namespace "$ns" \
+              meta.helm.sh/release-name=llm-slo \
+              meta.helm.sh/release-namespace="$ns" --overwrite
+    chart: {{ template "chartref" (dict "local" $local "name" "llm-slo-decision-gen" "ver" .Values.versions.llmslo "fallback" "modelsphere/llm-slo-decision-gen") }}
+    version: {{ .Values.versions.llmslo | quote }}
+    installed: {{ .Values.enabled.llmslo }}
+    labels:
+      tier: operator
+    values:
+      - llm-operator/llmslo-images.yaml.gotmpl
+
+  - name: llmscaleoperator
+    namespace: {{ .Values.namespaces.llmOperator }}
+    chart: {{ template "chartref" (dict "local" $local "name" "llmscaleoperator" "ver" .Values.versions.llmOperator "fallback" "modelsphere/llmscaleoperator") }}
+    version: {{ .Values.versions.llmOperator | quote }}
+    installed: {{ .Values.enabled.llmOperator }}
+    labels:
+      tier: operator
+    values:
+      - llm-operator/overrides.yaml.gotmpl
+
+  - name: llm-canary-operator
+    namespace: {{ .Values.namespaces.llmCanaryOperator }}
+    chart: {{ template "chartref" (dict "local" $local "name" "llm-canary-operator" "ver" .Values.versions.llmCanaryOperator "fallback" "modelsphere/llm-canary-operator") }}
+    version: {{ .Values.versions.llmCanaryOperator | quote }}
+    installed: {{ .Values.enabled.llmCanaryOperator }}
+    labels:
+      tier: operator
+    values:
+      # `manager.*`, not top level. The chart reads .Values.manager.args and
+      # .Values.manager.image; a top-level `args:`/`image:` is accepted by helm
+      # and then read by nothing, so --chart-repository never reached the
+      # operator and the image stayed at the chart's default. Found by
+      # rendering the release and looking at the container: three scaffolded
+      # flags, no --chart-repository.
+      - manager:
+          args:
+            - --leader-elect
+            - --chart-repository={{ .Values.chartRepo }}
+{{- if .Values.llmCanaryOperator.image }}
+          image:
+{{ .Values.llmCanaryOperator.image | toYaml | indent 12 }}
+{{- end }}
+{{- if not .Values.llmCanaryOperator.image }}
+      # Skipped when the environment names its own image: helm applies values
+      # files left to right, so this one used to win and silently reset the
+      # repository the override had just set -- leaving the tag from the
+      # override beside the address from here, an image nobody built.
+      - llm-operator/canary-images.yaml.gotmpl
+{{- end }}
+
+  # ─────────────────────────────────────────────────────────────── gang scheduling
+  # Volcano schedules an LWS leader+worker group as a unit, so a group either
+  # lands whole or takes nothing — the failure it prevents is a leader holding 8
+  # GPUs while its worker waits forever. Inert until a workload asks for it by
+  # name: it only schedules pods whose spec.schedulerName is `volcano`, so having
+  # it installed changes nothing on its own. scheduler/volcano/README.md has the
+  # switch-on order (Volcano -> LWS gangSchedulingManagement -> the workload) and
+  # the two silent failure modes in it.
+  #
+  # ⚠️ The release name must stay `volcano` and the namespace `volcano-system`:
+  #    the chart derives the scheduler ConfigMap name from the release, and
+  #    volcano-scheduler-configmap is what the running scheduler reads.
+  - name: volcano
+    namespace: {{ .Values.namespaces.volcano }}
+    chart: {{ template "chartref" (dict "local" $local "name" "volcano" "ver" .Values.versions.volcano "fallback" (printf "%s/volcano" $volcano)) }}
+    version: {{ .Values.versions.volcano | quote }}
+    installed: {{ .Values.enabled.volcano }}
+    # scheduler/volcano/volcano-1.15.1.tgz is the same chart, vendored back when
+    # the clusters could reach the index but timed out pulling the tarball from
+    # github. It stays as the offline path (scheduler/volcano/README.md installs
+    # from it by hand); this release pulls from upstream like every other chart
+    # here, so a version bump is one line in the environment file.
+    labels:
+      tier: scheduler
+    values:
+      - scheduler/volcano/values.yaml
+{{- if $rewrite }}
+      - scheduler/volcano/offline-images.yaml.gotmpl
+{{- end }}
+    # Adopting a Volcano that was installed outside helm (kubectl apply, or a
+    # helm release under another name) needs the ownership check skipped once:
+    #     helmfile -l name=volcano apply --take-ownership
+    # It is an in-place adoption — pods keep running, nothing is deleted.
+{{- if .Values.enabled.volcanoPdb }}
+    hooks:
+      # The chart ships no PodDisruptionBudgets. pdb.yaml adds minAvailable: 1 per
+      # component; the one that matters is volcano-admission, whose
+      # validatepodgroup webhook is failurePolicy: Fail — drain both replicas and
+      # every LWS in the cluster stops being able to create a PodGroup. The
+      # objects carry their own `namespace: volcano-system`, so no -n here.
+      # postsync => the Deployments the selectors point at already exist.
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "scheduler/volcano/pdb.yaml"]
+{{- end }}
+
+  # ────────────────────────────────────────────────────────── model services
+  # One release per entry in `models` (environments/default.yaml documents the
+  # shape); empty by default, so a cluster that declares none installs none.
+  #
+  # These are here for what the rest of this file already gives every other
+  # chart. `registryMode: rewrite` rewrites their images under `registry`, so the
+  # bundle derives them from a render instead of offline/engine-images.txt
+  # naming them by hand, and `needs` puts them after the controller that
+  # configures them: the sglang chart starts CART with
+  # `-c config.yaml -c workers.yaml`, and workers.yaml is autoconfig's to
+  # write off the ModelRoute. Install the model first and every CART pod
+  # crash-loops on a file nobody has written yet.
+{{- /* `dig`, not `.Values.models | default`: an absent key is an error here,
+       not an empty value -- and with no MODELS file there is no key. */}}
+{{- range $m := (dig "models" (list) .Values) }}
+{{- if not (hasKey $m "name") }}{{ fail "a models[] entry has no `name` (the helm release name)" }}{{ end }}
+{{- /* No `version` needed: it comes from versions.<chart> below, like every
+       other chart here. An entry may still pin its own. What IS checked is
+       that the chart it asks for is one this repo knows -- otherwise the
+       version lookup yields nothing and helm is handed an empty --version,
+       which resolves to "whatever is newest" rather than failing. */}}
+{{- if not (hasKey $.Values.versions (dig "chart" "sglang" $m)) }}
+{{-   fail (printf "models[%s]: chart %q has no pin in `versions:`. Add one there, the way every other chart in this file is pinned." $m.name (dig "chart" "sglang" $m)) }}
+{{- end }}
+  - name: {{ $m.name }}
+    # `dig`, not `$m.x | default`: a key absent from the entry is an error in a
+    # helmfile template, not an empty value.
+    namespace: {{ dig "namespace" "llm-demo" $m }}
+{{- $mchart := dig "chart" "sglang" $m }}
+{{- /* The engine chart's version, from `versions:` unless the entry pins one,
+       computed once because the local-file lookup and the release both need
+       it -- and because `dig` evaluates its default eagerly, so reading
+       $m.version where the key may be absent fails outright. */}}
+{{- $mver := ternary (dig "version" "" $m) (index $.Values.versions $mchart) (hasKey $m "version") }}
+    chart: {{ template "chartref" (dict "local" $local "name" $mchart "ver" $mver "fallback" (printf "modelsphere/%s" $mchart)) }}
+    # The engine chart's version comes from `versions:` like every other chart
+    # in this file. An entry may still pin its own, but it does not have to and
+    # normally should not: a site chooses which engine it runs, the repo
+    # chooses which version of it the whole stack is on.
+    version: {{ $mver | quote }}
+    installed: {{ dig "enabled" true $m }}
+{{- if $.Values.enabled.autoconfig }}
+    needs:
+      - {{ $.Values.namespaces.llmRoute }}/autoconfig
+{{- end }}
+    labels:
+      tier: model
+    # helmDefaults.wait is false, so helm returns once the objects exist and
+    # this bounds the API calls, not the engine's load time. Kept generous
+    # because a first pull of a ~20 GB image happens under it.
+    timeout: {{ dig "timeout" 1800 $m }}
+    values:
+      # The entry's own values first. The ENGINE's address is the entry's
+      # business and nothing here invents it: sglang and vllm are upstream
+      # projects (`lmsysorg/sglang`) and what a site runs is usually a build of
+      # its own, wherever it keeps them. It names it with the
+      # chart's own `image.repository` -- there is no extra key for it.
+      - {{ toYaml ((dig "values" (dict) $m) | default (dict)) | nindent 8 | trim }}
+      # Images second, because this file TRANSFORMS the address above -- under
+      # `rewrite` it is the same host-off/path-kept rule every other image in
+      # this stack follows, and a transform that ran first would be overwritten
+      # by the value it transformed. The other four images it sets are ours and
+      # come from `registry`, exactly as they do for every other release here.
+      - models/images.yaml.gotmpl
+{{- end }}

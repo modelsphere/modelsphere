@@ -1,0 +1,59 @@
+# Copy to inventory.ini and fill in. `make` reads inventory.ini by default;
+# INVENTORY= points at another file.
+#
+# Group names are yours except one: the GPU plays default to a group called
+# `gpu` (override per run with gpu_group=). Everything else here is an example
+# of the shape, not a required name.
+
+[control_plane]
+10.0.0.10
+10.0.0.11
+10.0.0.12
+
+[workers]
+10.0.0.20
+10.0.0.21
+
+# Every GPU node. `make gpu-prep` and `make audit-gpu` target this group.
+[gpu]
+10.0.0.20
+10.0.0.21
+
+# Per-group values: a group whose nodes have a different data disk says so here
+# rather than per host.
+[workers:vars]
+k8s_data_disk=/dev/nvme1n1
+
+[all:vars]
+ansible_user=root
+ansible_python_interpreter=/usr/bin/python3
+
+# The data disk `make setup-disk` prepares, and the file whose contents
+# setup-k8s-offline appends to every node's /etc/hosts. Leave k8s_hosts_file
+# unset and that step is skipped.
+k8s_data_disk=/dev/nvme0n1
+# Names a file whose contents are appended to every node's /etc/hosts. Copy
+# sys/hosts.example to sys/hosts and uncomment this; left unset the step is
+# skipped in silence, which is fine on one node and not on a cluster whose
+# controlPlaneEndpoint name has to resolve everywhere.
+; k8s_hosts_file=sys/hosts
+
+# Pull-through caches, one per upstream -- see registry-mirror/. Unset, each
+# node reaches the upstream registries directly.
+; mirror_url_docker=http://10.0.0.5:5001
+; mirror_url_registry_k8s=http://10.0.0.5:5002
+; mirror_url_quay=http://10.0.0.5:5003
+; mirror_url_gcr=http://10.0.0.5:5004
+; mirror_url_ghcr=http://10.0.0.5:5005
+; mirror_url_nvcr=http://10.0.0.5:5006
+
+# An egress proxy, where the nodes need one to reach the internet.
+; http_proxy=http://10.0.0.5:8989
+; https_proxy=http://10.0.0.5:8989
+
+# The NOFILE soft limit containerd gives containers. Commented out = systemd's
+# default of 1024, which cilium-envoy can exhaust at startup on a high-core
+# node: it opens roughly four descriptors per worker and runs one worker per
+# CPU. Raising it restarts containerd and applies only to pod sandboxes created
+# afterwards.
+; k8s_containerd_nofile=524288

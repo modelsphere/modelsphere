@@ -1,0 +1,9 @@
+# Air-gapped image address for the lws release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# Note the shape: this chart nests the image under `image.manager`, not the
+# `image.repository` every other chart here uses, and it is the only image the
+# chart pulls.
+image:
+  manager:
+    repository: {{ .Values.registry }}/lws/lws

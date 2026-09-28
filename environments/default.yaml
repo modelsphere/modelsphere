@@ -1,0 +1,411 @@
+# Image registry prefix. Every image we build lives under the same name in any
+# registry that carries it, just a different prefix, so one value covers all of
+# them:
+#   4pdosc/autoconfig                      public (Docker Hub)
+#   <internal-registry>/team/autoconfig    an internal mirror of the same images
+#
+# Defaults to the public address: whoever has this repo is not necessarily on an
+# internal network, so the default should serve them. A cluster behind one
+# overrides it in its own environment file;
+# a new internal environment copies environments/private.yaml.example.
+registry: 4pdosc
+
+# Repository for our own charts. Same reasoning as registry: public by default;
+# a cluster with its own chart repository overrides it.
+chartRepo: https://modelsphere.github.io/helm-charts
+
+# Where to look for chart .tgz files before reaching for a repository.
+#
+# A chart found here is installed straight from the file, so an air-gapped site
+# needs no chart repository at all -- the bundle already carries the charts, and
+# standing up a registry to hand them back is a moving part with nothing to
+# show for it.
+#
+# Automatic and safe to leave alone: the lookup is by exact filename
+# (<chart>-<version>.tgz, the name `helm pull` writes), a chart that is not
+# there falls back to chartRepo exactly as before, and a directory that does
+# not exist simply finds nothing. An online install is unaffected.
+#
+# Point it at the bundle when the bundle lives elsewhere:
+#     helmfile -e <cluster> --state-values-set chartsDir=/root/bundle/charts ...
+chartsDir: offline/charts
+
+# Where charts and images are taken from.
+#
+#   upstream  each chart and image from its own source: our charts from
+#             chartRepo, our images from registry, everything else from
+#             quay.io / registry.k8s.io / nvcr.io / NGC / ghcr.io.
+#   rewrite   one image registry for everything: every third-party image
+#             address is rewritten to sit under registry.
+#   mirror    addresses are left exactly as they are and the NODES redirect
+#             them, through /etc/containerd/certs.d -- so this file stays the
+#             one an online cluster would use. `make setup-offline-node`
+#             writes that config; docs/offline-install.md compares the two.
+#
+# This is not inferable from registry/chartRepo above -- both are always set, so
+# "a registry is configured" says nothing about whether the outside is
+# reachable. It is also not the same question as the containerd mirror the nodes
+# get from network_accesslator.yaml: that mirror is itself a network hop.
+#
+# `rewrite` assumes the bundle has already been pushed into that registry and
+# repo; see docs/offline-install.md.
+#
+# Third-party images drop their upstream host and keep the rest of the path
+# (quay.io/cilium/cilium -> <registry>/cilium/cilium). script/offline_load.sh
+# retags by that same rule, so the two halves cannot drift apart.
+#
+# The host was carried at first, on the theory that images sharing a path on
+# different hosts would collide. Measured against the real list they do not:
+# all 71 addresses stay distinct without it, and every org in the list comes
+# from exactly one host. What stays possible is a chart moving to a different
+# registry without changing its path -- two internal copies would then collide
+# silently, so check for that when bumping charts.
+#
+# An image already under registry is left alone rather than prefixed twice.
+registryMode: upstream
+
+# Base values for every helmfile environment. Consumed by ../helmfile.yaml.gotmpl.
+#
+# ⚠️ This file is loaded FIRST for every environment, not just `default` — see the
+#    `environments:` block in helmfile.yaml.gotmpl. environments/<cluster>.yaml is
+#    layered on top and holds only the keys that differ. So a value edited here
+#    moves every cluster; a value that belongs to one cluster goes in that
+#    cluster's file.
+#
+#    Merge semantics: maps merge key by key, LISTS ARE REPLACED WHOLESALE. That
+#    matters for `ceph.nodes` — an overlay that sets it replaces the whole
+#    topology rather than appending a node, which is what you want.
+#
+# To add a cluster: create environments/<cluster>.yaml with only the differing
+# keys, register it under `environments:` in helmfile.yaml.gotmpl, then
+#     helmfile -e <cluster> diff
+#
+# ⚠️ `namespaces` is not a free choice on an existing cluster. helmfile keys a
+#    release by name + namespace; pointing an already-deployed release at a
+#    different namespace installs a SECOND copy, it does not move the first one.
+#    Run `helm list -A` and reconcile this block with reality before the first
+#    `helmfile apply`. Everything below matches what this repo's docs and
+#    per-component Makefiles already use.
+
+# ---------------------------------------------------------------- chart versions
+# All of these are published charts — nothing here resolves to a local directory.
+# The vendored copies under cni/, nvidia/, observability/ are kept as reference
+# only (that is what `default.yaml` / the unpacked chart dirs are for); helmfile
+# pulls from the network so upgrades are a one-line change here.
+#
+# Verify a bump before applying it:
+#     helm show chart <repo>/<chart> --version <new>
+versions:
+  cilium: "1.20.0"                # helm.cilium.io          — repo root also has 1.20.0/1.20.1 tgz
+  rookCeph: "v1.20.3"             # charts.rook.io/release  — operator + cluster share this version
+  cephCsiDrivers: "1.0.4"         # ceph.github.io/ceph-csi-operator
+  kubePrometheusStack: "87.21.0"  # matches observability/prom-stack/Makefile
+  nodeProblemDetector: "2.4.1"    # == the vendored copy (chart 2.4.1 / NPD v1.35.1)
+  descheduler: "0.36.0"           # == the vendored copy
+  gpuOperator: "v26.3.3"          # == the vendored copy
+  networkOperator: "26.4.1"       # == nvidia/network-operator/Makefile
+  # An image tag, not a chart version: the network-operator chart pins every
+  # sriov image except this one, whose subchart default carries no tag at all
+  # and so resolves to :latest. Read by both of that release's values files --
+  # overrides.yaml.gotmpl for the online address and offline-images.yaml.gotmpl
+  # for the internal-registry one -- so the two cannot drift apart.
+  sriovMetricsExporter: "v1.2.0"
+  lws: "v0.9.0"                   # == nvidia/lws/install.sh
+
+  openresty: "0.1.20"             # 0.1.18 only ever existed on the internal
+                                  # ChartMuseum; 0.1.20 is on both repos, so
+                                  # this value now resolves either way.
+  bodylog: "0.1.13"
+  # The charts below moved their Kubernetes API groups to modelsphere.dev
+  # (routing / autoscaling / inference.modelsphere.dev). A group rename is a
+  # migration, not an upgrade: a cluster already running the previous versions
+  # stays on them until it migrates, pinning the old versions in its own file.
+  bodylogExporter: "0.3.0"
+  autoconfig: "0.4.0"
+  # The inference engines. They are charts of ours like any other here: a
+  # `models:` entry picks WHICH engine it wants, not which version, so the repo
+  # governs that the way it does for everything else. The bundle pulls both, in
+  # case a site declares a model after the bundle is built -- which it will,
+  # since that is the point of building one bundle for any cluster.
+  sglang: "0.8.0"
+  vllm: "0.5.0"
+
+  llmOperator: "0.3.0"
+  llmslo: "0.2.0"
+  llmCanaryOperator: "0.2.6"
+
+  volcano: "1.15.1"
+  mindCluster: "26.1.0"           # == ascend/mindcluster-deploy-tool-26.1.0.tgz
+
+  condition2taint: "0.2.0"
+  alertWebhook: "0.2.1"
+
+# ---------------------------------------------------------------- namespaces
+namespaces:
+  cilium: kube-system
+  rook: rook-ceph                 # ceph/csi/values.yaml hardcodes the driver names
+                                  # as rook-ceph.*.csi.ceph.com — changing this
+                                  # means editing that file too.
+  monitoring: monitoring
+  npd: node-problem-detector
+  descheduler: kube-system        # observability/descheduler/overrides.yaml assumes this
+  gpuOperator: gpu-operator
+  networkOperator: nvidia-network-operator
+  lws: lws-system
+  ascendDevicePlugin: kube-system
+  llmRoute: llm-route
+  llmOperator: "llmscaleoperator-system"
+  llmslo: "llm-scaler"
+  llmCanaryOperator: llm-canary-operator-system
+  volcano: volcano-system         # ⚠️ not a free choice. scheduler/volcano/pdb.yaml
+                                  # names this namespace in every object, and the
+                                  # chart calls the scheduler ConfigMap
+                                  # <release>-scheduler-configmap — which is why
+                                  # the release name has to stay `volcano` too.
+  condition2taint: "node-problem-detector"
+  alertWebhook: "monitoring"
+
+# ---------------------------------------------------------------- what to install
+# Anything false here is rendered but not applied. Flip a flag and re-run
+# `helmfile diff` to see exactly what it would add.
+enabled:
+  # Cilium is still a bootstrap concern -- on a fresh cluster no node is Ready
+  # until the CNI lands, which is why it is the one release README step 6 waits
+  # for (`wait: true`) inside the same single apply. It defaults to true here,
+  # because the two states fail very differently:
+  #
+  #   true  on a cluster whose cilium this helmfile already owns: a sync reports
+  #         "cilium has been upgraded" and does not restart the agent pod
+  #         (verified by its age and restart count across the sync).
+  #   false once the CNI is in: the next full `helmfile sync` UNINSTALLS it.
+  #         Measured on a fresh cluster -- every pod then sits in
+  #         ContainerCreating with "unable to connect to Cilium agent" and the
+  #         node goes NotReady.
+  #
+  # The safe default is therefore the one that keeps the CNI. One case wants a
+  # look first: a cluster whose cilium was installed outside this helmfile, by
+  # hand or by the distribution. Run `helmfile -l name=cilium diff` there before
+  # the first apply, so you see what our values would change.
+  cilium: true
+
+  # Ceph, i.e. durable storage, is OFF by default: it needs a spare raw block
+  # device on at least three nodes, which most clusters arriving here do not
+  # have, and `storage.persistence: false` below means nothing asks for a PVC.
+  # Turn all three on -- plus `ceph.nodes` and `storage.persistence: true` -- for
+  # a cluster that has the disks.
+  rookCeph: false                 # operator; bundles the ceph-csi-operator subchart
+  rookCephCluster: false          # the CephCluster CR + the ceph-block StorageClass
+  cephCsiDrivers: false
+
+  kubePrometheusStack: true
+  llmAlerts: true                 # kubectl apply observability/prom-stack/alerts/ after the stack
+  llmDashboards: true             # kubectl apply -k observability/prom-stack/dashboards/ after the stack
+  nodeProblemDetector: true
+  descheduler: true
+
+  gpuOperator: true
+  dcgmCustomMetrics: true         # create the custom-dcgm-exporter-metrics ConfigMap
+                                  # from nvidia/custom-metrics.csv before gpu-operator
+                                  # syncs — nvidia/overrides.yaml sets config.create=false
+                                  # and points at that name, so without it dcgm-exporter
+                                  # comes up with no metric list.
+  networkOperator: true
+  # Ascend NPU device plugin. Off unless the cluster actually has an Ascend node
+  # prepared per docs/add-ascend-node.md — the DaemonSet targets
+  # accelerator=huawei-Ascend910 and would otherwise just sit with no node to run on.
+  ascendDevicePlugin: false
+  # The NicClusterPolicy is per-fabric hardware config (rdmaSharedDevicePlugin
+  # selectors, optionally the DOCA/OFED driver). Applying the repo's copy blind on
+  # a cluster whose HCAs differ is worse than not applying it, so this is opt-in.
+  nicClusterPolicy: false
+
+  lws: true
+
+  openresty: true
+  bodylog: true
+  bodylogExporter: true
+  autoconfig: true
+
+  llmOperator: true
+  llmslo: true
+  # Not published outside, so they are off by default and switched on
+  # explicitly by a cluster that has them.
+  llmCanaryOperator: false
+
+  condition2taint: false
+  alertWebhook: false
+
+  volcano: true
+  volcanoPdb: true                # the chart ships no PodDisruptionBudgets at
+                                  # all; scheduler/volcano/pdb.yaml adds one per
+                                  # component, applied after the release syncs.
+
+# ---------------------------------------------------------------- cilium
+# Rendered by cni/overrides.yaml.gotmpl. Only the keys that legitimately differ
+# per cluster live here; the stack-wide decisions (kubeProxyReplacement, the
+# Hubble metric set, the envoy connection ceilings) are in the template.
+cilium:
+  clusterName: kubernetes         # must be unique per cluster if they ever peer
+  # ⚠️ Cluster Mesh: this cluster still has NO clusterId, so it cannot join a mesh
+  #    (0 means "not meshed"). b300 has already taken id 2; uncomment id 1 here
+  #    before peering. Unlike on b300, this is a live cluster — setting cluster.id
+  #    recomputes every security identity, so do it in a window.
+  # clusterId: 1
+  # This cluster's apiserver address -- the kubeadm controlPlaneEndpoint, or the
+  # control-plane node's IP. Required with kubeProxyReplacement and impossible to
+  # default, so it is empty here and each environment sets its own; the values
+  # template refuses an empty one and names the file to set it in.
+  k8sServiceHost: ""
+  k8sServicePort: 6443
+  podCIDR: 192.168.0.0/16         # = the kubeadm podSubnet for this cluster
+  routingMode: tunnel
+  tunnelProtocol: vxlan
+  gatewayAPI: true
+  operatorReplicas: 1
+
+  # Ask for Hubble/Envoy/operator ServiceMonitors (and Hubble OpenMetrics).
+  # ⚠️ The chart hard-fails at template time on these unless
+  #    monitoring.coreos.com/v1 already exists, so this must be false on a
+  #    cluster that has not installed kube-prometheus-stack yet. That is the
+  #    reason cilium is installed alone, first — see docs/helmfile-deploy.md.
+  serviceMonitors: true
+  prometheusRelease: kube-prometheus-stack   # the label the ruleSelector matches
+
+  # One agent at a time on upgrade. Off here because on a cluster still coming up
+  # the rollout stalls on any node that is not Ready and blocks the DaemonSet.
+  rollingUpdate: false
+  # envoyTerminationGracePeriodSeconds: 600
+
+# ---------------------------------------------------------------- ceph topology
+# Rendered by ceph/ceph-cluster-override.yaml.gotmpl.
+#
+# ⚠️ These are real node names and real block devices. Rook formats what it is
+#    pointed at. `nodes` must name Kubernetes node names (kubectl get nodes), and
+#    each device must be the OSD disk — NOT the node's k8s_data_disk from
+#    inventory.ini, which already carries /var/lib/{docker,containerd}.
+ceph:
+  toolbox: true
+  dashboardSsl: false
+  deviceFilter: "^nvme[0-9]+n1$"
+  osdMemoryLimit: "8Gi"
+  # Empty here on purpose: a node list is a property of one cluster and nothing
+  # sensible can be defaulted. With rook-ceph-cluster enabled and this empty, the
+  # values template fails and names the environment file to set it in, which is
+  # better than a CephCluster with zero OSDs that never converges.
+  #
+  #   nodes:
+  #     - name: "node-1"            # a kubernetes node name (kubectl get nodes)
+  #       devices:
+  #         - name: "/dev/nvme1n1"  # the OSD disk, NOT the node's data disk
+  #     - name: "node-2"
+  #       devices:
+  #         - name: "/dev/nvme0n1"
+  nodes: []
+
+  # Unset to skip the dashboard HTTPRoute entirely.
+  dashboardHost: ceph-dashboard.example.internal  # TODO: set to your DNS name
+  dashboardGateway: internal      # a Gateway of this name in namespaces.rook
+
+# The StorageClass the monitoring stack's PVCs ask for -- Prometheus,
+# Alertmanager, Thanos Ruler and Grafana. It defaults to the one the rook
+# release above creates, so a cluster that runs its own storage instead only
+# has to name it here.
+#
+# ⚠️ It must be a StorageClass that EXISTS. A PV with a matching
+#    `storageClassName` string is not enough: prometheus-operator looks the
+#    class up before it creates the StatefulSet, and without it writes
+#    `storage class "ceph-block" does not exist` into the Prometheus CR and
+#    creates nothing -- while helm still reports the release deployed. The
+#    release's presync hook checks for the class so that failure is loud.
+storage:
+  className: ceph-block
+
+  # On by default: Prometheus keeps its metrics, Alertmanager its silences and
+  # notification state, Grafana its sqlite, across a restart or a reschedule.
+  #
+  # Off renders no storageSpec at all, which is what makes each of them fall
+  # back to an emptyDir -- a cluster with no storage backend can then run the
+  # monitoring stack, at the price of losing that state whenever a pod moves.
+  # Grafana's dashboards are the exception: the sidecar provisions them from
+  # ConfigMaps, so only what was saved by hand in its UI goes.
+  #
+  # The switch works in both directions, verified on a live cluster. Turning it
+  # off and applying leaves the PVCs behind (nothing deletes them); turning it
+  # back on and applying re-attaches the SAME claims, because the names are
+  # derived from the release, so the data that was there before the detour is
+  # still there after it.
+  #
+  # ⚠️ OFF by default, which means emptyDir: **metrics, alert state and anything
+  #    saved in Grafana's UI are lost whenever one of those pods restarts or
+  #    moves**. That is the right default because it needs nothing from the
+  #    cluster, and a stack that silently waits forever for a StorageClass that
+  #    will never exist is worse. For durable storage, give the cluster a
+  #    StorageClass -- `enabled.rookCeph*` above and `ceph.nodes`, or your own --
+  #    and set this true.
+  persistence: false
+
+# ---------------------------------------------------------------- model services
+# The inference workloads themselves are ordinary helmfile releases too, but
+# they are NOT configured here: which models a site runs is not a property of
+# its cluster, and it changes far more often. They come in on the command line
+# instead, from a file of their own:
+#
+#   make helm-apply SELECTOR=tier=model MODELS=models/examples/sglang-qwen.yaml
+#
+# models/examples/sglang-qwen.yaml is a complete, working one, and the format
+# is documented in it. Nothing is installed without such a file, exactly as
+# before they were covered here at all.
+#
+# What the repo does supply is their images: the hang-watcher, CART and CART's
+# two sidecars are ours and are named under `registry` (models/images.yaml.gotmpl),
+# and `registryMode` reaches the engine as well -- which is the reason these
+# releases moved in here, since an air-gapped site used to have to name their
+# images by hand in offline/engine-images.txt.
+
+
+# bodylog + bodylog-exporter run on ONE node and share a directory on its local
+# disk; both values templates read these, and a mismatch captures nothing.
+# autoconfig's own metrics (controller-runtime: reconcile counts, workqueue
+# depth). The chart renders a ServiceMonitor, which needs
+# monitoring.coreos.com/v1 -- so this follows `enabled.kubePrometheusStack` when
+# left empty, the same shape as llmGateway.serviceMonitor below.
+#
+#   ""     follow enabled.kubePrometheusStack (default)
+#   true   this cluster has its own prometheus-operator
+#   false  render none
+autoconfig:
+  serviceMonitor: ""
+
+llmGateway:
+  node: ""             # a `kubectl get nodes` name on this cluster
+  hostPath: ""
+  memoryLimit: 64Gi
+  serviceMonitor: true            # the exporter's; needs monitoring.coreos.com/v1
+
+# Cluster label put in front of every alert message by alert-webhook.
+# Required when enabled.alertWebhook is true; each environment sets its own.
+name: ""
+
+llmCanaryOperator:
+  image: {}
+
+# alert-webhook's notification targets, as a map (WEBHOOK_URL,
+# WEBHOOK_URL_BUSINESS, ...). Empty = alert-webhook refuses to render; set it
+# per environment or switch enabled.alertWebhook off.
+alertWebhook:
+  urls: {}
+  # A voice-call endpoint for `severity: critical` alerts. EMPTY BY DEFAULT, and
+  # an empty value means the Alertmanager config carries no call webhook at all
+  # -- so a cluster installed from this repo does not phone anyone until someone
+  # decides it should.
+  #
+  # It used to be hardcoded in observability/prom-stack/overrides.yaml.gotmpl,
+  # which meant every cluster dialed, test and rehearsal clusters included.
+  # Measured: a rehearsal cluster called the on-call rota over
+  # etcdInsufficientMembers -- over an etcd it was tearing down on purpose -- and
+  # it was answered. A rehearsal cluster waking a person is the whole argument
+  # for the default being off.
+  #
+  #   phoneUrl: http://<voice-call-gateway>:5001/alertmanager
+  phoneUrl: ""
+

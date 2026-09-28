@@ -1,0 +1,108 @@
+# Volcano 的 helm values —— 取代原来「下载 manifest + ha.py 改写」那条路。
+#
+# 为什么用 chart:官方 chart 已经把 ha.py 做的事全部参数化了(replicas /
+# leader-elect / resources),再自己改写 manifest 属于重复造轮子,而且版本升级要
+# 重新验证改写脚本。chart 唯一没覆盖的是 PDB(仍由同目录 pdb.yaml 提供)和
+# topologySpreadConstraints(这里用 podAntiAffinity 表达同样的打散意图)。
+#
+# Images: nodes go through the containerd certs.d mirror (registry-mirror/),
+# so docker.io resolves fine -- same as every other docker.io image, no reason
+# to give volcano its own environment value. To pull from a private registry instead,
+# override image_registry locally (an internal registry; already retagged
+# under volcanosh/, matching upstream's path).
+basic:
+  image_tag_version: "v1.15.1"
+  # Defaults to the chart's own upstream values (docker.io + volcanosh/*); not overridden.
+
+custom:
+  # admission 是 gang 打开后最要命的组件:validatepodgroup 的 failurePolicy 是
+  # Fail,它挂了 PodGroup 就建不出来,全集群 LWS reconcile 停摆。它是普通 webhook
+  # server,两副本同时服务;scheduler / controllers 是单活设计,靠选主做主备。
+  admission_replicas: 2
+  scheduler_replicas: 2
+  controller_replicas: 2
+  leader_elect_enable: true
+
+  scheduler_resources:
+    requests: {cpu: 500m, memory: 512Mi}
+  controller_resources:
+    requests: {cpu: 200m, memory: 256Mi}
+  admission_resources:
+    requests: {cpu: 100m, memory: 128Mi}
+
+  # 尽量把【同一组件】的两个副本放在不同机器上。
+  # 语义要对齐原来 ha.py 加的 topologySpreadConstraints:选择器只圈自己这个组件的
+  # pod,不是"所有带 app 标签的 pod" —— 后者会让六个 volcano pod 互相排斥,范围比
+  # 原来宽。两者都是软约束,放不下照样起。
+  # 注意 controllers 的 pod 标签是 volcano-controller(单数),跟 Deployment 名不一样。
+  scheduler_affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels: {app: volcano-scheduler}
+  controller_affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels: {app: volcano-controller}
+  admission_affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels: {app: volcano-admission}
+
+  scheduler_config_override: |
+    # No `preempt`. Volcano can do gang-aware preemption, which is the thing
+    # scheduler/priority-classes.yaml says a bigger priority number cannot buy --
+    # but turning it on is a global behaviour change and needs the inference
+    # tiers to stop being preemptionPolicy: Never first. Not wired up.
+    actions: "enqueue, allocate, backfill"
+    tiers:
+    - plugins:
+      - name: priority
+      - name: gang
+        enablePreemptable: false
+      - name: conformance
+    - plugins:
+      - name: overcommit
+      - name: drf
+        enablePreemptable: false
+      - name: predicates
+      - name: proportion
+      # nodeorder's defaults score toward SPREADING, which is the opposite of what
+      # binpack below is for, and they cancel out if left alone. Only the affinity
+      # term is kept.
+      - name: nodeorder
+        arguments:
+          leastrequested.weight: 0
+          mostrequested.weight: 0
+          balancedresource.weight: 0
+          nodeaffinity.weight: 1
+      # THE PART THAT IS EASY TO GET WRONG: binpack defaults to scoring cpu and
+      # memory only. `binpack.resources` is empty out of the box, so an
+      # unconfigured Volcano is blind to nvidia.com/gpu and spreads GPU pods
+      # across nodes -- worse fragmentation than the binpack-scheduler profile it
+      # replaced, not better. Same failure mode as kube-scheduler's own default,
+      # which is why that profile had to name the resource explicitly too.
+      #
+      # cpu/memory are zeroed because these pods mostly do not request them; a
+      # score built on absent requests is noise.
+      #
+      # Argument names verified against the vc-scheduler binary; sandbox evidence
+      # in the vllm repo, tools/kueue-gang/{35,36}_test_volcano_binpack*.sh.
+      - name: binpack
+        arguments:
+          binpack.weight: 10
+          binpack.cpu: 0
+          binpack.memory: 0
+          binpack.resources: nvidia.com/gpu
+          binpack.resources.nvidia.com/gpu: 10

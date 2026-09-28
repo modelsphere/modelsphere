@@ -1,0 +1,37 @@
+# The inference ENGINE images a bundle should carry.
+#
+# Everything else in the bundle is read out of a helmfile render. The engine is
+# not: a model service comes in from a `MODELS=` file on the command line (see
+# models/examples/sglang-qwen.yaml), and a bundle is built before anyone knows
+# which models the site will run -- so no render names it and no rule can infer
+# it. Name it here instead.
+#
+# The four sidecars around it -- hang-watcher, CART and CART's two -- need no
+# entry: the bundle reads those out of the engine chart's own values.yaml --
+# hang-watcher and CART at the versions that chart pins, CART's ha and reload at
+# versions.autoconfig from the environment, since those two are autoconfig's --
+# and `registryMode` places them under `registry` like every other image of ours.
+#
+# Copy to offline/engine-images.txt and edit. An address here does two things:
+# the bundle carries the image, and its host joins mirror-hosts.txt, so under
+# `registryMode: mirror` an air-gapped node redirects it instead of reaching
+# that host for real.
+#
+# NOT taken from the charts' defaults on purpose. They are
+# `lmsysorg/sglang:latest` and `vllm/vllm-openai:latest-cu129-ubuntu2404`:
+# floating tags that match nothing any cluster here runs.
+#
+# ⚠️ Size. One engine image is around 19 GB compressed -- bigger than the rest
+#    of the bundle put together (17 GB for 68 images). Name only the engines
+#    that site will actually run.
+#
+# Model weights are not here either, and are not a job for this bundle.
+
+# The official images, pinned -- what models/examples/sglang-qwen.yaml asks for:
+# lmsysorg/sglang:v0.5.15-cu129
+# vllm/vllm-openai:v0.21.0-cu129
+
+# A site that builds its own engine images names them here instead, with the
+# same tags the model entry asks for:
+# <your-registry>/sglang:v0.5.15-cu129
+# <your-registry>/vllm/vllm-openai:v0.21.0-cu129

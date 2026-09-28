@@ -1,0 +1,8 @@
+# The image addresses for llm-slo-decision-gen. Two images, one chart. See the
+# note in observability/alert-webhook/images.yaml.gotmpl.
+decisionGen:
+  image:
+    repository: {{ .Values.registry }}/llm-scaler-decision-gen
+sloApi:
+  image:
+    repository: {{ .Values.registry }}/llm-slo-api

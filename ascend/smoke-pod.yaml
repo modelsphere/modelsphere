@@ -1,0 +1,28 @@
+# End-to-end check that an Ascend card can actually be used from a pod:
+# the device plugin allocates it, ascend-docker-runtime mounts /dev/davinci* and
+# the driver, and npu-smi inside the container sees exactly the cards requested.
+#   kubectl apply -f ascend/smoke-pod.yaml && kubectl logs -f ascend-smoke
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ascend-smoke
+spec:
+  restartPolicy: Never
+  nodeSelector:
+    accelerator: huawei-Ascend910
+  tolerations:
+    - key: huawei.com/Ascend910
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: smoke
+      image: swr.cn-south-1.myhuaweicloud.com/ascendhub/ascend-k8sdeviceplugin:v7.1.RC1
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "ASCEND_VISIBLE_DEVICES=$ASCEND_VISIBLE_DEVICES"
+          ls -l /dev/davinci* 2>&1
+          npu-smi info 2>&1 | head -20
+      resources:
+        limits:
+          huawei.com/Ascend910: 1

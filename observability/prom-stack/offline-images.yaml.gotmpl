@@ -1,0 +1,21 @@
+# Air-gapped image addresses for the kube-prometheus-stack release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# One line, because this chart has a real lever: global.imageRegistry replaces
+# the registry segment of every image it renders, subcharts (grafana,
+# kube-state-metrics, prometheus-node-exporter) included -- and those subcharts
+# keep their own values, so the parent's per-component `registry:` keys never
+# reached them. Dropping the upstream host is exactly what this key does, which
+# is the layout every address here uses.
+#
+# This replaced twenty per-component `registry:` keys that all carried the same
+# value. Verified equivalent, not assumed: rendering the release before and
+# after produced the same twelve image references across the same nine
+# addresses.
+#
+# ⚠️ Do not copy this shape to the other offline-images files. global.imageRegistry
+# is a convention of this chart family, not a Helm feature -- rook, npd, lws,
+# descheduler, gpu-operator and network-operator have no such key, which is why
+# they name each `repository:` in full.
+global:
+  imageRegistry: {{ .Values.registry }}

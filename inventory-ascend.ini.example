@@ -1,0 +1,35 @@
+# Inventory for a node that is not Ubuntu/amd64/NVIDIA — a vendor OS with its own
+# accelerator, where apt is not available. Copy, fill in, and pass with INVENTORY=
+# or -i. Full procedure: docs/add-ascend-node.md
+#
+# Everything the playbook does after the install is shared with every other node;
+# only these variables differ.
+
+[ascend]
+# Name the node for what it is, not what the vendor called the host -- this is
+# the name it registers in the cluster under.
+# <accelerator>-<last IP octet>  ansible_host=<ip>
+ascend910b-207  ansible_host=10.0.0.207
+
+[ascend:vars]
+# Release binaries from dl.k8s.io instead of apt — works on any distro and arch.
+k8s_install_method=binary
+# Must match the cluster's version.
+k8s_version=v1.36.3
+# Registers the vendor container runtime as containerd's default, so the device
+# plugin's pods get /dev/* and the driver libraries mounted. none | ascend
+k8s_accel_runtime=ascend
+# ansible-core 2.18 refuses a target Python older than 3.8, which a vendor OS may
+# not have. Install a self-contained one rather than replacing the system python —
+# the vendor's tooling is built against that. See docs/add-ascend-node.md.
+ansible_python_interpreter=/opt/ansible-python/bin/python3
+
+[all:vars]
+ansible_user=root
+# Needed on our networks: github is not reachable directly from the node, so
+# without this the crictl download just times out. dl.k8s.io does resolve
+# directly, so kubeadm/kubelet/kubectl would install and only crictl would fail.
+# The play exports these to every task and curl picks them up -- same as
+# inventory-test.ini and inventory-b300.ini already do.
+http_proxy=http://<proxy>:<port>
+https_proxy=http://<proxy>:<port>

@@ -1,0 +1,89 @@
+# 共享 PostgreSQL(HA:1 主 2 备,自动故障转移 + PITR 备份)。
+#
+# 对外连接点是三个 Service,按用途选,不要直连 Pod:
+#   pg-rw  主库,读写   ← 业务用这个
+#   pg-ro  只读副本轮询
+#   pg-r   任意实例轮询
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: cnpg
+spec:
+  # 显式钉住大版本。不写的话用 operator 内置的默认值(1.30.0 是 18.4),而这个默认值
+  # 会随 operator 升级而变 —— 数据库大版本不该被动跟着 operator 跳。
+  #
+  # 镜像直接从 ghcr 拉:节点上 containerd 对 ghcr.io 配了 pull-through 缓存
+  # (/etc/containerd/certs.d/ghcr.io -> the pull-through cache in registry-mirror/),
+  # 实测拉这个镜像 4.6s。不需要往私有 registry 搬一份 —— 那样每次升版本都得手工同步。
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.10-standard-trixie
+
+  # 1 主 + 2 备。CNPG 的选主走 k8s API,不需要额外的 etcd/Patroni。
+  # 用 3 而不是 2:2 副本时任何一台节点维护都会让集群暂时没有可提升的备库。
+  instances: 3
+
+  # 让 CNPG 建出来的 PodMonitor 带上 kube-prometheus-stack 的 selector 标签,
+  # 否则指标建了也不会被抓(同 overrides.yaml 里那条注释)。
+  inheritedMetadata:
+    labels:
+      release: kube-prometheus-stack
+
+  # 小版本升级/配置变更由 operator 滚动做:先滚备库,再处理主库。
+  primaryUpdateStrategy: unsupervised
+  # 主库那一步用 switchover 而不是默认的 restart。
+  #   restart    原地重启主库容器,cnpg-rw 仍指着那个正在重启的 pod
+  #              —— 实测业务侧断流 19.2 秒
+  #   switchover 先把一个备库提升、Service 切过去,再去重启原主
+  #              —— 实测 9.0 秒
+  # 滚备库阶段两者都是零影响(业务只连 cnpg-rw)。
+  #
+  # 9 秒仍不是零:PostgreSQL 单主,切主必然有写入空窗,再加上改 Service endpoints
+  # 和 kube-proxy 生效的时间。要压到接近零得在应用侧做(连接池+重试,或前面挂
+  # CNPG 的 Pooler/PgBouncer 吸收重连),不是数据库这边能单独解决的。
+  primaryUpdateMethod: switchover
+
+  bootstrap:
+    initdb:
+      database: minimaxh3
+      owner: h3
+      # 不指定 secret 的话 CNPG 会自动生成 <cluster>-app,名字由它定。这里显式指定,
+      # 是为了让 Secret 名等于 RW Service 名(见下)。
+      #
+      # 这个 Secret 不进 git,由 `make app-secret` 从老 chart 的 Secret 复制过来。
+      # ⚠️ 只在**首次 initdb** 时生效;库已经建好之后改它不会改动库里的密码。
+      #
+      # 名字**故意等于 RW Service 名**(cnpg-rw)。H3 chart 的 database.fromSecret.name
+      # 一个字段同时当「去哪读密码」和「连哪个主机」用(见它 _helpers.tpl 的
+      # databaseUrl),两者不同名的话 values 怎么填都拼不出正确的 DSN。同名之后
+      # H3 侧只要 name=cnpg-rw / passwordKey=password,一行 chart 代码都不用改。
+      # (CNPG 自己建的是 cnpg-{ca,replication,server},不占用 -rw 这个名字。)
+      secret:
+        name: cnpg-rw
+
+  storage:
+    # 50Gi:测试集群 1923 个任务用掉 2.1GB(约 1.1 MB/任务,任务表内联了大字段),
+    # 50Gi ≈ 45000 个任务。ceph-block 的 allowVolumeExpansion=true,不够可以在线扩
+    # (改这里的数字再 apply,CNPG 逐个滚动扩,业务不断);但别等写满 ——
+    # PostgreSQL 数据盘满会直接停止写入。
+    size: 50Gi
+    storageClass: ceph-block
+  # WAL 单独一块盘。跟数据盘混在一起时,WAL 突增(比如一次大批量写)会把数据盘撑满,
+  # 而 PostgreSQL 数据盘满 = 直接停止写入。
+  walStorage:
+    size: 10Gi
+    storageClass: ceph-block
+
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits:   {cpu: "2",  memory: 2Gi}
+
+  # ── 备份:连续 WAL 归档 + 基础备份 → Ceph RGW ────────────────────────
+  # Ceph 的磁盘冗余防得住掉盘掉机,防不住误删/写坏 —— 三个副本会一起把错误写下去。
+  # PITR 是唯一的退路。
+  #
+  # 具体的桶和凭证在 objectstore.yaml。这里只声明「用哪个插件、谁负责归档 WAL」。
+  # isWALArchiver 必须有,否则只有基础备份、没有连续归档 = 没有 PITR。
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: cnpg-backup-store

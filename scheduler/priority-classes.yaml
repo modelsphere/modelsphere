@@ -1,0 +1,92 @@
+# 推理栈的 PriorityClass —— 集群级三档。先 apply 本文件,业务 manifest 才能引用类名:
+# 引用一个不存在的 PriorityClass,pod 会在准入阶段被 API server 直接拒掉,不是 Pending。
+#
+#   inference-prod                100000  线上推理(kimi-k2.5 的 LWS group、modelforge)
+#   inference-canary               10000  灰度 / 影子流量,真的可以先牺牲的那一档
+#   inference-canary-preempting    10000  同档但会抢占,只给单 pod 的部署
+#   batch-preemptible                -10  离线批任务,低于默认的 0,容量紧张时先出局
+#
+# 【线上服务一律用 inference-prod,包括 modelforge】。modelforge 在路由拓扑里是兜底
+#(fallback)角色,但它本身是线上服务,不是低一档的东西。低一档叫 canary 而不是
+# fallback,就是为了不和那个部署撞名 —— 这一档指的是灰度、影子流量这类可以先牺牲的负载,
+# 目前没有工作负载在用。
+#
+# 命名约定:value 是重要性档位,类名后缀 -preempting 表示"调度不上时会杀低优先级 pod 腾
+# 地方"。同一档的两个类只差这一件事,workload 改一行 priorityClassName 就能切换行为 ——
+# 这正是要分成两个类的原因:preemptionPolicy 建后不可改,不能就地翻。
+#
+# 优先级买到的是两件事:调度队列顺序(高优先的 pod 先被考虑,先拿到腾出来的容量),
+# 以及容量不足时"谁先出局"(抢占的受害者选择、kubelet 节点压力驱逐的排序)。
+# 它【不】做碎片整理:抢占只在一台节点上杀低优先级 pod 腾地方,从不重排已经在跑的 pod,
+# 集群里没有更低优先级的东西可杀时,它什么也不做。
+#
+# 为什么 inference 两档默认是 preemptionPolicy: Never —— 抢占是 per-pod 的,对 LWS
+# group 无感知。kimi-k25 一个 group 是 leader + worker 各 8 卡跨两台机:leader 在 A 机
+# 抢赢、worker 在 B 机抢输,结果是杀了别人的 pod、自己占着 8 张卡起不来,两边都亏。
+# Never 只关掉"去抢别人"这半边 —— 它自己照样能被更高 value 的 pod 抢,排队顺序也照常
+# 生效。真要 gang 式抢占得上 gang 调度器(volcano / koordinator),不是靠这里的数字。
+# 单 pod 的部署没有这个问题(抢到一台机就能服务),所以有 -preempting 变体。
+# 注意变体挂在 canary 档:单 pod 的【线上】服务(modelforge)要抢 batch 的话,得照同样的
+# 命名约定另加 inference-prod-preempting,现在没建。
+#
+# 数值约定:用户自定义类上限 1e9,档位之间留空(万/千的量级),以后插新档不用重排。
+# 集群自带的 system-cluster-critical(2e9)与 system-node-critical(2e9+1000)留给基础
+# 设施(cilium、ceph-csi、gpu-operator …),业务 pod 不要用 —— 这也是这里最高只到 1e5 的
+# 原因:推理再重要,也不该抢 CNI 和存储的地方。
+#
+# globalDefault 三个都是 false。不写 priorityClassName = 优先级 0,正好夹在 fallback 与
+# batch 之间,对"没标注过的东西"是个合理位置;globalDefault 一改影响全集群新建 pod,
+# 别在这个文件里动。
+#
+# value 与 preemptionPolicy 建后不可改,调档要删了重建。删除 PriorityClass 不影响已在跑
+# 的 pod(优先级在准入时就写进了 pod.spec),但此后引用它的新 pod 会被拒 —— 所以重建要快,
+# 或者趁没有滚动更新的时候做。
+#
+#   kubectl apply -f scheduler/priority-classes.yaml
+#
+# 用法(本文件不碰任何工作负载,各自引用):
+#   kimi-k2.5/kimi-lws.yaml   leaderTemplate / workerTemplate 里的 spec.priorityClassName
+#   helm-charts/charts/sglang values 顶层 priorityClassName,注入 Deployment pod 和 LWS
+#                             的 leader/worker;cart 等旁路组件目前不吃这个字段
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: inference-prod
+value: 100000
+# 排队优先、不抢占;受害者顺序里排在最后
+preemptionPolicy: Never
+globalDefault: false
+description: "线上推理实例(LWS group / 单机 Deployment)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: inference-canary
+value: 10000
+# 灰度 / 影子流量:容量不足时让位给线上档,自己不抢别人
+preemptionPolicy: Never
+globalDefault: false
+description: "灰度 / 影子推理实例,容量不足时让位给 inference-prod"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: inference-canary-preempting
+value: 10000
+# 与 inference-canary 同档,唯一区别是调度不上时会杀 batch-preemptible 腾地方。
+# 只给【一个 pod 一台机就能服务】的部署用 —— 单 pod 抢占是原子的,抢到就能起。
+# 多机 LWS group 不要用:抢赢一半是杀了别人自己还起不来,两头亏。
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "单 pod 的灰度推理实例:可抢占 batch 腾出 GPU"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-preemptible
+value: -10
+# 不写 preemptionPolicy = 默认的 PreemptLowerPriority;在最底一档下面没人可抢,
+# 写不写都一样,留默认是为了别让人误以为这里有什么讲究。
+globalDefault: false
+description: "离线 / 批任务:可被抢占,容量紧张时第一个出局"

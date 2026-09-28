@@ -1,0 +1,290 @@
+# LLM 推理栈的业务告警规则。
+#
+# Migrated from the alert rules of a standalone monitor, keeping its thresholds:
+#   alert_err_rate: 5   alert_ttft: 80   alert_model_tps: 20   gpu_temp_alert: 85
+#   例外:5xx 错误率放宽到 10%(monitor 那 5% 是 4xx+5xx 混合口径,本规则只算 5xx)
+#
+# ⚠️ metadata.labels 必须带 release: kube-prometheus-stack ——
+#    本集群 Prometheus 的 ruleSelector 就是 matchLabels{release: kube-prometheus-stack},
+#    缺了这个 label 的 PrometheusRule 会被【静默忽略】:kubectl get 看得到,但 Prometheus 不加载。
+#    验证方式:apply 后去 Prometheus 的 /rules 页面确认规则出现,别只看 kubectl。
+#
+# severity 决定通知渠道(见 overrides.yaml 的 alertmanager.route):
+#   critical → receiver phone   warning/info → receiver all
+#
+# channel 决定进哪个 IM 群:alert-webhook 按这个 label 把告警分流到不同的范式+ 端点。
+#   本文件【按规则性质分成两档,不是整个文件一档】:
+#     llm-serving.rules                  → business  服务 SLO:副本、5xx、TTFT、TPS、流量
+#     llm-gateway.rules / llm-gpu.rules  → infra     网关有无健康后端、autoconfig、GPU 温度
+#   分档依据是"收到的人能不能处理":business 群关心服务还在不在服务,infra 群关心承载它的
+#   东西。同一次故障两个群都会收到自己那一半,这是有意的,不是重复。
+#   分流发生在 webhook 内部,Alertmanager 的 route 树不参与 —— 上面 phone / 语音电话那条
+#   路径完全不受影响。
+#   ⚠️ 新增规则记得带上 channel:漏了不报错,只会落到 webhook 的兜底路由进大群。
+#
+# ⚠️ monitor 侧的 auto_restart(判定异常后自动重部/重启)【没有】迁移过来 ——
+#    Alertmanager 只发通知、不执行动作。迁移期间请保留 monitor 继续运行。
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llm-serving-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ---------------- 服务层(数据源:bodylog exporter)----------------
+    - name: llm-serving.rules
+      interval: 30s
+      rules:
+        - alert: LLMServiceNoReadyReplica
+          expr: bodylog_service_replicas_ready{service!="unknown"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 无就绪副本"
+            description: "{{ $labels.service }} 的就绪副本数为 0,该服务已不可用。"
+
+        - alert: LLMServiceDegraded
+          expr: |
+            bodylog_service_replicas_ready{service!="unknown"}
+              < bodylog_service_replicas{service!="unknown"}
+          for: 15m
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 副本降级"
+            description: "就绪 {{ $value }} 少于期望副本数,已持续 15 分钟(滚动升级期间短暂降级属正常,故 for=15m)。"
+
+        # 只算 5xx:4xx 含 400 客户端坏请求 / 499 客户端断连 / 429 限流,不反映服务健康
+        - alert: LLM5xxRateHigh
+          expr: |
+            sum by(service)(rate(bodylog_requests_total{status_class="5xx",backend!="(none)",service!="unknown"}[5m]))
+              / clamp_min(sum by(service)(rate(bodylog_requests_total{backend!="(none)",service!="unknown"}[5m])), 0.001)
+              > 0.10
+          for: 5m
+          labels:
+            severity: critical
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 5xx 错误率 {{ $value | humanizePercentage }}"
+            description: "服务端错误率超过 10%,已持续 5 分钟。monitor 的 alert_err_rate 是 5,这里放宽到 10 —— monitor 那个阈值算的是 4xx+5xx 混合口径,本规则只算 5xx,同样的数字会严得多。"
+
+        # native histogram(裸指标名),不用经典 _bucket ——
+        # 经典桶上界 10s,TTFT 超过就全挤进 +Inf,分位数会被死死钉在 10,长尾不可见。
+        # 阈值 2026-08-26 由 80s 单档改为 30s(warning)/ 55s(critical)两档。
+        # ⚠️ 实测触发率(7d 回放,native 口径):>30s → kimi-k25 25.9% / modelforge-01 14.5%;
+        #    >55s → 6.9% / 3.2%。也就是说 warning 一天里有约 6 小时挂着。分布本身极度长尾
+        #    (7d 中位数只有 4.56s,p95 达 50s、最大 71s)—— 问题是偶发长尾而非整体慢,
+        #    30s 这条线正好压在长尾活跃区。若嫌吵,应按 service 分别定阈值而不是统一放宽。
+        - alert: LLMTTFTHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum by(service)(rate(bodylog_ttft_seconds{service!="unknown"}[5m]))) > 30
+          for: 15m
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} TTFT p95 {{ $value | humanizeDuration }}"
+            description: "首 token 时间 p95 超过 30s,已持续 15 分钟。"
+        - alert: LLMTTFTHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum by(service)(rate(bodylog_ttft_seconds{service!="unknown"}[5m]))) > 55
+          for: 15m
+          labels:
+            severity: critical
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} TTFT p95 {{ $value | humanizeDuration }}"
+            description: "首 token 时间 p95 超过 55s,已持续 15 分钟。"
+
+        # 出词速率过低。带流量门槛,避免服务空闲时样本太少导致的假告警
+        # (对应 monitor 的 alert_model_min_samples)。
+        #
+        # ⚠️ 取的是**低端**分位数(0.20)而不是 0.80 —— 这个指标**越大越好**,慢请求在低端。
+        #    0.20 读作「80% 的请求不低于此值」,与上面 TTFT 的「95% 的请求不慢于此值」语义
+        #    对称(Grafana 面板同一套约定:选 pN 内部取 1-N)。用 0.80 会变成「连最快的 20%
+        #    都低于阈值才报」,等于永不触发。
+        # ⚠️ 必须用 native histogram(裸指标名)。经典 _bucket 的上界只到 400 tok/s、TTFT 更是
+        #    只到 10s —— 用经典桶写 >30s 的规则**永远不会触发**(分位数被钉死在 10)。
+        # ⚠️ 2026-09-14 降噪:分位数 0.05 → 0.20(「95% 保障」→「80% 保障」),rate 窗口
+        #    5m → 10m,critical 的 for 5m → 10m。阈值(20 / 10)保持不变。
+        #
+        #    改之前是【常亮】:modelforge-01-glm 过去 24h 有 87.5% 的时间满足 q0.05 < 20。
+        #    根因不是后端故障,是低尾被 prefill 污染 —— 本指标分母是请求总时长 rt
+        #    (2026-09-07 口径变更时从 rt-frt 改回 rt,为的是让非流式请求也能纳入),长输入
+        #    请求的 rt 几乎全是 prefill。实测低尾请求 prompt_tokens 中位 166k、frt/rt 占比
+        #    96%,而扣掉 prefill 后的真实解码速率中位是 131 tok/s —— 完全健康。
+        #    也就是说 q0.05 量的根本不是解码快慢。
+        #
+        #    24h 实测触发时长占比(modelforge-01-glm;fallback-modelforge-01 全档均 0.0%):
+        #        分位数/窗口        <20      <10
+        #        q0.05 rate[5m]    87.5%    60.8%     ← 改前
+        #        q0.20 rate[5m]    32.6%     5.2%
+        #        q0.20 rate[10m]   22.9%     2.8%     ← 改后
+        #    rate 窗口拉长是为了压 5m 窗口的抖动:同一时刻 q0.20 在 [5m] 下是 45.9、[10m]
+        #    下是 31.6,短窗口会把瞬时的长 prefill 批放大成"劣化"。for 也统一成 10m,让两级
+        #    告警的确认时长一致(原来 critical 是 5m,比 warning 更容易被短暂下探触发)。
+        #
+        # ⚠️ 分位数与样本筛选都解决不了根本问题:低尾始终存在,统一阈值对 TP8×PP2 的万亿 MoE
+        #    (单流基线 35~70)和 TP=2 小模型(250)差一个数量级,对谁都不对。根治要么改成
+        #    per-service 阈值,要么换指标(流式用 completion_tokens/(rt-frt) 把 prefill 从
+        #    分母减掉;非流式 frt≈rt 无解,只能靠端到端 rt 兜底)。
+        #    已实测排除的其它降噪手段:按 frt 截断(只留 frt<=10s,p05 仅 6.1→10.8)、按
+        #    prompt_bucket 排除长输入(>=128k,p05 8.8→11.9)、按平均输出长度设闸门(无效,
+        #    平均输出 253~296 tok)、只保留慢请求(反向更糟,p05 降到 3.7)。
+        - alert: LLMOutputRateLow
+          expr: |
+            histogram_quantile(0.20,
+              sum by(service)(rate(bodylog_output_tok_per_second{service!="unknown"}[10m]))) < 20
+            and
+            sum by(service)(rate(bodylog_requests_total{backend!="(none)",service!="unknown"}[10m])) > 0.05
+          for: 15m
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 80% 保障出词速率仅 {{ $value | printf \"%.1f\" }} tok/s"
+            description: "有超过 20% 的请求解码速率低于 20 tok/s,已持续 15 分钟。注意两点:① 该指标受批处理并发摊薄——同一后端单请求可达 123 tok/s、14 并发时降到 20~30;② 分母是请求总时长(含 prefill),长输入请求会被系统性判低——实测 166k token 的输入 96% 的时间花在 prefill 上,扣掉后解码速率仍有 131 tok/s。低值未必是故障,先看并发和输入长度。"
+        - alert: LLMOutputRateLow
+          expr: |
+            histogram_quantile(0.20,
+              sum by(service)(rate(bodylog_output_tok_per_second{service!="unknown"}[10m]))) < 10
+            and
+            sum by(service)(rate(bodylog_requests_total{backend!="(none)",service!="unknown"}[10m])) > 0.05
+          for: 15m
+          labels:
+            severity: critical
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 80% 保障出词速率仅 {{ $value | printf \"%.1f\" }} tok/s"
+            description: "有超过 20% 的请求解码速率低于 10 tok/s,已持续 15 分钟。"
+
+        # 流量归零。补的是上面几条 SLO 告警的**盲区**:
+        # TTFT / OutputRate 都基于 histogram_quantile,窗口内没有样本时返回 NaN,而 PromQL 里
+        # NaN 参与比较结果为 false → series 被过滤 → 告警不触发。于是「服务彻底没流量了」和
+        # 「SLO 完全达标」在告警上长得一模一样,都是不报警 —— 真出事导致流量归零时,这些 SLO
+        # 告警反而最先沉默。实测各 service 有约 22% 的 5m 窗口是空的,盲区不小。
+        #
+        # 判据:近 5m 一个请求都没有,但近 6h 有过流量(后半句排除本来就闲置的服务)。
+        # 窗口取 5m 而非更长:实测 7d 回放下 5m/10m/15m 的触发率几乎一样
+        # (kimi-k25 43.1% / 42.4% / 41.7%),拉长窗口并不能过滤掉"天然空档"这类误报,
+        # 只是白白慢 10 分钟检出。
+        # 不用 bodylog_service_replicas_ready 作门 —— 该指标只有部分 service 有,拿它当门会把
+        # 其余 service 永久排除在告警之外,等于制造新的盲区。
+        # 与 LLMServiceNoReadyReplica 的分工:那条看「副本没了」,这条看「副本还在但没流量」
+        # (路由断开 / 上游停发 / 蓝绿切换异常),成因不同,同时响也不算冗余。
+        #
+        # ⚠️ 已知局限:exporter 重启后,自重启以来零流量的 service 其 series 根本不存在,
+        #    rate() 产不出结果,本规则覆盖不到。要堵这个口得按已知 service 列表做 absent()。
+        # 检出延迟 ≈ 5m(窗口填满)+ 5m(for)= 10 分钟。
+        #
+        # 【为什么没有单独的"并发归零"告警】曾评估过用 openresty_peer_active_conns 再加一条
+        # (max_over_time(...[5m:]) == 0),优点是检出快 10 分钟、且能区分「请求卡住不返回」
+        # (那种情况请求速率归零而并发反而堆着)。**已决定不加**,因为与本条 90% 是同一个信号,
+        # 两条一起响只是双倍噪声。选本条的理由:
+        #   ① 按 service 聚合,与其余告警口径一致(那个指标只有 route 标签);
+        #   ② 数据源是 bodylog,**不依赖 openresty poll** —— poll 本身会挂(见 OpenRestyPollDown,
+        #      2026-08-26 就挂过一次),届时基于它的告警会一起失效,而本条不受影响。
+        # 代价:「请求全卡住不返回」会被报成"流量归零"(措辞略偏,但该报的还是报了)。
+        #      窗口同为 5m 后,检出速度已与并发方案持平,不再有"慢 10 分钟"这个代价。
+        - alert: LLMServiceTrafficStopped
+          expr: |
+            sum by(service)(rate(bodylog_requests_total{service!="unknown"}[5m])) == 0
+            and
+            sum by(service)(rate(bodylog_requests_total{service!="unknown"}[6h])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 流量归零"
+            description: "近 15 分钟没有任何请求,但近 6 小时有过流量。可能是路由断开、上游停止发送或蓝绿切换异常。注意此时该服务的 TTFT / OutputRate 等 SLO 告警会因无样本而静默,不能据其判断健康。"
+
+    # ---------------- 网关与控制面 ----------------
+    - name: llm-gateway.rules
+      interval: 30s
+      rules:
+        - alert: OpenRestyNoHealthyPeer
+          expr: openresty_route_healthy_peers == 0
+          for: 2m
+          labels:
+            severity: critical
+            channel: infra
+          annotations:
+            summary: "openresty 路由 {{ $labels.route }} 无健康后端"
+            description: "该 route 的所有 peer 都被判定不健康,请求会直接失败。"
+
+        # openresty 自身没有 /metrics(实测 404),其指标由 bodylog-exporter 轮询状态端点转出。
+        # 这条挂了意味着:不仅拿不到 openresty 指标,上面那条 NoHealthyPeer 也会失效(无数据不触发)。
+        # openresty_poll_up 自 exporter 0.2.3 起**按 route 分**。此前是全局单个 gauge
+        # (「上轮是否全成功」),一条 route 失败就归零。
+        #
+        # 2026-09-03 → 09-06 真实发生过:一条纯反向代理的 video 路由(没有 lua 引擎端点、
+        # 必然 poll 失败)让本告警连响 3 天。注意**危害不是指标断流** —— 核对过指标历史,
+        # 期间 LLM 路由的 openresty_route_healthy_peers 等全程连续有数,上面那条
+        # NoHealthyPeer 并未失效(exporter 是逐条 route 填 gauge 的)。真正的危害是
+        # **本告警失去信号价值**:它一直在响,期间若真出轮询故障没人分辨得出来;
+        # 而看板上看不出任何异常(poll_up 在 dashboard 里零引用),所以拖了 3 天。
+        #
+        # 按 route 拆开后坏一条只黑一条,告警也能指名道姓。expr 不用改(== 0 对带 label
+        # 的 series 同样成立),只是补上 route 到 summary。
+        - alert: OpenRestyPollDown
+          expr: openresty_poll_up == 0
+          for: 5m
+          labels:
+            severity: warning
+            channel: infra
+          annotations:
+            summary: "bodylog-exporter 轮询 openresty 失败(route {{ $labels.route }})"
+            description: "该 route 的 openresty 侧指标已停止更新,依赖它的告警(如 OpenRestyNoHealthyPeer)对它同时失效。"
+
+        # 只看 leader:autoconfig 两副本主备,standby 不跑 controller、队列恒空,
+        # 混算会稀释掉 leader 的异常。leader_election_master_status 由 controller-runtime 自带。
+        # ⚠️ 这是健康探针发现不了的一类故障:进程活着、/healthz 返 200,但 reconcile 卡住,
+        #    表现为 cart/openresty 的 peer 配置不再更新(历史上的 cart ConfigMap wedge)。
+        - alert: AutoconfigReconcileWedged
+          expr: |
+            (workqueue_unfinished_work_seconds{job=~"autoconfig.*"}
+              and on(pod) (leader_election_master_status{job=~"autoconfig.*"} == 1)) > 300
+          for: 5m
+          labels:
+            severity: critical
+            channel: infra
+          annotations:
+            summary: "autoconfig reconcile 卡死 {{ $value | humanizeDuration }}"
+            description: "leader 的当前调谐已持续 5 分钟未完成,后端变更将不再同步到 openresty/cart。"
+
+    # ---------------- GPU(数据源:DCGM)----------------
+    - name: llm-gpu.rules
+      interval: 30s
+      rules:
+        - alert: GPUTempHigh
+          expr: max by(Hostname)(DCGM_FI_DEV_GPU_TEMP) > 85
+          for: 10m
+          labels:
+            severity: warning
+            channel: infra
+          annotations:
+            summary: "{{ $labels.Hostname }} GPU 温度 {{ $value }}°C"
+            description: "最热的一张卡超过 85°C(monitor 的 gpu_temp_alert),已持续 10 分钟,可能触发降频。"
+
+        - alert: GPUThermalThrottling
+          # 需同时满足两条,避免误报:
+          #   ① 热降频时间占比 > 5%(THERMAL_VIOLATION 是纳秒计数器 → /1e9/卡数 = 占比);
+          #   ② 降频原因位掩码 >= 32,即含真·热降频位(0x20 SW热 / 0x40 HW热)。
+          # 功耗墙(0x04=4)/HW降速(8)/Sync Boost(16) 都 < 32,不触发 —— 功耗墙是满载撞 TDP 的
+          # 正常状态,不该报警(原表达式 `> 0` 只要 THERMAL_VIOLATION 有微秒级波动就报,误报严重)。
+          expr: (sum by(Hostname)(rate(DCGM_FI_DEV_THERMAL_VIOLATION[5m])) / (1e9 * count by(Hostname)(DCGM_FI_DEV_GPU_TEMP)) > 0.05) and on(Hostname) (max by(Hostname)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS) >= 32)
+          for: 10m
+          labels:
+            severity: warning
+            channel: infra
+          annotations:
+            summary: "{{ $labels.Hostname }} 正在因过热降频"
+            description: "SW/HW 热降频位置位且热降频时间占比 > 5% 持续 10min,算力已受影响(非功耗墙)。"

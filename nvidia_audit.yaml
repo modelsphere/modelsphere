@@ -1,0 +1,233 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/ansible.json#/$defs/playbook
+---
+- name: Prepare GPU nodes for GPUDirect RDMA
+  hosts: "{{ gpu_group | default('gpu') }}"
+  become: true
+  gather_facts: false
+  tags: ['gpu-prep']
+  vars:
+    # nvidia_peermem is what makes GPUDirect RDMA work (NCCL over IB without
+    # bouncing through host memory). modprobe pulls in nvidia + ib_core for it.
+    gpu_kernel_modules:
+      - nvidia
+      - nvidia_uvm
+      - nvidia_peermem
+  tasks:
+    # rdma_fabric: ib | roce | none | auto (default). auto means ib when the host
+    # has any RDMA device and none when /sys/class/infiniband is empty -- a GPU
+    # node without an RDMA NIC (an inference box on plain Ethernet) used to fail
+    # this play at its first task, so nothing after it ran: not persistence
+    # mode, not fabricmanager, not ACS. With none, the RDMA-only steps (modules
+    # and their boot config, the NCCL_IB_HCA list, nvidia_peermem) are skipped
+    # and the rest runs. A ConnectX NIC shows up there even when it is only used
+    # for Ethernet: set rdma_fabric=none on such a host explicitly.
+    - name: Look for RDMA devices
+      find:
+        paths: /sys/class/infiniband
+        file_type: any
+      register: rdma_devices
+
+    - name: Decide the RDMA fabric for this node
+      set_fact:
+        rdma_mode: >-
+          {%- set f = rdma_fabric | default('auto') -%}
+          {%- if f == 'auto' -%}{{ 'ib' if rdma_devices.matched | default(0) > 0 else 'none' }}
+          {%- else -%}{{ f }}{%- endif -%}
+
+    - name: Validate rdma_fabric
+      assert:
+        that: rdma_mode in ['ib', 'roce', 'none']
+        fail_msg: "rdma_fabric is '{{ rdma_fabric | default('auto') }}'; use auto, ib, roce or none"
+        quiet: true
+
+    - name: Report the RDMA decision
+      debug:
+        msg: >-
+          rdma_fabric={{ rdma_fabric | default('auto') }},
+          {{ rdma_devices.matched | default(0) }} RDMA device(s) -> {{ rdma_mode }}
+          {{- ': RDMA prep and nvidia_peermem skipped' if rdma_mode == 'none' else '' }}
+
+    # Loads rdma_ucm / ib_umad / ib_uverbs (rdma-shared-dev-plugin needs the full
+    # char device set) and writes /etc/gpu-node/nccl-ib.env with this node's good
+    # HCA list, reusing the ib_write_bw-verified list from /root/deploy/env when
+    # present. Runs first so the RDMA stack is up before nvidia_peermem binds to it.
+    #
+    # Knobs are inline defaults (not play vars) so they can be overridden per host
+    # or per group in the inventory - RoCE-fabric machines need, e.g.:
+    #   10.0.0.41 rdma_fabric=roce rdma_ifnames=enp234s0np0
+    - name: Prepare RDMA stack and pin NCCL_IB_HCA on GPU node
+      script: script/node_prep_rdma.sh
+      environment:
+        # The script calls `modprobe ... 2>/dev/null || true`, and modprobe lives
+        # in /usr/sbin. If ansible's non-interactive PATH lacks it the load
+        # silently no-ops and the modules never come up, so pin a full PATH.
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        RATE_MIN: "{{ rdma_rate_min | default(100) }}"
+        FABRIC: "{{ rdma_mode }}"
+        IFNAMES: "{{ rdma_ifnames | default('') }}"
+        DEPLOY_ENV: "{{ rdma_deploy_env | default('/root/deploy/env') }}"
+      register: rdma_prep
+      when: rdma_mode != 'none'
+
+    - name: Display RDMA prep result
+      debug:
+        msg: "{{ (rdma_prep.stdout_lines | default([])) + (rdma_prep.stderr_lines | default([])) }}"
+      when: rdma_mode != 'none'
+
+    # nvidia_peermem only does something with an RDMA NIC to peer with.
+    - name: Check whether the running driver ships nvidia_peermem
+      command: modinfo nvidia_peermem
+      register: peermem_modinfo
+      changed_when: false
+      failed_when: false
+      when: rdma_mode != 'none'
+
+    - name: Warn when nvidia_peermem is unavailable on the host
+      debug:
+        msg: >-
+          nvidia_peermem not found for the running kernel. The driver is either
+          missing or containerized (GPU Operator) - in that case the module must
+          be loaded from inside the driver container, not from the host.
+      when: rdma_mode != 'none' and peermem_modinfo.rc != 0
+
+    - name: Load NVIDIA kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ gpu_kernel_modules }}"
+      when: rdma_mode != 'none' and peermem_modinfo.rc == 0
+
+    - name: Ensure NVIDIA kernel modules are loaded on boot
+      copy:
+        dest: /etc/modules-load.d/nvidia-peermem.conf
+        content: |
+          # Created by Ansible for GPUDirect RDMA requirements
+          {% for module in gpu_kernel_modules %}
+          {{ module }}
+          {% endfor %}
+        mode: '0644'
+      when: rdma_mode != 'none' and peermem_modinfo.rc == 0
+
+    - name: Locate nvidia-smi
+      command: which nvidia-smi
+      register: nvidia_smi
+      changed_when: false
+      failed_when: false
+
+    - name: Query GPU persistence mode
+      command: nvidia-smi --query-gpu=persistence_mode --format=csv,noheader
+      register: persistence_mode
+      changed_when: false
+      when: nvidia_smi.rc == 0
+
+    - name: Enable persistence mode on all GPUs
+      command: nvidia-smi -pm 1
+      when:
+        - nvidia_smi.rc == 0
+        - "'Disabled' in (persistence_mode.stdout | default(''))"
+
+    - name: Check for nvidia-fabricmanager (NVSwitch / HGX hosts)
+      stat:
+        path: /usr/bin/nv-fabricmanager
+      register: fabricmanager_bin
+
+    - name: Ensure nvidia-fabricmanager is enabled and running
+      systemd:
+        name: nvidia-fabricmanager
+        state: started
+        enabled: true
+      when: fabricmanager_bin.stat.exists
+
+    - name: Check nvidia-cdi-refresh.service state
+      command: systemctl is-enabled nvidia-cdi-refresh.service
+      register: cdi_refresh
+      changed_when: false
+      failed_when: false
+
+    - name: Disable nvidia-cdi-refresh.service (conflicts with GPU Operator)
+      systemd:
+        name: nvidia-cdi-refresh.service
+        state: stopped
+        enabled: false
+      when: cdi_refresh.stdout == 'enabled'
+
+    # PCIe ACS forces peer-to-peer DMA through the IOMMU and kills GPUDirect
+    # throughput -- GPU-to-NIC and GPU-to-GPU over PCIe alike, so it is cleared
+    # on nodes without an RDMA fabric too. Clearing it is a live register write
+    # that BIOS and PCIe re-enumeration undo on every boot, so it goes in as a
+    # systemd oneshot rather than as a one-time write: a node rebooted months
+    # later comes back with GDR working, instead of deadlocking NCCL at init
+    # while ib_write_bw still runs at full speed.
+    - name: Install the ACS script
+      copy:
+        src: script/disable_acs.sh
+        dest: /usr/local/sbin/disable_acs.sh
+        mode: '0755'
+
+    - name: Install the ACS unit
+      copy:
+        src: script/disable-acs.service
+        dest: /etc/systemd/system/disable-acs.service
+        mode: '0644'
+      register: acs_unit
+
+    # Under --check the copy above only reports that it would install the unit,
+    # so on a node that does not have it yet there is nothing for systemd to
+    # enable, and the task failed with "Could not find the requested service"
+    # -- `make gpu-prep` in --check could not get past it on any fresh node. A
+    # real run always executes this; a --check run skips it only in that case.
+    - name: Enable the ACS unit, and clear ACS now
+      systemd:
+        name: disable-acs.service
+        enabled: true
+        state: restarted          # oneshot: runs the script
+        daemon_reload: "{{ acs_unit.changed }}"
+      when: not (ansible_check_mode and acs_unit.changed)
+
+    - name: How many bridges still had ACS set?
+      command: journalctl -u disable-acs.service -n 5 --no-pager -o cat
+      register: acs_result
+      changed_when: false
+      check_mode: false
+
+    - name: Report the ACS result
+      debug:
+        msg: >-
+          {{ acs_result.stdout_lines | select('search', 'acs_cleared') | list | last
+             | default('(no acs_cleared line in the unit log)') }};
+          cleared again on every boot by disable-acs.service
+
+- name: Audit NVIDIA components across GPU nodes
+  hosts: "{{ gpu_group | default('gpu') }}"
+  become: true
+  gather_facts: false
+  tags: ['audit', 'gpu-prep']
+  tasks:
+    - name: Run GPU audit script on node
+      script: nvidia/audit_node.sh
+      register: audit_output
+      changed_when: false
+
+    - name: Display Audit Results
+      debug:
+        msg: "{{ audit_output.stdout_lines | default([]) }}"
+
+    - name: Probe node readiness (GPU / IB / models / disk / k8s components)
+      script: script/probe_nodes.sh
+      register: probe_output
+      changed_when: false
+
+    - name: Display Probe Results
+      debug:
+        msg: "{{ probe_output.stdout_lines | default([]) }}"
+
+    - name: Verify GPU prep state
+      script: script/check_gpu_prep.sh
+      environment:
+        RDMA_FABRIC: "{{ rdma_fabric | default('auto') }}"
+      register: gpu_prep_state
+      changed_when: false
+
+    - name: Display GPU prep verification
+      debug:
+        msg: "{{ gpu_prep_state.stdout_lines | default([]) }}"

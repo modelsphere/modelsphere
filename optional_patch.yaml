@@ -1,0 +1,26 @@
+# Just a example script to do anything on specific node
+- name: arbitrary patch op on host
+  hosts: all
+  become: true
+  gather_facts: true
+  # `omit` is only honoured for module arguments. Inside `environment:` it is
+  # rendered literally, so on a host with no proxy configured every task was
+  # handed http_proxy=__omit_place_holder__<hash> and the first download died
+  # with "curl: (5) Could not resolve proxy". An empty value is what "no proxy"
+  # actually means to curl, apt and requests.
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+    NO_PROXY: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+  tasks:
+    - name: Install iperf3
+      apt:
+        name:
+          - iperf3
+          - containerd.io
+          - docker-ce
+        state: latest
+        update_cache: false

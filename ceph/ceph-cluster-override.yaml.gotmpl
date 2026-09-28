@@ -1,0 +1,37 @@
+{{- $ceph := .Values.ceph }}
+
+{{- if not $ceph.nodes }}
+  {{- fail (printf "ceph.nodes is empty for environment %q. rook-ceph-cluster is enabled but useAllNodes/useAllDevices are false, so an empty list creates a CephCluster with zero OSDs that never converges. Set ceph.nodes in environments/%s.yaml (name + devices per node), or set enabled.rookCephCluster: false." .Environment.Name .Environment.Name) }}
+{{- end }}
+
+toolbox:
+  enabled: {{ $ceph.toolbox }}
+
+cephClusterSpec:
+  dashboard:
+    ssl: {{ $ceph.dashboardSsl }}
+  storage:
+    useAllNodes: false
+    useAllDevices: false
+    deviceFilter: {{ $ceph.deviceFilter | quote }}
+
+    nodes:
+{{ toYaml $ceph.nodes | indent 6 }}
+
+  resources:
+    osd:
+      limits:
+        memory: {{ $ceph.osdMemoryLimit | quote }}
+
+{{- with (dig "dashboardHost" "" $ceph) }}
+route:
+  dashboard:
+    host:
+      name: {{ . | quote }}
+      path: "/"
+      pathType: PathPrefix
+    parentRefs:
+      - name: {{ $ceph.dashboardGateway | quote }}
+        namespace: {{ $.Values.namespaces.rook }}
+        sectionName: http
+{{- end }}

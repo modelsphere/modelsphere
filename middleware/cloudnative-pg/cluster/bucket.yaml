@@ -1,0 +1,16 @@
+# WAL 归档 + 基础备份的落点。用 rook 的 ceph-bucket StorageClass 声明式申请,
+# 不手工进 RGW 建桶 —— 桶跟着 git 走,重建集群时不会漏。
+#
+# rook 会同步生成同名的:
+#   Secret     cnpg-backup  -> AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+#   ConfigMap  cnpg-backup  -> BUCKET_NAME / BUCKET_HOST / BUCKET_PORT
+# 下面 cluster.yaml 的 s3Credentials 直接引这个 Secret。
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: cnpg-backup
+spec:
+  # 用 bucketName 而不是 generateBucketName:后者会拼一段随机 uuid,
+  # 而 Cluster 的 destinationPath 只能写字面量,对不上就得每次人肉回填。
+  bucketName: cnpg-backup
+  storageClassName: ceph-bucket

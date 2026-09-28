@@ -1,0 +1,159 @@
+# descheduler —— 只干一件事:把打了 descheduler.mark=true:NoSchedule 的节点腾空。
+# 其余策略【全部关闭】。
+#
+# chart 已 vendor 在同目录(chart/app 都是 0.36.0):
+#   helm diff upgrade      descheduler ./descheduler -n kube-system -f ./overrides.yaml
+#   helm upgrade --install descheduler ./descheduler -n kube-system -f ./overrides.yaml
+#
+# 【触发链】observability/npd 的 kmsg 规则把关键 Xid(48/61/62/63/74/79/119)变成
+# NvidiaGPUError 这个 NodeCondition,外部工具再把它翻译成 descheduler.mark=true:NoSchedule。
+# 污点一打,kube-scheduler 就不再往这台机放新 pod;本 CronJob 每 10 分钟扫一遍,把已经在上面
+# 跑的、不容忍这个污点的 pod 驱逐掉 —— 【包括 inference-prod】,理由是这台机的卡已经坏了,
+# pod 留在上面也不产出。重建出来的 pod 因为污点还在,只会落到别的机器上。
+# NvidiaGPUError 是 permanent condition,不会自愈,摘污点是人工动作(修完卡再摘)。
+# 它和 script/taint_gpu_nodes.sh 的 nvidia.com/gpu=compute-only 是两个 key,互不影响:
+# GPU pod 容忍 compute-only,但不容忍 descheduler.mark。
+#
+# 【关掉了什么,以及为什么这不是遗漏】
+#   - LowNodeUtilization / HighNodeUtilization / RemoveDuplicates / TopologySpread /
+#     InterPodAntiAffinity:chart 默认值里这几个是开的,这里整个 profiles 覆盖掉。理由和
+#     scheduler/README.md 里"推理两档 preemptionPolicy: Never"是同一条 —— descheduler 是
+#     per-pod 的,对 LWS group 没有感知:赶走 kimi-k25 的一个 worker 等于废掉整个 group。
+#     而"CPU/内存利用率"对整卡切分的推理负载本来也不成立:8 卡跑满时 CPU 可能只有 20%。
+#   - RemovePodsViolatingNodeAffinity / RemovePodsHavingTooManyRestarts、以及针对
+#     compute-only 污点的存量违规清理:本文件上一版开过,现在按要求一并关掉。要找回配置
+#     看这个文件的 git history,别重新推导一遍。
+#
+# 【保险层】这个 profile 允许自动化驱逐线上实例,所以没有 priorityThreshold 那一层,
+# 剩下三层都在:
+#   1. nodeFit —— 别处装不下就不动手,不制造 Pending;
+#   2. maxNoOfPodsToEvictPerNode / Total —— 单轮爆炸半径封顶;
+#   3. 驱逐走 Eviction API,PDB 正常生效(chart 的 ClusterRole 有 poddisruptionbudgets 读权限)。
+# DaemonSet pod 和 system-critical pod 一律不碰:DefaultEvictor 的默认保护,下面没有关掉。
+#
+# 【改策略之前】先 dry-run 一轮,只打日志不驱逐:
+#   helm upgrade ... --set cmdOptions.dry-run=true
+#   kubectl -n kube-system create job descheduler-dryrun --from=cronjob/descheduler
+#   kubectl -n kube-system logs job/descheduler-dryrun
+
+kind: CronJob
+
+# 10 分钟一轮。污点打上之后最多 10 分钟开始腾空;要立刻就手动
+# kubectl -n kube-system create job drain-now --from=cronjob/descheduler。
+schedule: "*/10 * * * *"
+
+# 必须短于 cron 间隔(600s)。cronjob 模板里 concurrencyPolicy 写死 Forbid,超时不会堆叠,
+# 这里再加一道硬上限:十几台机的规模单轮是秒级,跑到 300s 说明卡住了(多半是 apiserver
+# 不通),让它失败比挂着好。
+activeDeadlineSeconds: 300
+# controller-manager 重启 / 时钟漂移错过的调度点,200s 内补跑,超过直接跳过这一轮而不是攒着。
+startingDeadlineSeconds: 200
+# 一小时 6 轮,保留 3 个成功 job 只够回看半小时 —— 真正的历史看 Event(下面
+# evictionFailureEventNotification)和 kube-state-metrics,这里只是留个现场翻日志。
+# 失败的多留几个:那才是要人看的东西。
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 5
+
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values:
+                - "true"
+
+# 【不开 serviceMonitor】CronJob 形态下 chart 根本不渲染 Service / ServiceMonitor(两个模板
+# 都是 kind == "Deployment" 才生效),开了也只是个匹配不到目标的空壳,而且不报错。
+# 每轮几秒的 job 本来也没什么可抓的:驱逐结果看 Event(下面 evictionFailureEventNotification)
+# 和 job 日志,轮次成败看 kube-state-metrics 的 kube_job_failed /
+# kube_cronjob_status_last_schedule_time —— prom-stack 已经在抓了。
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    # 内存跟着 informer 里缓存的 pod/node 数走,512Mi 是给规模增长留的余量;CPU 只在跑的
+    # 那几秒吃,放宽 limit 让它早点结束,CronJob 形态下平时不占任何资源。
+    cpu: "1"
+    memory: 512Mi
+
+cmdOptions:
+  # chart 默认 3。排查"这个 pod 为什么没被驱逐"时临时调到 4,跳过原因大多打在 V(2)/V(4)。
+  v: 3
+
+deschedulerPolicy:
+  # 【故意不设 top-level nodeSelector】作用范围由污点本身圈定,再叠一个 gpu.present=true
+  # 的标签过滤只会多一个静默失效的口子:打 mark 的工具哪天用在非 GPU 机上,那台机根本不会
+  # 被扫到。(top-level nodeSelector 决定 profile 拿到哪些节点 —— descheduler.go 的
+  # runProfiles 从 indexer_node_selector_global 取节点;upstream README 表格里那句
+  # "only used when nodeFit=true"说的是 DefaultEvictor.args.nodeSelector,不是这里。)
+
+  # 单轮爆炸半径。每节点每轮 2 个:卡在 Terminating 的僵尸 pod 每轮会被重复驱逐一次
+  # (整条链路没有 DeletionTimestamp 判断),留一个名额给它,另一个才真正干活。
+  # 撞上限日志会明说(maximum number of evicted pods per node reached),10 分钟后接着清。
+  maxNoOfPodsToEvictPerNode: 2
+  maxNoOfPodsToEvictTotal: 8
+
+  # 驱逐失败(最常见:被 PDB 挡住)发 Event,否则只能翻 job 日志才知道它试过。
+  evictionFailureEventNotification: true
+
+  profiles:
+    - name: bad-node-drain
+      pluginConfig:
+        # 【这个 block 不是用来"启用" DefaultEvictor 的】policyconfig 的 setDefaultEvictor
+        # 无条件把它挂到 filter / preEvictionFilter 两个扩展点上,profile 里不写也有,只是
+        # args 取 Go 零值(SetDefaults_DefaultEvictorArgs 是个空函数,没有隐藏默认值)。
+        # 写在这里只为了改下面两个参数 —— 尤其是 podProtections:不改的话带 emptyDir 的 pod
+        # 全被保护,这套配置就成了空转。
+        - name: DefaultEvictor
+          args:
+            # 【没有 priorityThreshold】不写 ≠ 不生效:setDefaultEvictor 会把它填成
+            # SystemCriticalPriority(2e9),也就是"priority < 2e9 才可驱逐"。于是
+            # inference-prod(1e5)在可驱逐范围内,system-cluster-critical / system-node-critical
+            # 免疫。这正是这套配置存在的意义:卡坏了,pod 留在上面不产出。
+            # (阈值也配不了比 2e9 更大的值,GetPriorityValueFromPriorityThreshold 会直接报错。)
+            #
+            # 【为什么保留 nodeFit】别处没有空位就不动手 —— 把一个"跑在坏节点上"的 pod 变成
+            # 一个 Pending pod,并不会让它开始服务,反而丢掉了现场。整机 8 卡的 LWS 成员通常
+            # 等不到空位,那就等人处理;2 卡的单机部署一般挪得动。
+            # 真要"不管有没有地方先赶下来",改成 false —— 那时 Pending pod + 告警就是你要的
+            # 信号。⚠️ 改之前先想清楚 LWS:驱逐是 per-pod 的,group 的重建语义由 LWS 的
+            # restartPolicy 决定,不是这里。
+            # nodeFit 的候选节点来自 DefaultEvictor.args.nodeSelector(故意留空):源码走
+            # ReadyNodes(..., args.NodeSelector),空 selector = 全集群 ready 节点。
+            nodeFit: true
+
+            podProtections:
+              # 保护(不驱逐):
+              #  - DaemonSet pod
+              #  - system-critical(priority >= 2e9:cilium / ceph-csi / gpu-operator / npd)
+              #  - FailedBarePods: 无 controller 的 Failed pod
+              # 不保护(照驱逐):
+              #  - 带 emptyDir/hostPath 的、带 PVC 的(节点还活着,ceph-csi 能正常 detach)
+              #  - 其余 priority < 2e9 的 —— inference-prod(1e5)也在内
+              # 前三条是 upstream 默认集,只能靠"不写进 defaultDisabled"保住:extraEnabled
+              # 不收它们,写了启动直接失败。升 chart 时扫一眼默认集有没有变。
+              defaultDisabled: # 列在这里 = 不保护
+                - PodsWithLocalStorage
+            # 不设 minPodAge:坏节点上没有"再等等看会不会自己收敛"这回事。
+
+        - name: RemovePodsViolatingNodeTaints
+          args:
+            # 【allowlist:只认这一个污点】其它 NoSchedule 污点一概不看,这是整套配置最重要
+            # 的一行 —— 尤其是 cordon 打的 node.kubernetes.io/unschedulable:普通 pod 不容忍
+            # 它,不做 allowlist 的话,cordon 一台机 = 10 分钟后 descheduler 替你 drain,而且
+            # 是没有 gang 感知的 per-pod drain,和"cordon 之后让在跑的任务自己跑完"正面冲突。
+            # kubelet 的 memory/disk/pid-pressure 污点同理:那是 kubelet 自己的驱逐地盘。
+            # 写成 key=value 精确匹配 =true;要让 mark 的任意取值都生效,把这行改成只写
+            # key(descheduler.mark)—— 源码按 key 或 key=value 任一命中即算包含。
+            includedTaints:
+              - descheduler.mark=true
+
+      plugins:
+        deschedule:
+          enabled:
+            - RemovePodsViolatingNodeTaints
+        # balance 扩展点整个空着 —— 见文件开头"关掉了什么"。

@@ -1,0 +1,118 @@
+{{- if eq .Values.kind "Deployment" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ template "descheduler.fullname" . }}
+  namespace: {{ include "descheduler.namespace" . }}
+  labels:
+    {{- include "descheduler.labels" . | nindent 4 }}
+  {{- if .Values.deploymentAnnotations }}
+  annotations: {{- toYaml .Values.deploymentAnnotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if gt (.Values.replicas | int) 1 }}
+  {{- if not .Values.leaderElection.enabled }}
+  {{- fail "You must set leaderElection to use more than 1 replica"}}
+  {{- end}}
+  replicas: {{ required "leaderElection required for running more than one replica" .Values.replicas }}
+  {{- else }}
+  replicas: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "descheduler.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "descheduler.selectorLabels" . | nindent 8 }}
+        {{- if .Values.podLabels }}
+        {{- .Values.podLabels | toYaml | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.podAnnotations }}
+        {{- .Values.podAnnotations | toYaml | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- if .Values.dnsConfig }}
+      dnsConfig:
+        {{- .Values.dnsConfig | toYaml | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      serviceAccountName: {{ template "descheduler.serviceAccountName" . }}
+      {{- if kindIs "bool" .Values.automountServiceAccountToken }}
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.command | nindent 12 }}
+          args:
+            - --policy-config-file=/policy-dir/policy.yaml
+            - --descheduling-interval={{ required "deschedulingInterval required for running as Deployment" .Values.deschedulingInterval }}
+            {{- range $key, $value := .Values.cmdOptions }}
+            {{- if ne $value nil }}
+            - {{ printf "--%s=%s" $key (toString $value) }}
+            {{- else }}
+            - {{ printf "--%s" $key }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.leaderElection.enabled }}
+            {{- include "descheduler.leaderElection" . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- toYaml .Values.ports | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.securityContext }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - mountPath: /policy-dir
+              name: policy-volume
+            {{- if and .Values.extraServiceAccountVolumeMounts (not .Values.automountServiceAccountToken) }}
+              {{ toYaml .Values.extraServiceAccountVolumeMounts | nindent 12 }}
+            {{- end }}
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: policy-volume
+          configMap:
+            name: {{ template "descheduler.fullname" . }}
+        {{- if and .Values.extraServiceAccountVolumes (not .Values.automountServiceAccountToken) }}
+          {{ toYaml .Values.extraServiceAccountVolumes | nindent 8}}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,749 @@
+- name: SETUP K8S every node
+  hosts: all
+  become: true
+  # `omit` is only honoured for module arguments. Inside `environment:` it is
+  # rendered literally, so on a host with no proxy configured every task was
+  # handed http_proxy=__omit_place_holder__<hash> and the first download died
+  # with "curl: (5) Could not resolve proxy". An empty value is what "no proxy"
+  # actually means to curl, apt and requests.
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+    NO_PROXY: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+
+  vars:
+    data_disk: "{{ k8s_data_disk | default('/dev/nvme0n1') }}"
+    hosts_file: "{{ k8s_hosts_file | default('hosts') }}"
+    # SSH login banner text. Empty (default) = sshd is not touched at all.
+    ssh_banner: "{{ k8s_ssh_banner | default('') }}"
+    k8s_channel: "{{ k8s_apt_channel | default('v1.36') }}"
+    hwe_kernel_package: "{{ k8s_hwe_kernel | default('linux-generic-hwe-' ~ ansible_distribution_version) }}"
+    # The HWE kernel is installed only where the running kernel is below this
+    # floor. Cilium 1.20's agent was measured failing on 5.4 and running on 5.15
+    # (Ubuntu 22.04's stock kernel); 5.10 sits between the two. Override per host
+    # with k8s_min_kernel.
+    min_kernel: "{{ k8s_min_kernel | default('5.10') | string }}"
+    # auto   install the HWE kernel only below min_kernel (default)
+    # always install it regardless, the old behaviour
+    # never  do not install it, even below min_kernel
+    hwe_mode: "{{ k8s_install_hwe_kernel | default('auto') }}"
+    # 空 = 不碰 containerd 的 fd 限制。按集群在 inventory 里开,理由见下面 containerd 那段。
+    containerd_nofile: "{{ k8s_containerd_nofile | default('') | string }}"
+
+    # apt (default, Ubuntu) or binary (release binaries, any distro/arch --
+    # Ascend on Kylin/openEuler was the first). Set per host/group in the
+    # inventory. Everything past the install (swap, sysctl, containerd) is shared.
+    install_method: "{{ k8s_install_method | default('apt') }}"
+    # Only used when install_method == binary. Must match the cluster's version.
+    k8s_binary_version: "{{ k8s_version | default('v1.36.3') }}"
+    crictl_version: "{{ k8s_crictl_version | default('v1.36.0') }}"
+    # Release-binary arch name; ansible_architecture is the uname spelling.
+    k8s_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}[ansible_architecture] }}"
+    # Vendor container runtime to register as containerd's default: none | ascend.
+    # Safe as the node-wide default: the vendor hook mounts /dev/davinci* only for
+    # pods the device plugin sets ASCEND_VISIBLE_DEVICES on, others pass through.
+    accel_runtime: "{{ k8s_accel_runtime | default('none') }}"
+    accel_runtime_binary: "{{ k8s_accel_runtime_binary | default('/usr/local/Ascend/Ascend-Docker-Runtime/ascend-docker-runtime') }}"
+    # containerd.io used to be installed unpinned and then held, so every node
+    # kept whatever was current the day it was built -- 2.2.6, 2.3.3 and 2.3.4
+    # all coexist in one cluster today. Pinning gives new nodes one known
+    # version. The Docker package version carries the distribution, so the
+    # suffix comes from facts rather than being written out.
+    containerd_version: "{{ k8s_containerd_version | default('2.3.5-1') }}~ubuntu.{{ ansible_distribution_version }}~{{ ansible_distribution_release }}"
+
+  tasks:
+    - name: Online Tasks (Requires Outbound Network Access)
+      tags: ['online']
+      # Every task in here is apt: repositories, keyrings, the HWE kernel, the
+      # docker/containerd packages. Hosts that install binaries skip the lot.
+      when: install_method == 'apt'
+      block:
+        # Repair first, before anything touches apt. A keyring left unreadable by a
+        # previous run breaks *every* apt operation on this host, including the very
+        # first task below -- so the per-key mode settings further down would never
+        # be reached on a host that has already been through that.
+        - name: Repair apt keyrings left unreadable by an earlier run
+          shell: chmod 0644 /etc/apt/keyrings/*.gpg 2>/dev/null || true
+          changed_when: false
+
+        # A new kernel was installed on every node, whatever it already ran. It
+        # does nothing until a reboot, and on a node whose NVIDIA module was
+        # built for the running kernel only -- a .run driver without DKMS, the
+        # usual case here, with the kernel held on purpose -- that reboot comes
+        # up with no GPU and nothing says so. So: only below min_kernel, and only
+        # when the NVIDIA module will follow the kernel.
+        - name: Validate k8s_install_hwe_kernel
+          assert:
+            that: hwe_mode in ['auto', 'always', 'never']
+            fail_msg: "k8s_install_hwe_kernel is '{{ hwe_mode }}'; use auto, always or never"
+            quiet: true
+
+        - name: Decide whether this node needs the HWE kernel
+          set_fact:
+            hwe_kernel_needed: >-
+              {{ hwe_mode == 'always' or
+                 (hwe_mode == 'auto' and
+                  (ansible_kernel.split('-')[0] is version(min_kernel, '<'))) }}
+
+        - name: Report the HWE kernel decision
+          debug:
+            msg: >-
+              kernel {{ ansible_kernel }}, floor {{ min_kernel }}, mode {{ hwe_mode }}:
+              {{ ('installing ' ~ hwe_kernel_package) if hwe_kernel_needed
+                 else 'no HWE kernel needed, skipped' }}
+
+        - name: Check how the NVIDIA kernel module is managed
+          shell: |
+            if ! modinfo nvidia >/dev/null 2>&1 && [ ! -e /proc/driver/nvidia/version ]; then
+              echo none
+            elif dkms status 2>/dev/null | grep -qi '^nvidia'; then
+              echo dkms
+            else
+              echo manual
+            fi
+          register: nvidia_module_mgmt
+          changed_when: false
+          check_mode: false   # read-only, and the decision below depends on it
+          when: hwe_kernel_needed | bool
+
+        - name: Refuse a new kernel that the NVIDIA module will not follow
+          fail:
+            msg: >-
+              {{ inventory_hostname }} would get {{ hwe_kernel_package }} ({{ ansible_kernel }}
+              is below {{ min_kernel }}), but its NVIDIA kernel module is not managed by
+              DKMS: nothing would rebuild it for the new kernel, and the next boot would
+              have no GPU. Reinstall the driver with DKMS first (.run --dkms, or the
+              distribution's nvidia-driver package), or build nvidia.ko for the new
+              kernel yourself and set k8s_hwe_nvidia_ack=true for this host.
+          when:
+            - hwe_kernel_needed | bool
+            - nvidia_module_mgmt.stdout == 'manual'
+            - not (k8s_hwe_nvidia_ack | default(false) | bool)
+
+        - name: Install the HWE kernel
+          apt:
+            name: "{{ hwe_kernel_package }}"
+            state: present
+            update_cache: yes
+          register: hwe_kernel_install
+          when: hwe_kernel_needed | bool
+
+        # linux-generic-hwe-* pulls the matching headers, so DKMS builds the
+        # module during the install. Confirm it did, while the node is still on
+        # the old kernel and nothing is lost yet.
+        - name: Check DKMS built the NVIDIA module for the new kernel
+          shell: |
+            k=$(ls -1 /lib/modules | sort -V | tail -1)
+            dkms status nvidia 2>/dev/null | grep -E "[, ]$k[,:].*installed" \
+              || { echo "no installed NVIDIA module for $k:"; dkms status nvidia; exit 1; }
+          changed_when: false
+          when:
+            - hwe_kernel_needed | bool
+            - hwe_kernel_install is changed
+            - nvidia_module_mgmt.stdout == 'dkms'
+            - not ansible_check_mode
+
+        - name: Install dependencies for Kubernetes apt repository
+          apt:
+            name:
+              - apt-transport-https
+              - ca-certificates
+              - curl
+              - gnupg
+            state: present
+            update_cache: yes
+
+        - name: Create apt keyrings directory
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: '0755'
+
+        - name: Check if Kubernetes apt key is valid
+          stat:
+            path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          register: k8s_apt_key
+
+        # Retried by Ansible rather than by curl: the command is a pipeline, and
+        # curl's own --retry cannot see a gpg that failed downstream of it. One
+        # reset handshake used to fail the whole run.
+        - name: Download Kubernetes apt key
+          shell: curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ k8s_channel }}/deb/Release.key | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+          register: k8s_key_download
+          until: k8s_key_download.rc == 0
+          retries: 3
+          delay: 2
+          when: not k8s_apt_key.stat.exists or k8s_apt_key.stat.size == 0
+
+        # apt reads keyrings as the `_apt` user, not as root, so the file has to be
+        # world-readable. `gpg --dearmor -o` takes its mode from root's umask: on a
+        # host with a tightened umask the key lands 0640 and every apt run then fails
+        # with `NO_PUBKEY ... / repository is not signed`, which reads like a bad key
+        # rather than a permission problem. Setting the mode unconditionally also
+        # repairs a key written by an earlier run, which the download task above will
+        # not do -- it is skipped once the file exists, wrong mode and all.
+        - name: Ensure the Kubernetes keyring is readable by apt
+          file:
+            path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            mode: '0644'
+
+        - name: Add Kubernetes apt repository
+          deb822_repository:
+            name: kubernetes
+            types: [deb]
+            uris: ["https://pkgs.k8s.io/core:/stable:/{{ k8s_channel }}/deb/"]
+            suites: ["/"]
+            signed_by: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            state: present
+
+        - name: Install Kubernetes packages (kubelet, kubeadm, kubectl)
+          apt:
+            name:
+              - kubelet
+              - kubeadm
+              - kubectl
+              - cri-tools
+            state: present
+            update_cache: yes
+
+        - name: Check if Docker apt key is valid
+          stat:
+            path: /etc/apt/keyrings/docker-apt-keyring.gpg
+          register: docker_apt_key
+
+        # Retried by Ansible rather than by curl: the command is a pipeline, and
+        # curl's own --retry cannot see a gpg that failed downstream of it. One
+        # reset handshake used to fail the whole run.
+        - name: Download Docker apt key
+          shell: curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker-apt-keyring.gpg
+          register: docker_key_download
+          until: docker_key_download.rc == 0
+          retries: 3
+          delay: 2
+          when: not docker_apt_key.stat.exists or docker_apt_key.stat.size == 0
+
+        # Same as the Kubernetes keyring above: apt is `_apt`, the dearmor inherits
+        # root's umask, and the download is skipped once the file exists.
+        - name: Ensure the Docker keyring is readable by apt
+          file:
+            path: /etc/apt/keyrings/docker-apt-keyring.gpg
+            mode: '0644'
+
+        - name: Add Docker apt repository (Default)
+          deb822_repository:
+            name: docker
+            types: [deb]
+            uris: ["https://download.docker.com/linux/ubuntu"]
+            suites: ["{{ ansible_distribution_release }}"]
+            components: ["stable"]
+            signed_by: /etc/apt/keyrings/docker-apt-keyring.gpg
+            state: present
+          when: not (use_cn_mirror | default(false))
+
+        - name: Add Docker apt repository (Tsinghua Mirror)
+          deb822_repository:
+            name: docker
+            types: [deb]
+            uris: ["https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu"]
+            suites: ["{{ ansible_distribution_release }}"]
+            components: ["stable"]
+            signed_by: /etc/apt/keyrings/docker-apt-keyring.gpg
+            state: present
+          when: use_cn_mirror | default(false)
+
+        - name: Check whether containerd is already installed
+          command: dpkg-query -W -f='${Version}' containerd.io
+          register: containerd_installed
+          changed_when: false
+          failed_when: false
+
+        # Pinned only where nothing is installed yet. A version named explicitly
+        # walks straight past `apt-mark hold` -- apt honours a hold against
+        # upgrades, not against a version asked for by name -- so doing this
+        # unconditionally would downgrade a running node and restart containerd
+        # underneath its workloads. Existing nodes keep what they have; aligning
+        # one is a deliberate, separate act: drain, unhold, install, hold.
+        - name: Install containerd.io, docker and cri-tools (fresh node)
+          apt:
+            name:
+              - "containerd.io={{ containerd_version }}"
+              - docker-ce
+              - docker-ce-cli
+              - cri-tools
+            state: present
+            update_cache: yes
+          when: containerd_installed.rc != 0 or containerd_installed.stdout == ''
+
+        - name: Install docker and cri-tools (containerd already present)
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - cri-tools
+            state: present
+            update_cache: yes
+          when: containerd_installed.rc == 0 and containerd_installed.stdout != ''
+
+        - name: Report a containerd that differs from the pinned version
+          debug:
+            msg: >-
+              containerd.io is {{ containerd_installed.stdout }} here, not the
+              pinned {{ containerd_version }}. Left alone on purpose -- align it
+              deliberately (drain, apt-mark unhold, install, hold).
+          when:
+            - containerd_installed.rc == 0
+            - containerd_installed.stdout != ''
+            - containerd_installed.stdout != containerd_version
+
+    # Same job as the apt block, for hosts with no apt: release binaries plus the
+    # kubelet unit the deb would have provided. Not accelerator-specific.
+    - name: Online Tasks (binary install, non-apt hosts)
+      tags: ['online']
+      when: install_method == 'binary'
+      block:
+        # Unlike apt, this path does not install a container runtime -- it
+        # adopts whatever's on the host. Fail here, not 3 tasks later as an
+        # opaque "command not found" from `containerd config default`.
+        - name: Check the tools the binary path expects to already be present
+          shell: |
+            missing=
+            for c in containerd conntrack socat iptables ip ethtool; do
+              command -v "$c" >/dev/null || missing="$missing $c"
+            done
+            echo "$missing"
+          args: {executable: /bin/bash}
+          register: binary_prereqs
+          changed_when: false
+          check_mode: false   # read-only, and a --check run should still tell you if a tool is missing
+
+        - name: Fail if any of them is missing
+          fail:
+            msg: >-
+              Missing on this host:{{ binary_prereqs.stdout }}. The binary install
+              method does not install a container runtime -- install these with the
+              distro's package manager first (an Ascend node gets containerd from
+              the vendor's own installer).
+          when: binary_prereqs.stdout | trim != ''
+
+        - name: Check which Kubernetes binaries are already at the wanted version
+          shell: |
+            set -o pipefail
+            # Each binary spells --version differently; `kubeadm --version` is not
+            # a flag. Getting it wrong here is silent -- redownloads every run.
+            for b in kubeadm kubelet kubectl; do
+              case $b in
+                kubeadm) have=$(/usr/local/bin/kubeadm version -o short 2>/dev/null) ;;
+                kubelet) have=$(/usr/local/bin/kubelet --version 2>/dev/null | grep -oE 'v[0-9.]+' | head -1) ;;
+                kubectl) have=$(/usr/local/bin/kubectl version --client 2>/dev/null | grep -oE 'v[0-9.]+' | head -1) ;;
+              esac
+              [ "$have" = "{{ k8s_binary_version }}" ] || echo "$b"
+            done
+          args: {executable: /bin/bash}
+          register: k8s_bin_missing
+          changed_when: false
+
+        # Downloaded next to the target, checked, and only then moved into place,
+        # so neither a half-finished nor a tampered download becomes the kubelet
+        # the node runs. The apt path gets this from the repo signature; here it
+        # has to be explicit -- upstream publishes <binary>.sha256 beside each one.
+        - name: Install Kubernetes binaries
+          shell: |
+            set -euo pipefail
+            base=https://dl.k8s.io/release/{{ k8s_binary_version }}/bin/linux/{{ k8s_arch }}
+            curl -fsSL -m 600 -o /usr/local/bin/{{ item }}.new "$base/{{ item }}"
+            want=$(curl -fsSL -m 60 "$base/{{ item }}.sha256")
+            have=$(sha256sum /usr/local/bin/{{ item }}.new | awk '{print $1}')
+            if [ "$want" != "$have" ]; then
+              rm -f /usr/local/bin/{{ item }}.new
+              echo "checksum mismatch for {{ item }}: want $want, got $have" >&2
+              exit 1
+            fi
+            chmod +x /usr/local/bin/{{ item }}.new
+            mv -f /usr/local/bin/{{ item }}.new /usr/local/bin/{{ item }}
+          args: {executable: /bin/bash}
+          loop: "{{ k8s_bin_missing.stdout_lines }}"
+
+        - name: Check crictl version
+          shell: crictl --version 2>/dev/null | grep -oE 'v[0-9.]+' || true
+          register: crictl_have
+          changed_when: false
+
+        - name: Install crictl
+          shell: |
+            set -euo pipefail
+            curl -fsSL -m 600 \
+              https://github.com/kubernetes-sigs/cri-tools/releases/download/{{ crictl_version }}/crictl-{{ crictl_version }}-linux-{{ k8s_arch }}.tar.gz \
+              | tar -xz -C /usr/local/bin crictl
+          args: {executable: /bin/bash}
+          when: crictl_have.stdout | trim != crictl_version
+
+        - name: Point crictl at containerd
+          copy:
+            dest: /etc/crictl.yaml
+            mode: '0644'
+            content: |
+              runtime-endpoint: unix:///run/containerd/containerd.sock
+              image-endpoint: unix:///run/containerd/containerd.sock
+
+        # A leftover drop-in (KubeKey leaves --hostname-override/--node-ip in
+        # one) silently overrides what kubeadm join writes. The directory is
+        # ours now; anything else in it goes.
+        - name: Find foreign kubelet drop-ins
+          find:
+            paths: /etc/systemd/system/kubelet.service.d
+            patterns: '*'
+          register: kubelet_dropins
+          failed_when: false
+
+        - name: Remove foreign kubelet drop-ins
+          file: {path: "{{ item.path }}", state: absent}
+          loop: "{{ kubelet_dropins.files | default([]) | rejectattr('path', 'search', '10-kubeadm.conf$') | list }}"
+
+        - name: Install the kubelet unit (upstream kubeadm layout)
+          copy:
+            dest: /etc/systemd/system/kubelet.service
+            mode: '0644'
+            content: |
+              [Unit]
+              Description=kubelet: The Kubernetes Node Agent
+              Documentation=https://kubernetes.io/docs/
+              Wants=network-online.target
+              After=network-online.target containerd.service
+
+              [Service]
+              ExecStart=/usr/local/bin/kubelet
+              Restart=always
+              StartLimitInterval=0
+              RestartSec=10
+
+              [Install]
+              WantedBy=multi-user.target
+
+        - name: Install the kubeadm kubelet drop-in
+          copy:
+            dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+            mode: '0644'
+            content: |
+              [Service]
+              Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+              Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+              EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+              EnvironmentFile=-/etc/default/kubelet
+              ExecStart=
+              ExecStart=/usr/local/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS
+
+        # enabled, not started: kubelet crash-loops until `kubeadm join` gives it
+        # a kubeconfig, and that is expected at this point.
+        - name: Enable kubelet
+          systemd: {name: kubelet, enabled: true, daemon_reload: true}
+
+    - name: Offline Tasks (No Outbound Network Required)
+      tags: ['offline']
+      block:
+        - name: update hosts
+          blockinfile:
+            path: /etc/hosts  # The file on the remote machines
+            block: "{{ lookup('file', hosts_file) }}"  # File on control machine
+            marker: "# {mark} K8S required hosts" # Optional: Customizes the wrapper comments
+          # guard on the FILE, not just the variable: the default is the non-empty
+          # string 'hosts' and the repo ships no such file, so a fresh clone used to
+          # fail here every time with "the 'file' lookup had an issue".
+          when: hosts_file | length > 0 and (hosts_file is file)
+
+        # Off unless the inventory asks for it. A cluster installer has no reason
+        # to own sshd: this rewrites any Banner the site already has, and the
+        # restart it triggers goes through the one path back into the node. The
+        # text used to be hard-coded, naming one person, on every node of every
+        # cluster -- and a node looked "reserved" to anyone who logged in.
+        - name: Create SSH login banner (k8s_ssh_banner)
+          copy:
+            dest: /etc/ssh/ssh_banner
+            content: "{{ ssh_banner | trim }}\n"
+            owner: root
+            group: root
+            mode: '0644'
+          when: ssh_banner | trim | length > 0
+
+        - name: Configure SSH to use the banner (k8s_ssh_banner)
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?Banner '
+            line: 'Banner /etc/ssh/ssh_banner'
+            validate: 'sshd -t -f %s'
+          notify: restart sshd
+          when: ssh_banner | trim | length > 0
+
+        # cri-tools comes from the same Kubernetes repo and tracks its minor
+        # version, so it is held with them -- README step 2 promises every
+        # package here ends up held, and it used to be the one that was not.
+        #
+        # "Changed" is decided by comparing `apt-mark showhold` before and
+        # after, not by reading apt-mark's messages: those are translated, and
+        # on a zh_CN node "was already set on hold" never appears, so matching
+        # it reported a change on every run.
+        - name: Hold Kubernetes packages to prevent accidental upgrades
+          shell: |
+            set -e
+            before=$(apt-mark showhold | sort)
+            apt-mark hold kubelet kubeadm kubectl cri-tools >/dev/null
+            [ "$before" = "$(apt-mark showhold | sort)" ] || echo changed
+          register: apt_mark
+          changed_when: "'changed' in apt_mark.stdout"
+          when: install_method == 'apt'
+
+        - name: Disable swap immediately
+          command: swapoff -a
+          when: ansible_swaptotal_mb > 0
+
+        - name: Disable swap permanently in /etc/fstab
+          replace:
+            path: /etc/fstab
+            regexp: '^([^#\s]+\s+none\s+swap\s+.*)$'
+            replace: '# \1'
+
+        - name: Load required kernel modules for K8s
+          modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+
+        - name: Ensure kernel modules are loaded on boot
+          copy:
+            dest: /etc/modules-load.d/k8s.conf
+            content: |
+              overlay
+              br_netfilter
+
+        - name: Set sysctl parameters for Kubernetes
+          sysctl:
+            name: "{{ item.name }}"
+            value: "{{ item.value }}"
+            state: present
+            sysctl_file: /etc/sysctl.d/k8s.conf
+            reload: yes
+          loop:
+            - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+            - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+            - { name: 'net.ipv4.ip_forward', value: '1' }
+            - { name: 'fs.inotify.max_user_instances', value: '8192' }
+
+        - name: Hold containerd packages to prevent accidental upgrades
+          # Same before/after comparison as the Kubernetes hold above.
+          shell: |
+            set -e
+            before=$(apt-mark showhold | sort)
+            apt-mark hold containerd.io docker-ce docker-ce-cli >/dev/null
+            [ "$before" = "$(apt-mark showhold | sort)" ] || echo changed
+          register: containerd_apt_mark
+          changed_when: "'changed' in containerd_apt_mark.stdout"
+          when: install_method == 'apt'
+
+        - name: Create containerd config directory
+          file:
+            path: /etc/containerd
+            state: directory
+
+        # Built in scratch and installed at the end only if it differs, so a run
+        # that changes nothing restarts nothing. Still regenerated from
+        # `containerd config default` every time: that is what repairs a config a
+        # vendor installer mangled (Ascend's pointed runc at the removed v1 shim).
+        - name: Generate the wanted containerd config
+          shell: containerd config default > /run/containerd-config.ansible.toml
+          changed_when: false   # writes scratch only; the install task below is the change
+          check_mode: false     # so --check can evaluate the edits and predict the install
+
+        - name: Configure containerd to use SystemdCgroup
+          replace:
+            path: /run/containerd-config.ansible.toml
+            regexp: 'SystemdCgroup \= false'
+            replace: 'SystemdCgroup = true'
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        # 默认 5m 对我们的大镜像不够。sglang 的推理镜像 66 层、压缩 17GB,其中单层
+        # 压缩后就有 2.8GB(解压 8-10GB);解压这一层期间 containerd 看不到传输进度,
+        # 满 5 分钟就把整个拉取 cancel 掉,然后 backoff 重来 —— 永远拉不完:
+        #   cancel pulling image ... because of no progress in 5m0s
+        #   failed to extract layer (...) to overlayfs as "extract-...": context canceled
+        # 排查时容易误判:节点网络(实测 78MB/s)、磁盘(1.3GB/s)、inode(2%)全都正常。
+        # 2026-09-07 在 h800-36 上踩到,H3 的 pod 反复 ImagePullBackOff。
+        #
+        # 放在 SystemdCgroup 之后同一位置:上面每次都会重新生成一份默认配置到 scratch,
+        # 所有定制都必须以 replace 的形式跟在它后面,最后由 install 任务一次性落盘。
+        - name: Raise containerd image pull progress timeout (big AI images)
+          replace:
+            path: /run/containerd-config.ansible.toml
+            # containerd 2.x prints this value in single quotes, 1.x in double, so
+            # match either -- a double-quote-only pattern silently did nothing on
+            # 2.x and left the 5 minute default in place, which is the exact
+            # failure this task exists to prevent.
+            regexp: 'image_pull_progress_timeout\s*=\s*[''"]5m0s[''"]'
+            replace: 'image_pull_progress_timeout = "20m0s"'
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        # Re-stated here because the config is rebuilt every run; without it,
+        # running `offline` alone sends every pull upstream. network_accesslator.yaml
+        # carries the same edit for when mirror runs on its own, and the reasoning
+        # for writing it here rather than into conf.d is there.
+        - name: Point containerd at certs.d
+          replace:
+            path: /run/containerd-config.ansible.toml
+            regexp: '(\[plugins\.[''"]io\.containerd\.(?:grpc\.v1\.cri|cri\.v1\.images)[''"]\.registry\][^\[]*?config_path\s*=\s*)[''"]{2}'
+            replace: '\1"/etc/containerd/certs.d"'
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        # containerd 不往 OCI spec 里写 rlimits,容器直接继承 containerd 进程自己的
+        # soft limit —— systemd 默认 1024,而 hard 是 524288,差三个数量级。
+        #
+        # cilium-envoy 按 CPU 数起 worker,每个 worker 的 libevent event_base 要 ~4 个
+        # fd(epoll + signal socketpair + wakeup),256 核的节点光是建 worker 就要 ~1024
+        # 个,正好撞穿。Envoy 自己确实会把 soft 抬到 hard(InstanceUtil::raiseFileLimits),
+        # 但那一行在 server.cc 里排在 worker 创建之后,救不了启动期,进程直接 EMFILE 死掉。
+        #
+        # 留空(默认)= 完全不碰,连 handler 都不会触发,所以对现网集群是 no-op。
+        # 按集群在 inventory 里开:k8s_containerd_nofile=524288
+        # 值是原样写进 drop-in 的,"1024:524288" 这种 soft:hard 形式同样可用。
+        #
+        # ⚠️ 只对 containerd 重启之后新建的 pod sandbox 生效。shim 是 per-sandbox 起的,
+        #    老 pod 光靠容器重启(CrashLoopBackOff 那种)拿不到新 limit —— 必须 delete pod
+        #    让 sandbox 重建。
+        - name: Create containerd systemd drop-in directory
+          file:
+            path: /etc/systemd/system/containerd.service.d
+            state: directory
+            mode: '0755'
+          when: containerd_nofile != ''
+
+        - name: Raise containerd NOFILE so containers inherit a usable soft limit
+          copy:
+            dest: /etc/systemd/system/containerd.service.d/limits.conf
+            mode: '0644'
+            content: |
+              # Managed by setup_k8s.yaml (k8s_containerd_nofile) — do not edit by hand
+              [Service]
+              LimitNOFILE={{ containerd_nofile }}
+          when: containerd_nofile != ''
+          notify: restart containerd
+
+        # 关掉之后能真的退回默认值,而不是留一份没人记得的 drop-in。
+        # 文件本来就不存在时 state=absent 是 changed=false,不会白重启 containerd。
+        - name: Remove the containerd NOFILE override when unset
+          file:
+            path: /etc/systemd/system/containerd.service.d/limits.conf
+            state: absent
+          when: containerd_nofile == ''
+          notify: restart containerd
+
+        # ---- vendor accelerator runtime -------------------------------------
+        # containerd config.toml gets regenerated from scratch above, so this
+        # has to be re-stated every run. That's also the fix for Ascend's
+        # installer pointing runc at the removed v1 shim, not a side effect.
+        - name: Register the vendor runtime with containerd
+          blockinfile:
+            path: /run/containerd-config.ansible.toml
+            marker: '# {mark} ANSIBLE MANAGED BLOCK accel runtime'
+            block: |
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{{ accel_runtime }}]
+                runtime_type = "io.containerd.runc.v2"
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{{ accel_runtime }}.options]
+                  BinaryName = "{{ accel_runtime_binary }}"
+                  SystemdCgroup = true
+          when: accel_runtime != 'none'
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        - name: Make the vendor runtime the node default
+          replace:
+            path: /run/containerd-config.ansible.toml
+            regexp: 'default_runtime_name\s*=\s*[''"]runc[''"]'
+            replace: 'default_runtime_name = "{{ accel_runtime }}"'
+          when: accel_runtime != 'none'
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        # Binary hosts only -- the deb path keeps containerd's built-in pause.
+        # A fresh vendor host's built-in one is often older than the cluster's
+        # and gets pulled from a registry the node can't reach.
+        - name: Read the pause image this Kubernetes version wants
+          command: /usr/local/bin/kubeadm config images list --kubernetes-version {{ k8s_binary_version }}
+          register: kubeadm_images
+          changed_when: false
+          failed_when: false
+          check_mode: false     # read-only, and the scratch edit below depends on it
+          when: install_method == 'binary'
+
+        # containerd 1.x calls this sandbox_image, 2.x calls it sandbox (under
+        # pinned_images). Matching only the 1.x spelling is a silent no-op on 2.x
+        # -- replace reports ok when nothing matches -- and the unreachable pause
+        # image this task exists to prevent comes back. Checked against a real
+        # config of each version.
+        - name: Point containerd at that pause image
+          replace:
+            path: /run/containerd-config.ansible.toml
+            regexp: '^(\s*)sandbox(_image)?\s*=\s*[''"][^''"]*[''"]'
+            replace: '\1sandbox\2 = "{{ kubeadm_images.stdout_lines | select(''search'', ''/pause:'') | first }}"'
+          when:
+            - install_method == 'binary'
+            - kubeadm_images.stdout_lines | default([]) | select('search', '/pause:') | list | length > 0
+          changed_when: false   # scratch only; see the install task
+          check_mode: false     # ditto -- edits scratch so --check can predict the install
+
+        # The only task that touches the live config, so the only one that can
+        # report changed or restart containerd. copy compares checksums.
+        - name: Install the containerd config if it differs
+          copy:
+            src: /run/containerd-config.ansible.toml
+            dest: /etc/containerd/config.toml
+            remote_src: true
+            mode: '0644'
+            backup: true
+          notify: restart containerd
+
+    - name: Disk Setup Tasks
+      tags: ['disk']
+      block:
+        # 探盘 → 决定要不要分区/格式化 → 挂盘 → 停 docker/containerd → 搬
+        # /var/lib/{docker,containerd} → bind mount → 起服务。整条流水线是有状态的
+        # (停了服务就必须搬完挂完再起回来),拆成 task 靠 register/when 串反而更脆,
+        # 所以整体交给脚本;脚本自己保证幂等,并且探到任何已有文件系统就不再格式化。
+        # 细节和「什么情况下会拒绝动手」见 script/setup_data_disk.sh 的文件头。
+        - name: Prepare the data disk and relocate container storage
+          script: script/setup_data_disk.sh
+          environment:
+            # blkid/parted/mkfs.xfs/lsblk 都在 /usr/sbin,ansible 的非交互 PATH 不一定有
+            # (和 nvidia_audit.yaml 里 modprobe 踩的是同一个坑)→ 这里钉死全量 PATH。
+            PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            DISK: "{{ data_disk }}"
+            MOUNT: "{{ data_mount | default('/mnt/disk0') }}"
+            MKFS: "{{ data_mkfs | default('xfs') }}"
+            DIRS: "{{ data_bind_dirs | default('docker containerd') }}"
+            # --check 时脚本只探测 + 打印计划,不动盘也不动服务
+            DRY_RUN: "{{ '1' if ansible_check_mode else '' }}"
+          register: disk_setup
+          check_mode: false
+          changed_when: "'changed=yes' in disk_setup.stdout"
+
+        - name: Display disk setup result
+          debug:
+            msg: "{{ (disk_setup.stdout_lines | default([])) + (disk_setup.stderr_lines | default([])) }}"
+
+  handlers:
+    - name: restart sshd
+      systemd:
+        name: sshd
+        state: restarted
+
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        # 缺这一条 drop-in 不会被读取
+        daemon_reload: yes

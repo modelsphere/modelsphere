@@ -1,0 +1,1437 @@
+{
+  "uid": "llm-obs-bodylog",
+  "title": "LLM推理性能指标",
+  "tags": [
+    "llm",
+    "inference"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 42,
+  "refresh": "30s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(topk(50, sum by(service)(rate(bodylog_requests_total{service!=\"unknown\"}[1h]))))",
+          "refId": "sv"
+        },
+        "regex": "/service=\"([^\"]+)\"/",
+        "refresh": 2,
+        "includeAll": false,
+        "multi": true,
+        "sort": 0,
+        "label": "service"
+      },
+      {
+        "name": "eng_pods",
+        "type": "custom",
+        "label": "实例明细",
+        "description": "引擎状态面板是否画出每个 pod 的明细线(默认只画 service 汇总;副本多时明细会淹没汇总)",
+        "query": "隐藏 : 0, 显示 : 1",
+        "options": [
+          {
+            "text": "隐藏",
+            "value": "0",
+            "selected": true
+          },
+          {
+            "text": "显示",
+            "value": "1",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "隐藏",
+          "value": "0"
+        },
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "quantile",
+        "type": "custom",
+        "label": "分位",
+        "description": "统一读作「N% 的请求」:TTFT/RT 看不慢于多少秒,生成速率看不低于多少 tok/s(该面板内部自动取 100-N 的低尾)。自定义请输【百分数】,如 72、99.9 —— 不要输 0.72",
+        "query": "50 : 50, 75 : 75, 80 : 80, 90 : 90, 95 : 95, 99 : 99, 99.9 : 99.9",
+        "allowCustomValue": true,
+        "options": [
+          {
+            "text": "50",
+            "value": "50",
+            "selected": false
+          },
+          {
+            "text": "75",
+            "value": "75",
+            "selected": false
+          },
+          {
+            "text": "80",
+            "value": "80",
+            "selected": false
+          },
+          {
+            "text": "90",
+            "value": "90",
+            "selected": true
+          },
+          {
+            "text": "95",
+            "value": "95",
+            "selected": false
+          },
+          {
+            "text": "99",
+            "value": "99",
+            "selected": false
+          },
+          {
+            "text": "99.9",
+            "value": "99.9",
+            "selected": false
+          }
+        ],
+        "current": {
+          "text": "90",
+          "value": "90"
+        },
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "calib",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "label": "cache-sim 口径",
+        "definition": "label_values(cachesim_prompt_tokens_total, calib)",
+        "query": {
+          "query": "label_values(cachesim_prompt_tokens_total, calib)",
+          "refId": "calib"
+        },
+        "refresh": 2,
+        "sort": 4,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 2,
+      "title": "限流 / 自适应并发 / EWMA(openresty)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 3,
+      "title": "限流 / 自适应并发 / TPS / TTFT(openresty · 每 service)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "openresty 限流全景,四组指标同图,按 unit 分轴 —— 左轴(short)自适应并发 + 429(每分钟拒绝条数);右轴 ops=TPS EWMA;右轴 ms=TTFT EWMA。【怎么读】上限/下限(虚线)是 AIMD 配置的活动区间;cc 是实时算出的并发配额,在区间内升降;当前连接数(填色)是真正在途的请求数 —— 它顶到 cc 线的时刻,应当同时看到 429 柱子起来、TTFT 抬头,这正是把四张图合一要看的因果。cc 长期贴着下限 = 后端持续压力大。429(红点线)与并发数共用左轴 —— 口径对齐旧 monitor:画的是【每分钟拒绝条数】(rate×60,整数、几十量级),不是每秒速率,这样才跟并发同数量级、不被连接数峰值压扁。读数是「这一分钟拒了多少条」。429 是该 service 各 reason 之和,不按 reason 拆 —— 要看是 ttft 还是 concurrency 触发的,去 Explore 查 openresty_rejected_total 按 reason 分组。已排除 reason=tps(TPS 限流未启用,计数器恒 0)。图例是表格,列当前值/区间峰值,可点表头排序;series 多时点图例名可单独高亮一条。openresty 侧指标,序列本身是【每 route】一条,这里按 route 对应的 service 命名,跟其余面板口径统一。当前 route 与 service 是 1:1;若某 service 将来挂多个 route,会出现同名多条线(此时可把 legend 改回 {{route}} 区分)。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(service)(openresty_adaptive_cc{service=~\"$service\",service!=\"unknown\"})",
+          "legendFormat": "{{service}} cc",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max by(service)(openresty_adaptive_cc_conc{service=~\"$service\",service!=\"unknown\"})",
+          "legendFormat": "{{service}} 当前连接数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "sum by(service)(label_replace(rate(openresty_rejected_total{reason!=\"tps\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) * 60",
+          "legendFormat": "{{service}} 429",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "openresty_ttft_ewma_ms{service=~\"$service\",service!=\"unknown\"}",
+          "legendFormat": "{{service}} TTFT",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "openresty_tps_ewma{service=~\"$service\",service!=\"unknown\"}",
+          "legendFormat": "{{service}} TPS",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "max by(service)(openresty_adaptive_cc_max{service=~\"$service\",service!=\"unknown\"})",
+          "legendFormat": "{{service}} 上限",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "G",
+          "expr": "max by(service)(openresty_adaptive_cc_min{service=~\"$service\",service!=\"unknown\"})",
+          "legendFormat": "{{service}} 下限",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 上限$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "semi-dark-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 下限$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "light-blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* cc$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f472b6"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    5,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 当前连接数$"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 429$"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    2,
+                    3
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* TPS$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "TPS"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#38bdf8"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    5,
+                    4
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* TTFT$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "TTFT"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#fbbf24"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    5,
+                    4
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 4,
+      "title": "性能($service)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "TTFT p${quantile:text} / avg (秒,仅流式)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "仅流式请求的首 token 时间。exporter 没能滤掉非流式(它们的 first_chunk_t≈rt,恒>0),这里用 ttft(全部) - rt(stream=unknown,即非流式) 把它们扣掉 —— 实测 p90 从 31.98s 降到 0.34s。分位由顶部「分位」下拉切;avg 为常驻参考线。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(($quantile / 100), ((((sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))\n      - sum by(service)(label_replace(rate(bodylog_rt_seconds{stream=\"unknown\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n      or sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 1))\n  or (sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 0))))",
+          "legendFormat": "{{service}} p${quantile:text}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_avg(((((sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))\n      - sum by(service)(label_replace(rate(bodylog_rt_seconds{stream=\"unknown\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n      or sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 1))\n  or (sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 0))))",
+          "legendFormat": "{{service}} avg",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 55
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "单请求生成速率 p${quantile:text}保障 / avg (tok/s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "单请求解码速率(2026-08-26 起分母已扣除 prefill,只统计流式;此前口径含 prefill,系统性偏低约 2.4 倍,跨该时点的历史数据不可比)。⚠️ 该指标**越大越好**,所以本面板取的是 **1-分位** 的低尾:选 p95 画的是 histogram_quantile(0.05),读作「95% 的请求不低于此值」,与 TTFT 面板的「95% 的请求不慢于此值」语义对称。直接看高分位没有意义(那是最快的那批)。另注意单请求速率受批处理并发摊薄——同一后端单请求可达 123 tok/s、14 并发时降到 20~30,低值未必是故障,先看并发。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(((100 - $quantile) / 100), sum by(service)(label_replace(rate(bodylog_output_tok_per_second{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "{{service}} p${quantile:text}保障",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_avg(sum by(service)(label_replace(rate(bodylog_output_tok_per_second{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "{{service}} avg",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 10
+              },
+              {
+                "color": "#EAB839",
+                "value": 20
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "缓存命中率(cached / prompt tokens)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "两条线,**共用同一个分母**(后端真实 prompt_tokens),所以可以直接比大小:\n· 实际:cache-sim 记录的后端真实 cached_tokens;\n· 理论最大:同一批请求在「无多实例打散 / 无驱逐」的理想前缀缓存里重放算出的上界。\n两者的差 = 路由打散 + 驱逐吃掉的部分;理论低于实际说明口径或渲染有问题,不是好事。\n\n只统计 200 + 有 usage + 未截断 + cache-sim 认识的模型,覆盖率见 cachesim_skipped_total(实测与 bodylog 全量口径差 0.2–0.4pp)。calib 是口径版本,变了就是新序列,故用 $calib 锁定当前那批。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(service)(rate(cachesim_theoretical_cached_tokens_total{service=~\"$service\",service!=\"unknown\",calib=\"$calib\"}[$__rate_interval])) / clamp_min(sum by(service)(rate(cachesim_prompt_tokens_total{service=~\"$service\",service!=\"unknown\",calib=\"$calib\"}[$__rate_interval])),0.001)",
+          "legendFormat": "{{service}} 理论最大",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(service)(rate(cachesim_actual_cached_tokens_total{service=~\"$service\",service!=\"unknown\",calib=\"$calib\"}[$__rate_interval])) / clamp_min(sum by(service)(rate(cachesim_prompt_tokens_total{service=~\"$service\",service!=\"unknown\",calib=\"$calib\"}[$__rate_interval])),0.001)",
+          "legendFormat": "{{service}} 实际",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*理论最大"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "TPM(tokens/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "每分钟 token 量(= 速率 x 60)。total=input+output;input=prompt;output=生成;cached=命中前缀缓存的 input(是 input 的子集,cached/input 即缓存命中率)。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "60 * sum by(service)(label_replace(rate(bodylog_total_tokens_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{service}} total",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "60 * sum by(service)(label_replace(rate(bodylog_prompt_tokens_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{service}} input",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "60 * sum by(service)(label_replace(rate(bodylog_completion_tokens_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{service}} output",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "60 * sum by(service)(label_replace(rate(bodylog_cached_tokens_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{service}} cached",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "RPM 请求量(requests/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "每分钟请求数(= 速率 x 60);排除 4xx 无后端噪声  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "60 * sum by(service)(label_replace(rate(bodylog_requests_total{backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{service}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "错误率 (5xx 占比)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "只算 5xx(服务侧错误);4xx 不计 —— 含 400 客户端坏请求 / 499 客户端断连 / 429 限流,不反映服务健康。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(service)(label_replace(rate(bodylog_requests_total{status_class=\"5xx\",backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) / clamp_min(sum by(service)(label_replace(rate(bodylog_requests_total{backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")),0.001)",
+          "legendFormat": "{{service}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "RT p${quantile:text} / avg (秒,端到端)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "端到端响应时间;顶部「分位」下拉可切,avg 常驻",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(($quantile / 100), sum by(service)(label_replace(rate(bodylog_rt_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "{{service}} p${quantile:text}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_avg(sum by(service)(label_replace(rate(bodylog_rt_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "{{service}} avg",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^$service (.*)$",
+            "renamePattern": "$1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "结束原因分布(requests/min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "按 finish_reason 拆的请求速率(堆叠)。stop=正常结束;length=撞到 max_tokens 被截断(占比高说明输出上限设小了或提示词让模型停不下来);tool_calls=触发工具调用。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "60 * sum by(finish_reason)(label_replace(rate(bodylog_finish_reason_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))",
+          "legendFormat": "{{finish_reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqpm",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 13,
+      "title": "引擎状态(sglang/vllm · 按 service)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "KV / token_usage 占用",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "sglang token_usage / vllm gpu_cache_usage_perc(0-1)。汇总线 = 该 service 所有实例均值。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 41
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(avg by(service)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "(avg by(service)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineStyle": {
+              "fill": "dash",
+              "dash": [
+                10,
+                10
+              ]
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 汇总$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "运行中 / 等待中(num_running / num_queue)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "运行中=引擎正在处理的请求数;等待中=在引擎队列里排队的请求数。等待中长期大于 0 = 后端已打满、请求在排队(该扩容或降并发上限)。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 41
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(service)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 运行中 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}} 运行中",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 运行中 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}} 运行中",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "(sum by(service)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 等待中 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}} 等待中",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "G",
+          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 等待中 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "H",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}} 等待中",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineStyle": {
+              "fill": "dash",
+              "dash": [
+                10,
+                10
+              ]
+            }
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 汇总$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "引擎 cache 命中率(token 加权)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "命中前缀缓存的 prompt token 占比(sum(cached)/sum(prompt),按 token 量加权)。不是各 pod 命中率的平均 —— 空闲 pod 的瞬时命中率是 0,直接平均会把结果稀释十倍。与「性能」区那个 bodylog 口径的缓存命中率可互相印证(一个是引擎自报,一个是网关记账)。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 41
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(service)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "(sum by(service,pod)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service,pod)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineStyle": {
+              "fill": "dash",
+              "dash": [
+                10,
+                10
+              ]
+            }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* 汇总$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

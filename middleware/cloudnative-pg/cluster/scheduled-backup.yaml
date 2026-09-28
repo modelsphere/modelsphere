@@ -1,0 +1,22 @@
+# 每天凌晨 3 点(北京时间)一次基础备份。WAL 是连续归档的,基础备份决定的是
+# 「恢复时要重放多久的 WAL」以及 retentionPolicy 从哪天起算。
+#
+# 两个容易写错的地方:
+#   1. schedule 是 **6 段**(带秒),不是标准 5 段 cron。
+#   2. 按 **UTC** 解释,而且 `CRON_TZ=` 前缀会被 webhook 拒(它按字段数校验,
+#      带前缀就成了 7 段)—— 只能自己换算。写成 "0 0 3 * * *" 实际跑在北京时间 11:00,
+#      正好是白天业务高峰。第一次 apply 后看 events 里 "Scheduled first backup by ..."
+#      那行核对,别只看配置。
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: cnpg-daily
+spec:
+  # 19:00 UTC = 次日 03:00 北京时间。
+  schedule: "0 0 19 * * *"
+  backupOwnerReference: self
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  cluster:
+    name: cnpg

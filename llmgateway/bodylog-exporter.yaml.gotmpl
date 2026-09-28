@@ -1,0 +1,22 @@
+{{- $g := .Values.llmGateway }}
+{{- if not $g.node }}{{ fail (printf "llmGateway.node is empty for environment %q: the exporter has to run on the node bodylog wrote to. Set it in environments/%s.yaml, or enabled.bodylogExporter: false." .Environment.Name .Environment.Name) }}{{ end }}
+{{- if not $g.hostPath }}{{ fail (printf "llmGateway.hostPath is empty for environment %q. It has to be the directory bodylog writes to; a mismatch exports nothing and logs nothing." .Environment.Name) }}{{ end }}
+
+data:
+  hostPath: {{ $g.hostPath | quote }}
+image:
+  # Repository only, like autoconfig in helmfile.yaml.gotmpl: the chart picks the
+  # tag from its own appVersion. This used to set the tag to
+  # versions.bodylogExporter, which assumes the chart version and the image
+  # version are the same number. They were until chart 0.3.0,
+  # which changed only a value (the ModelRoute API group) and kept appVersion 0.2.6;
+  # the stack then asked Docker Hub for bodylog-exporter:0.3.0, which does not exist.
+  repository: {{ .Values.registry }}/bodylog-exporter
+listener:
+  service: bodylog
+nodeSelector:
+  kubernetes.io/hostname: {{ $g.node | quote }}
+secret:
+  existingSecret: bodylog
+serviceMonitor:
+  enabled: {{ $g.serviceMonitor }}

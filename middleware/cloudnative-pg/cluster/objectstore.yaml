@@ -1,0 +1,21 @@
+# 备份落点。由 barman-cloud 插件提供的 CRD(不是 CNPG 本体的),所以必须先 make plugin。
+#
+# 这份取代了老写法 Cluster.spec.backup.barmanObjectStore —— 后者 1.31.0 会被删掉,
+# apply 时 webhook 已经在警告了。
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: cnpg-backup-store
+spec:
+  retentionPolicy: 30d
+  configuration:
+    destinationPath: s3://cnpg-backup/
+    endpointURL: http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:80
+    # 凭证来自 cluster/bucket.yaml 那个 OBC,rook 自动生成的同名 Secret。
+    s3Credentials:
+      accessKeyId:     {name: cnpg-backup, key: AWS_ACCESS_KEY_ID}
+      secretAccessKey: {name: cnpg-backup, key: AWS_SECRET_ACCESS_KEY}
+    wal:
+      compression: gzip
+    data:
+      compression: gzip

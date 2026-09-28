@@ -1,0 +1,29 @@
+{{- $g := .Values.llmGateway }}
+{{- if not $g.node }}{{ fail (printf "llmGateway.node is empty for environment %q: bodylog keeps its sinks on one node's local disk and has to be pinned to it. Set it in environments/%s.yaml, or enabled.bodylog: false." .Environment.Name .Environment.Name) }}{{ end }}
+{{- if not $g.hostPath }}{{ fail (printf "llmGateway.hostPath is empty for environment %q. kubelet creates whatever path it is given, so this fails as an empty capture, not as an error." .Environment.Name) }}{{ end }}
+
+image:
+  repository: {{ .Values.registry }}/bodylog-listener
+exporter:
+  openrestyPoll:
+    url: http://openresty:8080
+nodeSelector:
+  kubernetes.io/hostname: {{ $g.node | quote }}
+persistence:
+  hostPath: {{ $g.hostPath | quote }}
+resources:
+  limits:
+    memory: {{ $g.memoryLimit | quote }}
+secret:
+  # This chart creates the Secret; bodylog-exporter reads it back by name
+  # (existingSecret: bodylog), so the two always agree — nothing else consumes it.
+  #
+  # The token is a cluster-internal shared secret, so it has no default and is
+  # never committed: a live key written into the repo stays in git history
+  # forever. Leaving it unset means an EMPTY token, which the bodylog chart
+  # treats as "authentication off" — fine for a fresh cluster, but on a cluster
+  # that already has a token set this silently opens /summary and /metrics.
+  # Generate one with `openssl rand -hex 32`, or carry the existing one over:
+  #   export BODYLOG_HTTP_TOKEN=$(kubectl get secret -n llm-route bodylog \
+  #     -o jsonpath='{.data.BODYLOG_HTTP_TOKEN}' | base64 -d)
+  token: {{ env "BODYLOG_HTTP_TOKEN" | quote }}

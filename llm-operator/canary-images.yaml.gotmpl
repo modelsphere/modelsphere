@@ -1,0 +1,8 @@
+# The image address for llm-canary-operator. See the note in
+# observability/alert-webhook/images.yaml.gotmpl.
+#
+# The key is `manager`, not `controllerManager` -- read from the chart's own
+# values rather than guessed from the deployment name.
+manager:
+  image:
+    repository: {{ .Values.registry }}/canary-operator

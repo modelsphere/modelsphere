@@ -1,0 +1,26 @@
+# Values for the vendored MindCluster deploy-tool chart (ascend/mindcluster-deploy-tool-26.1.0.tgz).
+#
+# Only the device plugin is turned on. The rest of MindCluster (NodeD/ClusterD
+# fault handling, its own Volcano build, the training and inference operators)
+# is a separate decision — in particular ascend-for-volcano would replace the
+# cluster's existing Volcano release, so it is not something to enable by accident.
+clusterd: {enabled: false}
+noded: {enabled: false}
+npu-exporter: {enabled: false}
+ascend-operator: {enabled: false}          # AscendJob / rank tables — training, not ours
+ascend-for-volcano: {enabled: false}       # ⚠️ would collide with scheduler/volcano
+infer-operator: {enabled: false}
+k8s-rdma-shared-dev-plugin: {enabled: false}
+
+ascend-device-plugin:
+  enabled: true
+  # Whole-card scheduling by the default kube-scheduler. The chart defaults to
+  # true, which makes the plugin expect Volcano to do the allocation.
+  volcanoType: false
+  # AscendHub's public SWR only serves old tags (v7.1.RC1, v6.0.0) — the v26.1.0
+  # this chart wants needs a login there. Docker Hub carries the same release
+  # multi-arch and open, so pull from there instead.
+  image:
+    repository: docker.io/ascendai/ascend-k8sdeviceplugin
+    tag: v26.1.0-ubuntu22.04
+    pullPolicy: IfNotPresent

@@ -1,0 +1,24 @@
+nfd:
+  enabled: false
+
+sriovNetworkOperator:
+  enabled: true
+
+sriov-network-operator:
+  images:
+    # Pinned here because upstream does not pin it. The parent chart's images:
+    # map fixes every other sriov component at network-operator-v26.4.1 but has
+    # no metricsExporter key, so it falls back to the subchart's default, which
+    # carries no tag -- and no tag means :latest, a moving target.
+    #
+    # v1.2.0 is the newest release. It is deliberately NOT the digest :latest
+    # resolves to today (sha256:d8fb2f20...), which matches none of v1.1.0,
+    # v1.1.1 or v1.2.0 -- an unreleased build. Nothing is preserved by tracking
+    # it: featureGates is empty on every cluster here, none of them has
+    # ever run a metrics-exporter pod, so there is no behaviour to keep.
+    #
+    # Set on the online path, not just the air-gapped one, so both install the
+    # same image. The tag is versions.sriovMetricsExporter, which
+    # nvidia/network-operator/offline-images.yaml.gotmpl reads too, so the two
+    # paths cannot drift onto different versions.
+    metricsExporter: ghcr.io/k8snetworkplumbingwg/sriov-network-metrics-exporter:{{ .Values.versions.sriovMetricsExporter }}

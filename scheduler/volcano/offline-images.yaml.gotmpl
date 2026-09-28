@@ -1,0 +1,14 @@
+# Air-gapped image addresses for the volcano release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# The only chart here with a single registry knob: every component address is
+# built as <image_registry>/<volcanosh/vc-*>, so one value moves all of them.
+# The upstream host is dropped, as everywhere else, so the value is registry on
+# its own and the images land at <registry>/volcanosh/vc-* --
+# script/offline_load.sh retags to the same layout when it pushes.
+#
+# This is also the value values.yaml's header describes as the way to pull from
+# an internal registry; that note stays true, this file just makes it follow the
+# offline flag instead of being edited by hand.
+basic:
+  image_registry: {{ .Values.registry }}

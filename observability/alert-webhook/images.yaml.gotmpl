@@ -1,0 +1,10 @@
+# The image address for alert-webhook, in every environment rather than only
+# air-gapped ones.
+#
+# Our own charts pin a full private-registry address in their defaults, which `registry`
+# does not reach. That is wrong everywhere, not just offline: the public
+# default (registry: 4pdosc) rendered a private-registry address that no
+# outside user can pull, and the internal clusters render exactly what the
+# chart default already said, so following `registry` costs them nothing.
+image:
+  repository: {{ .Values.registry }}/alert-webhook-server

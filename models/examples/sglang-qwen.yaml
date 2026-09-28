@@ -1,0 +1,99 @@
+# A complete, runnable example: one Qwen2.5-0.5B-Instruct on a single GPU, with
+# the cache-aware router and the hang-watcher sidecar that a real deployment
+# runs alongside it.
+#
+# This is an EXAMPLE, not a cluster's configuration -- which is why it lives
+# here and not in environments/. Which models a site runs is its own business
+# and changes far more often than the cluster does; the environment files
+# describe the cluster.
+#
+# Prerequisites
+#   - the gpu-operator release from README step 6, so the node advertises
+#     nvidia.com/gpu
+#   - the weights already on that node, under model.localPath
+#
+# Install:
+#   make helm-apply SELECTOR=tier=model MODELS=models/examples/sglang-qwen.yaml
+#
+# or, spelled out:
+#   helmfile -f helmfile.yaml.gotmpl -e <env> \
+#     --state-values-file models/examples/sglang-qwen.yaml apply -l tier=model
+#
+# Copy it and edit the copy; pass several with MODELS="a.yaml b.yaml" to run
+# more than one model, or put every model of a site in one file.
+
+models:
+  - name: qwen
+    namespace: llm-demo
+    # sglang or vllm. The version comes from `versions:` in
+    # environments/default.yaml, like every other chart in this repo.
+    chart: sglang
+
+    # Everything below is ordinary sglang-chart values, merged verbatim.
+    values:
+      # The ENGINE image: the OFFICIAL one, which is where an example should
+      # start -- sglang is an upstream project and `lmsysorg/sglang` is its own
+      # registry. A site that runs its own build names that instead (it is the
+      # one address this repo does not guess), and a tag is pinned here rather
+      # than left to the chart's `latest`.
+      #
+      # Under `registryMode: rewrite` the host comes off and the local registry
+      # goes on, the same rule every other image follows; under `mirror` and
+      # `upstream` the address is used as written.
+      image:
+        repository: lmsysorg/sglang
+        tag: v0.5.15-cu129
+
+      model:
+        # what the model is called over the API
+        name: "Qwen/Qwen2.5-0.5B-Instruct"
+        # a hostPath on the node, mounted read-only at mountPath. This is the
+        # layout the rest of the repo assumes: /mnt/disk0/models/<org>/<model>.
+        localPath: "/mnt/disk0/models/Qwen/Qwen2.5-0.5B-Instruct"
+        mountPath: "/models"
+        contextLength: "4096"
+        gpus: "1"
+
+      # Refuses to start if the mounted directory does not look like a model,
+      # which turns a mistyped localPath into a clear failure rather than a
+      # crash loop.
+      modelCheck:
+        enabled: true
+        requiredGlobs:
+          - "config.json"
+          - "*.safetensors"
+
+      # The cache-aware router: engines behind it are picked by prefix-cache
+      # affinity rather than round robin. Its image, the hang-watcher's and
+      # CART's two sidecars are ours and are named for you, under `registry` --
+      # see models/images.yaml.gotmpl.
+      cart:
+        enabled: true
+
+      # The ModelRoute is what feeds the router: autoconfig reads this CR to
+      # learn where to write the worker list, so a router without one
+      # crash-loops on an empty list. Default since 0.7.6, set here because it
+      # is the half of the pair that is easy to forget.
+      modelRoute:
+        enabled: true
+        # Where autoconfig writes the route. The chart will not guess this: it
+        # is the openresty installed in README step 6, as
+        # "<namespace>/<configmap>".
+        nginx:
+          outputConfigMap: "llm-route/openresty-conf"
+        # A demo does not need a monitor row.
+        monitor:
+          enabled: false
+
+      # Restarts an engine that has stopped making progress but still answers
+      # /health.
+      hangWatcher:
+        enabled: true
+
+      # This example does not assume a Prometheus operator in the cluster.
+      serviceMonitor:
+        enabled: false
+
+      service:
+        type: ClusterIP
+        port: 30000

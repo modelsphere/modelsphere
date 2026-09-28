@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.1-standalone-strict/all.json
+#
+# the daemonset verify official nvidia device plugin
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nv-verify
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-verify
+  template:
+    metadata:
+      labels:
+        app: nvidia-verify
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.deploy.device-plugin
+                operator: In
+                values:
+                  - 'true'
+              # - key: nvidia.com/gpu.product
+              #   operator: In
+              #   values:
+              #     - "NVIDIA-GeForce-RTX-3090"
+              #     - "NVIDIA-H100-80GB-HBM3"
+              #     - "NVIDIA-A100-SXM4-80GB"
+      containers:
+        - name: cuda-container
+          image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda10.2
+          command: ["sh", "-c"]
+          args:
+            - "trap : TERM INT; /tmp/vectorAdd; sleep infinity & wait"
+          resources:
+            limits:
+              nvidia.com/gpu: 1 # requesting 1 GPU
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+        key: nvidia.com/gpu
+

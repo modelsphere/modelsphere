@@ -1,0 +1,21 @@
+# 手工触发一次基础备份:make backup-now
+#
+# 为什么不放 cluster/ 里:
+#   1. 硬性原因 —— `kubectl apply` 处理不了 generateName:
+#        error: from cnpg-manual-: cannot use generate name with apply
+#      放进去会让 `make cluster`(apply 整个目录)直接失败。
+#   2. 语义原因 —— cluster/ 是「apply 它就得到期望状态」的声明式集合,幂等;
+#      而备份是一次性动作,每跑一次就该产生一个新对象。两者混在一起,
+#      要么 make cluster 变得不幂等,要么备份变成只能触发一次。
+#
+# 所以这里用 create(不是 apply)+ generateName,每次触发得到一个新的 Backup。
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  generateName: cnpg-manual-
+spec:
+  cluster:
+    name: cnpg
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

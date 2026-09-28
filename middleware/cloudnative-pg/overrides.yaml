@@ -1,0 +1,19 @@
+# CloudNativePG operator。默认值大多可用,这里只改三处。
+
+# operator 是无状态控制器,挂了不影响已在跑的数据库(只是这期间不做故障转移/不响应变更)。
+# 2 副本走 leader election,滚更新和节点维护时不留空窗。
+replicaCount: 2
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits:   {cpu: 500m, memory: 512Mi}
+
+# 接进集群里已有的 kube-prometheus-stack。
+# 它的 podMonitorSelector 是 matchLabels{release: kube-prometheus-stack}(不是 nil),
+# 不打这个标签的 PodMonitor 会被建出来但**永远不被抓取** —— 静默失效,查起来很费劲。
+monitoring:
+  podMonitorEnabled: true
+  podMonitorAdditionalLabels:
+    release: kube-prometheus-stack
+  grafanaDashboard:
+    create: false     # 面板统一在 monitor/grafana 里以代码生成,不从 chart 塞 ConfigMap

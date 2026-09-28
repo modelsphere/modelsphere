@@ -1,0 +1,4 @@
+# Air-gapped image address for the descheduler release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+image:
+  repository: {{ .Values.registry }}/descheduler/descheduler

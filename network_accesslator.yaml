@@ -1,0 +1,115 @@
+- name: containerd registry mirror
+  hosts: all
+  become: true
+  diff: true
+  tags: ['mirror']
+
+  tasks:
+    # containerd only consults /etc/containerd/certs.d when registry.config_path
+    # is set, so every mirror below this task depends on this one line.
+    #
+    # It used to be written as a drop-in under /etc/containerd/conf.d, which
+    # works but does not survive: setup_k8s.yaml regenerates config.toml from
+    # `containerd config default` on every offline run, so re-running that tag
+    # on its own leaves config_path empty again -- silently, with every pull
+    # going upstream and nothing to see but slow images. Writing into the main
+    # config, from both playbooks, means the result is the same whichever tag
+    # ran last.
+    #
+    # Matching either plugin key (io.containerd.cri.v1.images, and the older
+    # io.containerd.grpc.v1.cri) and either quote style costs nothing and keeps
+    # this working across the containerd versions a fleet accumulates -- 2.2.6
+    # through 2.3.5 here, because containerd.io is installed unpinned and then
+    # held, so each node keeps whatever was current the day it was built. Only
+    # an empty value is rewritten: a node with a deliberate config_path of its
+    # own is left alone.
+    - name: Point containerd at certs.d in its main config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: '(\[plugins\.[''"]io\.containerd\.(?:grpc\.v1\.cri|cri\.v1\.images)[''"]\.registry\][^\[]*?config_path\s*=\s*)[''"]{2}'
+        replace: '\1"/etc/containerd/certs.d"'
+      notify: restart containerd
+
+    - name: Create containerd certs.d directories
+      file:
+        path: "/etc/containerd/certs.d/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - docker.io
+        - registry.k8s.io
+        - k8s.gcr.io
+        - quay.io
+        - gcr.io
+        - ghcr.io
+        - nvcr.io
+
+    - name: Configure docker.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/docker.io/hosts.toml
+        content: |
+          server = "https://registry-1.docker.io"
+          [host."{{ mirror_url_docker | default(mirror_prefix | default('https://docker.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure registry.k8s.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
+        content: |
+          server = "https://registry.k8s.io"
+          [host."{{ mirror_url_registry_k8s | default(mirror_prefix | default('https://k8s.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure k8s.gcr.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/k8s.gcr.io/hosts.toml
+        content: |
+          server = "https://k8s.gcr.io"
+          [host."{{ mirror_url_k8s_gcr | default(mirror_prefix | default('https://k8s.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure quay.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/quay.io/hosts.toml
+        content: |
+          server = "https://quay.io"
+          [host."{{ mirror_url_quay | default(mirror_prefix | default('https://quay.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure gcr.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/gcr.io/hosts.toml
+        content: |
+          server = "https://gcr.io"
+          [host."{{ mirror_url_gcr | default(mirror_prefix | default('https://gcr.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure ghcr.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/ghcr.io/hosts.toml
+        content: |
+          server = "https://ghcr.io"
+          [host."{{ mirror_url_ghcr | default(mirror_prefix | default('https://ghcr.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+
+    - name: Configure nvcr.io mirror
+      copy:
+        dest: /etc/containerd/certs.d/nvcr.io/hosts.toml
+        content: |
+          server = "https://nvcr.io"
+          [host."{{ mirror_url_nvcr | default(mirror_prefix | default('https://nvcr.m.daocloud.io')) }}"]
+            capabilities = ["pull", "resolve"]
+      notify: restart containerd
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes

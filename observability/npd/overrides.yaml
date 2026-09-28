@@ -1,0 +1,80 @@
+settings:
+  # Custom monitor definitions to add to Node Problem Detector - to be
+  # mounted at /custom-config. These are in addition to pre-packaged monitor
+  # definitions provided within the default docker image available at /config:
+  # https://github.com/kubernetes/node-problem-detector/tree/master/config
+  # settings.custom_monitor_definitions -- Custom plugin monitor config files
+  custom_monitor_definitions:
+    nvidia-monitor.json: |
+      {
+        "plugin": "kmsg",
+        "logPath": "/dev/kmsg",
+        "lookback": "5m",
+        "bufferSize": 10,
+        "source": "kernel-monitor",
+        "conditions": [
+          {
+            "type": "NvidiaGPUError",
+            "reason": "HardwareError",
+            "message": "Hardware error detected"
+          }
+        ],
+        "rules": [
+          {
+            "type": "permanent",
+            "condition": "NvidiaGPUError",
+            "reason": "NvidiaCriticalXidError",
+            "message": "NVIDIA GPU Critical Xid Error detected in kernel logs",
+            "pattern": "NVRM: Xid.*: (48|61|62|63|74|79|119).*"
+          }
+        ]
+      }
+
+  log_monitors:
+    - /config/kernel-monitor.json
+    - /config/docker-monitor.json
+    - /custom-config/nvidia-monitor.json
+
+metrics:
+  # metrics.enabled -- Expose metrics in Prometheus format with default configuration.
+  enabled: true
+  # metrics.annotations -- Override all default annotations when `metrics.enabled=true` with specified values.
+  annotations: {}
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+    additionalRelabelings: []
+    metricRelabelings: []
+  prometheusRule:
+    enabled: true
+    defaultRules:
+      create: true
+      disabled: []
+    additionalLabels:
+      release: kube-prometheus-stack
+    # chart 自带的 defaultRules 只覆盖它自己那套 kernel/docker reason,上面
+    # custom_monitor_definitions 里的 NvidiaCriticalXidError 不在其中 —— 不加这段,关键 Xid
+    # 只会变成 NodeCondition(以及 descheduler 那条驱逐链),Prometheus / IM 侧一声不响。
+    additionalRules:
+      # permanent rule 落在 problem_gauge,label 是 {type=条件类型, reason=规则 reason};
+      # 只有 temporary rule 才进 problem_counter,所以这里【不能】照抄 defaultRules 里
+      # increase(problem_counter{reason=...}[2m]) 的写法,那样永远不会触发。
+      #
+      # 用 == 1 而不是 defaultRules 里的 increase(problem_gauge[2m]) > 0:NvidiaGPUError 是
+      # permanent condition,不会自愈,告警就该一直挂着到人工修完卡 —— NPD 重启 / 节点重启会
+      # 把 condition 归 False,gauge 随之回 0,告警自动消,和摘污点是同一个人工动作。
+      #
+      # node 这个 label 来自 servicemonitor 的 relabeling(__meta_kubernetes_pod_node_name)。
+      #
+      # ⚠️ severity: critical => Alertmanager 路由到 receiver 'phone',是会打语音电话的。
+      #    觉得坏一张卡不值得打电话,把它改成 warning,就只进 IM 群。
+      - alert: NvidiaGPUCriticalXidError
+        expr: problem_gauge{type="NvidiaGPUError", reason="NvidiaCriticalXidError"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          channel: infra
+        annotations:
+          summary: "{{ $labels.node }} GPU 关键 Xid 错误"
+          description: "kmsg 中出现关键 Xid(48/61/62/63/74/79/119),该节点已被置上 NvidiaGPUError 这个 permanent NodeCondition,随后会被翻译成 descheduler.mark=true:NoSchedule 并驱逐其上的 pod(含 inference-prod)。这是硬件故障,修完卡后需人工摘污点、重启 NPD 才能清掉本告警。"

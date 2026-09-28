@@ -1,0 +1,12 @@
+bodylog:
+  host: bodylog.llm-route.svc
+fullnameOverride: openresty
+image:
+  repository: {{ .Values.registry }}/llm-openresty
+  tag: 0.1.20
+# The two sidecars autoconfig injects have image names that differ from their
+# repository name, but they follow registry the same way.
+reload:
+  image: {{ .Values.registry }}/autoconfig-reload:0.3.47
+ha:
+  image: {{ .Values.registry }}/autoconfig-hagate:0.3.47

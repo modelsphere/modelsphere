@@ -1,0 +1,36 @@
+# LLM 推理 Grafana dashboard → ConfigMap(每个 dashboard 一个)。
+# kube-prometheus-stack 的 grafana sidecar 监听所有 namespace 里带 grafana_dashboard=1 的 ConfigMap,
+# 写进 /tmp/dashboards 由 Grafana 文件 provisioner 加载 —— 与 chart 自带的 29 个 dashboard 同一条链路。
+#
+# 部署:在 observability/prom-stack/ 下 `make dashboards`(= kubectl apply --server-side -k ./dashboards/)。
+# 用 server-side apply:client-side apply 会把整个 CM 再存进 last-applied-configuration 注解,
+# 注解总大小上限 256KiB,dashboard JSON 变大后会 apply 失败。
+#
+# 行为(2026-09-15 用一次性 uid 实测):
+#   - 同 uid 的 dashboard 若已由 API 导入存在 DB 里,CM 会直接接管(约 6s,不冲突、不出现两份);
+#   - 改 CM 约 5s 生效;UI 上保存会被拒(Cannot save provisioned dashboard);
+#   - 删除 CM,dashboard 随之删除(provider disableDeletion: false)。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+generatorOptions:
+  disableNameSuffixHash: true   # 名字固定,改内容是原地更新而不是新建一个 CM
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/part-of: llm-observability
+
+configMapGenerator:
+  - name: grafana-dashboard-llm-health
+    files:
+      - llm-health-dashboard.json
+  - name: grafana-dashboard-llm-obs
+    files:
+      - llm-obs-dashboard.json
+  - name: grafana-dashboard-llm-gpu
+    files:
+      - llm-gpu-dashboard.json
+  - name: grafana-dashboard-h3
+    files:
+      - h3-dashboard.json

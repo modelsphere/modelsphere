@@ -1,0 +1,103 @@
+# HTTP success-rate alerts for the openresty gateway in llm-route, built on the
+# Hubble L7 metrics Cilium exports (reporter="client", i.e. as seen by callers).
+#
+# Derived from the Grafana panel query; two things changed for Prometheus:
+#   - $__rate_interval is a Grafana-only variable, pinned to 5m here
+#   - cluster=~"" was an unfilled dashboard variable; matching it literally would
+#     only select series whose cluster label is empty, so it is dropped
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cilium-llm-route-openresty
+  namespace: monitoring
+  labels:
+    # prometheusSpec.ruleSelectorNilUsesHelmValues is true, so Prometheus only
+    # picks up PrometheusRules carrying the helm release name.
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: llm-route-openresty.rules
+      interval: 30s
+      rules:
+        - record: destination_workload:hubble_http_requests:rate5m
+          expr: |-
+            sum by (destination_namespace, destination_workload) (
+              rate(hubble_http_requests_total{destination_namespace="llm-route",destination_workload="openresty",reporter="client"}[5m])
+            )
+
+        # Share of requests that did not return 5xx. Evaluates to NaN while there
+        # is no traffic at all (0/0); NaN fails every comparison, so an idle
+        # gateway silently drops out of the alerts below rather than firing.
+        - record: destination_workload:hubble_http_requests:success_ratio5m
+          expr: |-
+            sum by (destination_namespace, destination_workload) (
+              rate(hubble_http_requests_total{destination_namespace="llm-route",destination_workload="openresty",reporter="client",status!~"5.*"}[5m])
+            )
+            /
+            destination_workload:hubble_http_requests:rate5m
+
+        # Both alerts share an alertname so the severity=critical inhibit_rule in
+        # overrides.yaml (equal: namespace, alertname) suppresses the warning copy
+        # once the critical one fires. The rate guard keeps a couple of 5xx on an
+        # almost-idle gateway from paging: 0.1 req/s over 5m is ~30 requests.
+        - alert: OpenrestyHTTPSuccessRateLow
+          expr: |-
+            destination_workload:hubble_http_requests:success_ratio5m < 0.99
+            and
+            destination_workload:hubble_http_requests:rate5m > 0.1
+          for: 10m
+          labels:
+            severity: warning
+            namespace: llm-route
+            channel: bussiense
+          annotations:
+            summary: >-
+              openresty HTTP success rate below 99%
+            description: >-
+              Only {{ $value | humanizePercentage }} of client-reported requests to
+              {{ $labels.destination_workload }} in {{ $labels.destination_namespace }}
+              are non-5xx (5m rate, sustained for 10m).
+
+        - alert: OpenrestyHTTPSuccessRateLow
+          expr: |-
+            destination_workload:hubble_http_requests:success_ratio5m < 0.95
+            and
+            destination_workload:hubble_http_requests:rate5m > 0.1
+          for: 5m
+          labels:
+            severity: critical
+            namespace: llm-route
+            channel: bussiense
+          annotations:
+            summary: >-
+              openresty HTTP success rate below 95%
+            description: >-
+              Only {{ $value | humanizePercentage }} of client-reported requests to
+              {{ $labels.destination_workload }} in {{ $labels.destination_namespace }}
+              are non-5xx (5m rate, sustained for 5m).
+
+        # Absolute-count companion to the ratio alerts above. The ratio misses a
+        # steady trickle of 5xx hidden under high traffic; this catches it. No
+        # `for` clause: increase() already averages over its 10m window, and
+        # stacking `for` on top would just add latency before the page.
+        #
+        # increase() extrapolates to the window edges, so $value is a close
+        # estimate rather than an exact count -- do not tune the threshold to a
+        # precision it cannot deliver.
+        - alert: OpenrestyHTTP5xxBurst
+          expr: |-
+            sum by (destination_namespace, destination_workload) (
+              increase(hubble_http_requests_total{destination_namespace="llm-route",destination_workload="openresty",reporter="client",status=~"5.*"}[10m])
+            ) > 50
+          labels:
+            severity: warning
+            namespace: llm-route
+            channel: business
+          annotations:
+            summary: >-
+              openresty returned {{ $value | printf "%.0f" }} 5xx responses in 10m
+            description: >-
+              {{ $labels.destination_workload }} in {{ $labels.destination_namespace }}
+              returned roughly {{ $value | printf "%.0f" }} 5xx responses over the last
+              10 minutes (threshold 50), as reported by clients.

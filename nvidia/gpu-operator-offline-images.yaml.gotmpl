@@ -1,0 +1,63 @@
+# Air-gapped image addresses for the gpu-operator release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# This chart splits an address into `repository` (registry + org) and `image`
+# (the name), so only `repository` moves; `image` and the version stay as the
+# chart ships them. The upstream host is dropped and the rest of the path kept,
+# so nvcr.io/nvidia becomes <registry>/nvidia -- see the note on `offline` in
+# environments/default.yaml.
+#
+# vgpuManager.repository is deliberately absent: the chart ships it empty and
+# vGPU is not used here. Setting it would invent an address for an image that is
+# never pulled, and script/offline_bundle.sh would then look for it.
+#
+# node-feature-discovery is a subchart (Chart.yaml dependency, condition
+# nfd.enabled). Its image lives in the subchart's own values, so it has to be
+# named under the subchart key -- the parent's `node-feature-discovery:` block
+# carries scheduling settings only, no image. Missing this is silent: the
+# operator comes up and NFD alone fails to pull.
+validator:
+  repository: {{ .Values.registry }}/nvidia
+operator:
+  repository: {{ .Values.registry }}/nvidia
+driver:
+  repository: {{ .Values.registry }}/nvidia
+  manager:
+    repository: {{ .Values.registry }}/nvidia/cloud-native
+toolkit:
+  repository: {{ .Values.registry }}/nvidia/k8s
+devicePlugin:
+  repository: {{ .Values.registry }}/nvidia
+dcgm:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+dcgmExporter:
+  repository: {{ .Values.registry }}/nvidia/k8s
+gfd:
+  repository: {{ .Values.registry }}/nvidia
+migManager:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+nodeStatusExporter:
+  repository: {{ .Values.registry }}/nvidia
+gds:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+gdrcopy:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+vgpuManager:
+  driverManager:
+    repository: {{ .Values.registry }}/nvidia/cloud-native
+vgpuDeviceManager:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+vfioManager:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+  driverManager:
+    repository: {{ .Values.registry }}/nvidia/cloud-native
+sandboxDevicePlugin:
+  repository: {{ .Values.registry }}/nvidia
+kataSandboxDevicePlugin:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+ccManager:
+  repository: {{ .Values.registry }}/nvidia/cloud-native
+
+node-feature-discovery:
+  image:
+    repository: {{ .Values.registry }}/nfd/node-feature-discovery

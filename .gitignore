@@ -1,0 +1,6 @@
+.DS_Store
+
+# Local, per-cluster files that describe one particular environment: they are
+# nobody else's business and would go stale in the repo. Copy the .example files.
+environments/offline-*.yaml
+inventory-local*.ini

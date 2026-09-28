@@ -1,0 +1,10 @@
+# Air-gapped image addresses for the rook-ceph-cluster release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# toolbox.image / toolbox.repository are deliberately NOT set here. The chart
+# ships them as null and falls back to the ceph image when they are, so writing
+# a value would replace a working default with one more address to keep in step
+# for no gain. If the toolbox is ever pinned separately upstream, it needs a
+# line here and an entry in the bundle.
+cephImage:
+  repository: {{ .Values.registry }}/ceph/ceph

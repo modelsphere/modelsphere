@@ -1,0 +1,12 @@
+# The bundle's payload is built, never committed: ~8 GB of image tarballs, the
+# chart tgzs and the tool binaries. Only the structure and the notes live here,
+# so `git clone` stays small and `offline/` is a known place to put the payload
+# rather than a directory invented on each site visit.
+*
+!.gitignore
+!README.md
+!versions.env
+!site.env.example
+!engine-images.txt.example
+!*/
+!*/.gitkeep

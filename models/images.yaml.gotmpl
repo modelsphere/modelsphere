@@ -1,0 +1,62 @@
+{{- /*
+     Where a model release's images come from.
+
+     The hang-watcher, CART and CART's two sidecars: ours, so they sit under
+     `registry`, the same way autoconfig's and bodylog's images do. Applies in
+     every mode -- a model release is not a special case, and none of this
+     depends on whether the cluster is offline.
+
+     The chart's own defaults point at a private registry deliberately (its values explain
+     why: the CART subchart defaults to a public registry, which a production
+     cluster with no outbound network cannot reach). Naming them here rather
+     than inheriting those keeps a bundle built from the public environment
+     from having to carry private-registry spellings of images it already holds, and
+     keeps that host out of the ones an air-gapped node has to mirror.
+
+     This file is mounted AFTER the entry's own `values:`, because the engine
+     rule below transforms what the entry declared -- run first, it would be
+     overwritten by the very value it read. The four sidecars are therefore not
+     overridable per entry either, which is the same deal every other release in
+     this repo gets: its images come from `registry`.
+
+     Tags are left to the chart: an empty tag means its appVersion, which its
+     CI rewrites on every release, and pinning one here would freeze it.
+     cart.ha and cart.reload are the exception, because that chart writes them
+     as a single "repository:tag" string -- replacing the repository replaces
+     the tag too, so it has to be supplied. They are autoconfig's sidecars and
+     take its version.
+*/}}
+{{- /*
+     The ENGINE. The site declares it once, at its real address, in its own
+     `models:` entry -- sglang and vllm are upstream projects and what runs here
+     is a build of the site's own, so the address is not ours to invent. What IS
+     ours is the same rule every other image follows under `rewrite`: the host
+     comes off and `registry` goes on, exactly where offline_load.sh put it.
+     Under `upstream` and `mirror` the address is used as declared, because
+     those two modes do not rewrite anything.
+
+     This is read back out of .Values.models rather than passed in, because a
+     values file cannot see the loop variable -- but it can see the environment,
+     and .Release.Name says which entry is ours.
+*/}}
+{{- $declared := "" }}
+{{- range (dig "models" (list) .Values) }}
+{{-   if eq .name $.Release.Name }}{{ $declared = dig "values" "image" "repository" "" . }}{{ end }}
+{{- end }}
+{{- if and $declared (eq (.Values.registryMode | default "upstream") "rewrite") }}
+{{- /* host off, path kept -- `a.b/c/d` -> `c/d`, a bare `c/d` unchanged */}}
+{{-   $head := splitList "/" $declared | first }}
+{{-   $path := ternary (trimPrefix (printf "%s/" $head) $declared) $declared (or (contains "." $head) (contains ":" $head)) }}
+image:
+  repository: {{ .Values.registry }}/{{ $path }}
+{{- end }}
+hangWatcher:
+  image:
+    repository: {{ .Values.registry }}/hang-watcher
+cart:
+  image:
+    repository: {{ .Values.registry }}/cache_aware_router
+  ha:
+    image: {{ printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote }}
+  reload:
+    image: {{ printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote }}

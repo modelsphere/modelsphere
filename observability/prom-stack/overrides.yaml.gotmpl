@@ -1,0 +1,164 @@
+# kube-proxy 在本集群【不存在】:Cilium 开了 kube-proxy-replacement=true
+# (kube-system 里 kube-proxy pod 数为 0),所以 chart 默认建出来的那套
+# Service(kube-system/kube-prometheus-stack-kube-proxy,:10249)+ ServiceMonitor
+# + KubeProxyDown 告警规则永远抓不到东西 —— 只会留一个抓不动的 target 和一条
+# 注定触发的告警。关掉它。
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    convertClassicHistogramsToNHCB: true
+    scrapeClassicHistograms: true
+    scrapeNativeHistograms: true
+{{- if .Values.storage.persistence }}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: {{ .Values.storage.className }}
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 500Gi
+{{- else }}
+    # storage.persistence is off: no storageSpec at all, which is what makes
+    # prometheus-operator fall back to an emptyDir. Every metric this replica
+    # holds is then lost when the pod restarts or moves.
+{{- end }}
+
+thanosRuler:
+  thanosRulerSpec:
+{{- if .Values.storage.persistence }}
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: {{ .Values.storage.className }}
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+{{- else }}
+    {}
+{{- end }}
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'severity = warning'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'alertname = InfoInhibitor'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+      - target_matchers:
+          - 'alertname = InfoInhibitor'
+    route:
+      group_by: ['namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'all'
+      routes:
+      - receiver: 'null'
+        matchers:
+          - alertname = "Watchdog"
+      - receiver: 'phone'
+        matchers:
+          - 'severity = critical'
+    receivers:
+    - name: 'null'
+    # ⚠️ This used to be an empty receiver, i.e. a black hole: severity=critical
+    #    routed here and was dropped silently, and once Alertmanager matches a
+    #    child route it does not fall back to the parent, so even the 'all'
+    #    webhook never saw it. Measured with a probe alert: 0 webhook deliveries
+    #    for critical while warning arrived normally. Now the receiver below
+    #    carries the configs (several configs on one receiver all fire).
+    #
+    # ⚠️⚠️ Both are OPT-IN, and the default is off. The voice-call address used
+    #    to be hardcoded here, so every cluster installed from this repo dialed a
+    #    real person on any severity=critical alert -- rehearsal and test
+    #    clusters included. Measured 2026-09-25: a single-node rehearsal cluster
+    #    called the on-call rota over etcdInsufficientMembers (over an etcd it
+    #    was tearing down on purpose) and it was answered, and a test cluster
+    #    called over AlertmanagerClusterFailedToSendAlerts -- itself an artefact
+    #    of a receiver pointing at an alert-webhook that environment does not
+    #    install.
+    #
+    #    So: the IM webhook is written only when enabled.alertWebhook is true,
+    #    i.e. when the service it points at is actually installed, and the voice
+    #    call only when alertWebhook.phoneUrl is set. A production cluster sets
+    #    that value in its own environment file.
+    - name: 'phone'
+{{- if or .Values.enabled.alertWebhook .Values.alertWebhook.phoneUrl }}
+      webhook_configs:
+{{- if .Values.enabled.alertWebhook }}
+        - url: 'http://alert-webhook.{{ .Values.namespaces.alertWebhook }}.svc:8080/webhook'
+{{- end }}
+{{- if .Values.alertWebhook.phoneUrl }}
+        # A voice-call gateway that accepts the Alertmanager webhook format
+        #   natively, so no translation layer is needed. What such a service
+        #   typically does with the payload, and what this config relies on:
+        #     severity -> its own call level, so only critical actually dials
+        #     alertname -> what the call announces
+        #     annotations.summary -> the spoken message (keep it short; these
+        #        services truncate, and a long message on a phone is useless)
+        #   send_resolved: false -- a recovery notice should not ring anyone.
+        #   Verified against the endpoint in use: reachable from inside the
+        #   cluster, and a resolved-status probe reported 0 calls dispatched.
+        - url: '{{ .Values.alertWebhook.phoneUrl }}'
+          send_resolved: false
+{{- end }}
+{{- end }}
+    - name: 'all'
+{{- if .Values.enabled.alertWebhook }}
+      webhook_configs:
+        - url: 'http://alert-webhook.{{ .Values.namespaces.alertWebhook }}.svc:8080/webhook'
+{{- end }}
+    templates:
+    - '/etc/alertmanager/config/*.tmpl'
+  alertmanagerSpec:
+{{- if .Values.storage.persistence }}
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: {{ .Values.storage.className }}
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+{{- else }}
+    # emptyDir: silences and notification-dedup state do not survive a restart,
+    # so an alert that was already silenced or sent can fire again.
+    {}
+{{- end }}
+
+grafana:
+  persistence:
+    # Off, the chart renders a Deployment with an emptyDir instead of this
+    # StatefulSet. Dashboards survive either way -- the sidecar provisions them
+    # from ConfigMaps -- what is lost is grafana's sqlite: hand-saved
+    # dashboards, users, API keys, annotations, preferences.
+    enabled: {{ .Values.storage.persistence }}
+    type: sts
+    storageClassName: {{ .Values.storage.className | quote }}
+    accessModes:
+      - ReadWriteOnce
+    size: 50Gi
+    finalizers:
+      - kubernetes.io/pvc-protection

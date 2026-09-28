@@ -1,0 +1,26 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gateway-infra
+  namespace: monitoring
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Same
+  # Uncomment and configure if HTTPS/TLS termination is required at the gateway:
+  # - name: https
+  #   protocol: HTTPS
+  #   port: 443
+  #   tls:
+  #     mode: Terminate
+  #     certificateRefs:
+  #     - kind: Secret
+  #       name: internal-tls-cert
+  #   allowedRoutes:
+  #     namespaces:
+  #       from: Same

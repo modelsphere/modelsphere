@@ -1,0 +1,53 @@
+# =============================================================================
+# How inference traffic reaches the router
+# =============================================================================
+#   client
+#     -> whatever fronts the cluster: a cloud L4 load balancer, a NodePort, a
+#        floating IP. Not provisioned here -- it belongs to your network.
+#     -> this Gateway (TLS terminates here)
+#     -> openresty, which picks the backend: a CART, or an engine directly
+#
+# So this file is the cluster's edge for inference traffic, and openresty behind
+# it is what routes. The listeners below are per-cluster: set the hostname and
+# point certificateRefs at your own TLS secret before applying.
+# =============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openresty
+  namespace: llm-route
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    # hostname: "api.yourdomain.com" # Optional: restrict HTTP to specific domain
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            gateway-openresty: enable
+
+  - name: https
+    protocol: HTTPS
+    port: 443
+    # hostname: "llm.example.com"
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: wildcard-example-com
+        namespace: "gateway-secrets"
+    allowedRoutes:
+      # This gateway only allows routes from Openresty. The Openresty instances may come from:
+      # - ns=llm-route: The main Openresty namespace currently in use.
+      # - ns=<some-canary-ns>: A canary test namespace set up for Openresty and carts.
+      #
+      # These allowed namespaces are aggregated using a namespace label selector.
+      namespaces:
+        from: Selector
+        selector:
+          matchLabels:
+            gateway-openresty: enable

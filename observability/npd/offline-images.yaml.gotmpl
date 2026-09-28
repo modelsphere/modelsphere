@@ -1,0 +1,15 @@
+# Air-gapped image address for the node-problem-detector release.
+# Referenced from helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# This is a separate file rather than a block appended to overrides.yaml
+# because that file carries a Prometheus annotation written in Go template
+# syntax (a labels.node reference in double braces). Renaming it to .gotmpl
+# would hand that to helmfile's template engine, which resolves the undefined
+# variable and blanks the alert text -- or fails the render outright. Keeping
+# the offline address in its own file leaves overrides.yaml plain YAML.
+#
+# For the same reason this comment spells the expression out instead of
+# quoting it: helmfile renders the whole file before any YAML is parsed, so a
+# literal double-brace expression in a comment is still evaluated.
+image:
+  repository: {{ .Values.registry }}/node-problem-detector/node-problem-detector

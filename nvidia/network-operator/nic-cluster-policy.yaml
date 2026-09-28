@@ -1,0 +1,61 @@
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+#   ofedDriver:
+#    # Enable ofedDriver if modules like mlx5_core are not setup in Host node
+#    # this require outbound network access
+#     # version: 26.4.1-1.0.0-ubuntu22.04
+#     image: doca-driver
+#     repository: nvcr.io/nvidia/mellanox
+#     version: doca3.4.0-26.04-0.8.6.0-0
+#     forcePrecompiled: false
+#     imagePullSecrets: []
+#     env:
+#       - name: HTTP_PROXY
+#         value: "http://<proxy-host>:8989"
+#       - name: HTTPS_PROXY
+#         value: "http://<proxy-host>:8989"
+#       - name: NO_PROXY
+#         value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.cluster.local,.lan"
+#     terminationGracePeriodSeconds: 300
+#     startupProbe:
+#       initialDelaySeconds: 10
+#       periodSeconds: 20
+#     livenessProbe:
+#       initialDelaySeconds: 30
+#       periodSeconds: 30
+#     readinessProbe:
+#       initialDelaySeconds: 10
+#       periodSeconds: 30
+#     upgradePolicy:
+#       autoUpgrade: true
+#       maxParallelUpgrades: 1
+#       safeLoad: false
+#       drain:
+#         enable: true
+#         force: true
+#         podSelector: ""
+#         timeoutSeconds: 300
+#         deleteEmptyDir: true
+  rdmaSharedDevicePlugin:
+    image: k8s-rdma-shared-dev-plugin
+    repository: nvcr.io/nvidia/mellanox
+    version: network-operator-v26.4.1
+    config: |
+      {
+        "periodicUpdateInterval": 300,
+        "configList": [
+          {
+            "resourceName": "hca_shared",
+            "resourcePrefix": "rdma",
+            "rdmaHcaMax": 1000,
+            "selectors": { "vendors": ["15b3"] }
+          }
+        ]
+      }
+
+  # secondaryNetwork:
+  #   multus: {}
+  #   ipamPlugin: {}

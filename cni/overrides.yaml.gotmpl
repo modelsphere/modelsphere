@@ -1,0 +1,223 @@
+{{- $c := .Values.cilium }}
+
+cluster:
+  name: {{ $c.clusterName | quote }}
+  {{- if hasKey $c "clusterId" }}
+  id: {{ $c.clusterId }}
+  {{- end }}
+
+# Required with kubeProxyReplacement: the agent has no kube-proxy to reach the
+# apiserver through, so it needs a direct address before it can program anything.
+# No default is possible -- it is this cluster's control-plane endpoint -- so an
+# empty value stops here rather than installing an agent that cannot reach the
+# apiserver and crash-loops with no obvious cause.
+{{- if not $c.k8sServiceHost }}
+{{-   fail (printf "cilium.k8sServiceHost is empty for environment %q: with kubeProxyReplacement the agent needs this cluster's apiserver address (the kubeadm controlPlaneEndpoint, or the control-plane node's IP). Set it in environments/%s.yaml." $.Environment.Name $.Environment.Name) }}
+{{- end }}
+k8sServiceHost: {{ $c.k8sServiceHost | quote }}
+k8sServicePort: {{ $c.k8sServicePort }}
+kubeProxyReplacement: true
+
+routingMode: {{ $c.routingMode | quote }}
+tunnelProtocol: {{ $c.tunnelProtocol | quote }}
+
+ipam:
+  operator:
+    # = the kubeadm podSubnet for this cluster. Changing it after the fact
+    # renumbers every pod, so it is per-env and never defaulted.
+    clusterPoolIPv4PodCIDRList:
+      - {{ $c.podCIDR | quote }}
+
+gatewayAPI:
+  enabled: {{ $c.gatewayAPI }}
+
+operator:
+  replicas: {{ $c.operatorReplicas }}
+{{- if $c.serviceMonitors }}
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: {{ $c.prometheusRelease | quote }}
+{{- end }}
+{{- if eq .Values.registryMode "rewrite" }}
+  image:
+    repository: {{ .Values.registry }}/cilium/operator
+    useDigest: false
+{{- end }}
+
+{{- if $c.serviceMonitors }}
+
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: {{ $c.prometheusRelease | quote }}
+{{- end }}
+
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+{{- if eq .Values.registryMode "rewrite" }}
+    image:
+      repository: {{ .Values.registry }}/cilium/hubble-relay
+      useDigest: false
+{{- end }}
+  ui:
+    enabled: false
+{{- if eq .Values.registryMode "rewrite" }}
+    backend:
+      image:
+        repository: {{ .Values.registry }}/cilium/hubble-ui-backend
+        useDigest: false
+    frontend:
+      image:
+        repository: {{ .Values.registry }}/cilium/hubble-ui
+        useDigest: false
+{{- end }}
+  metrics:
+    # ⚠️ serviceMonitors gates enableOpenMetrics too, not just the ServiceMonitor
+    #    object. The chart hard-fails at template time on any of these when
+    #    monitoring.coreos.com/v1 is absent (cilium/templates/validate.yaml), which
+    #    is exactly the state of a cluster that has not reached
+    #    kube-prometheus-stack yet. See "Cilium is off by default" in
+    #    docs/helmfile-deploy.md.
+    enableOpenMetrics: {{ $c.serviceMonitors }}
+{{- if $c.serviceMonitors }}
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: {{ $c.prometheusRelease | quote }}
+{{- end }}
+    enabled:
+    - dns
+    - drop
+    - tcp
+    - flow
+    - port-distribution
+    - icmp
+    - httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction
+
+{{- if $c.rollingUpdate }}
+
+# One agent at a time. Off by default because on a cluster still coming up the
+# rollout can stall on a node that is not Ready and block the whole DaemonSet.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+{{- end }}
+
+envoy:
+{{- if eq .Values.registryMode "rewrite" }}
+  image:
+    repository: {{ .Values.registry }}/cilium/cilium-envoy
+    useDigest: false
+{{- end }}
+  # Connection/request ceilings. Stack-wide on purpose: these describe the
+  # inference traffic shape, not the cluster. Envoy's own defaults (1024
+  # connections, 1024 pending requests) are far below what an inference gateway
+  # sees, and overflowing them answers with X-Envoy-Overloaded rather than
+  # queueing.
+  streamIdleTimeoutDurationSeconds: 600
+  idleTimeoutDurationSeconds: 300          # upstream conn reuse; safe to raise
+  clusterMaxConnections: 40000
+  clusterMaxRequests: 40000
+  clusterMaxPendingRequests: 8000
+  # maxConcurrentRetries: 128
+  log:
+    accessLogBufferSize: 65536
+{{- if hasKey $c "envoyTerminationGracePeriodSeconds" }}
+  terminationGracePeriodSeconds: {{ $c.envoyTerminationGracePeriodSeconds }}
+{{- end }}
+{{- if $c.rollingUpdate }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+{{- end }}
+{{- if $c.serviceMonitors }}
+  prometheus:
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: {{ $c.prometheusRelease | quote }}
+{{- end }}
+
+{{- if eq .Values.registryMode "rewrite" }}
+
+# ── Air-gapped image addresses ────────────────────────────────────────────────
+# Only rendered when registryMode is `rewrite`, so a normal install is untouched.
+#
+# This chart carries the registry INSIDE each repository value
+# (quay.io/cilium/cilium), and has no global registry key, so every image has
+# to be named. The upstream host is dropped and the rest of the path kept, so
+# quay.io/cilium/cilium becomes <registry>/cilium/cilium -- see the note on
+# `offline` in environments/default.yaml for why.
+#
+# Keep this list in step with the chart: a new component added upstream arrives
+# with an upstream address and will not be caught here. What catches it is
+# `helmfile template` with registryMode: rewrite, grepping for any host that is not
+# {{ .Values.registry }}. Run that yourself after bumping the chart --
+# script/offline_bundle.sh renders with offline: FALSE (it has to: the bundle
+# stores images at their upstream addresses) and so cannot perform this check.
+image:
+  repository: {{ .Values.registry }}/cilium/cilium
+  useDigest: false
+certgen:
+  image:
+    repository: {{ .Values.registry }}/cilium/certgen
+    useDigest: false
+nodeinit:
+  image:
+    repository: {{ .Values.registry }}/cilium/startup-script
+    useDigest: false
+preflight:
+  image:
+    repository: {{ .Values.registry }}/cilium/cilium
+    useDigest: false
+  envoy:
+    image:
+      repository: {{ .Values.registry }}/cilium/cilium-envoy
+      useDigest: false
+clustermesh:
+  apiserver:
+    image:
+      repository: {{ .Values.registry }}/cilium/clustermesh-apiserver
+      useDigest: false
+# The four below belong to features this repo leaves off (ztunnel encryption,
+# mutual authentication). They are listed anyway: "off by default" is not the
+# same as "cannot be switched on", and the failure mode if someone does switch
+# one on is a pod pulling from the public internet on a cluster that has none.
+#
+# `useDigest: false` on each, for the same reason as every entry above: the
+# chart ships these with useDigest: true and an upstream digest, and
+# offline_load.sh pushes by tag -- "the digest goes, tag and all". Left true,
+# the rewritten address reads <registry>/cilium/ztunnel@sha256:884de5ad..., a
+# digest the internal copy does not have, so the pull fails against the
+# internal registry instead of against the internet. Same failure, one hop
+# closer.
+encryption:
+  ztunnel:
+    image:
+      repository: {{ .Values.registry }}/cilium/ztunnel
+      useDigest: false
+authentication:
+  mutual:
+    spire:
+      install:
+        initImage:
+          repository: {{ .Values.registry }}/library/busybox
+          useDigest: false
+        agent:
+          image:
+            repository: {{ .Values.registry }}/spiffe/spire-agent
+            useDigest: false
+        server:
+          image:
+            repository: {{ .Values.registry }}/spiffe/spire-server
+            useDigest: false
+{{- end }}

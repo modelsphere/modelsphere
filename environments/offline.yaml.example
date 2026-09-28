@@ -1,0 +1,74 @@
+# An air-gapped cluster. Copy to environments/offline-mirror.yaml or
+# environments/offline-rewrite.yaml -- helmfile.yaml.gotmpl registers both names
+# already -- and fill in the four cluster-specific values at the bottom.
+#
+# Those files are gitignored: they describe one particular cluster, which does
+# not belong in the repo.
+#
+# The two modes differ in TWO lines, marked below. Everything else is the same,
+# which is the point: `mirror` leaves every image address alone and lets the
+# nodes redirect them, `rewrite` puts them all under one registry.
+
+# ---- the two lines that differ ------------------------------------------------
+#
+#   mirror   registry stays the PUBLIC prefix, exactly as an online cluster has
+#            it. The nodes redirect those hosts, via /etc/containerd/certs.d
+#            written by `make setup-offline-node MODE=mirror`.
+#
+#   rewrite  registry is the local registry, and every third-party image address
+#            is rewritten under it. Nodes still need
+#            `make setup-offline-node MODE=rewrite` once, to trust a plain-HTTP
+#            registry.
+#
+registry: 4pdosc                  # mirror: leave as is | rewrite: <registry-host>:5000
+registryMode: mirror              # or: rewrite
+# ------------------------------------------------------------------------------
+
+# The bundle's charts, installed from the files, so no chart repository has to
+# stand anywhere. chartRepo is only the fallback for a chart not in chartsDir.
+chartsDir: /root/bundle/charts
+chartRepo: https://modelsphere.github.io/helm-charts
+
+# Put in front of every alert message, so an alert says which cluster it is from.
+name: "OFFLINE"
+
+enabled:
+  # A single-node or two-node cluster usually has no spare raw device for a Ceph
+  # OSD; the repo default already has these off. Turn them on, with ceph.nodes,
+  # if this cluster does have the disks.
+  # rookCeph: true
+  # rookCephCluster: true
+  # cephCsiDrivers: true
+
+  # No RDMA fabric here.
+  networkOperator: false
+  nicClusterPolicy: false
+
+  # Off unless the bundle carries their images.
+  alertWebhook: false
+  llmCanaryOperator: false
+  condition2taint: false
+
+# Left off (the repo default), so the monitoring stack runs on emptyDir rather
+# than waiting for a StorageClass that does not exist here. ⚠️ Metrics, alert
+# state and anything saved in Grafana's UI go when one of those pods restarts.
+storage:
+  persistence: false
+
+# ---- fill these in -----------------------------------------------------------
+cilium:
+  clusterName: offline
+  clusterId: 1                    # unique per cluster if you ever mesh them
+  k8sServiceHost: 10.0.0.10       # the control-plane address kubeadm advertised
+  k8sServicePort: 6443
+  podCIDR: 10.244.0.0/16          # the same --pod-network-cidr kubeadm was given
+  operatorReplicas: 1             # 1 on a single-node cluster, 2 otherwise
+  serviceMonitors: false          # true once kube-prometheus-stack is in
+
+llmGateway:
+  node: <a node name from `kubectl get nodes`>   # bodylog is pinned
+                                  # to one node's local disk
+  hostPath: /mnt/disk0/bodylog-sinks   # under the node's data_mount
+  memoryLimit: 8Gi
+  serviceMonitor: false
+# ------------------------------------------------------------------------------

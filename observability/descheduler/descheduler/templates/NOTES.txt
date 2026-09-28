@@ -1,0 +1,22 @@
+Descheduler installed as a {{ .Values.kind }}.
+
+{{- if eq .Values.kind "Deployment" }}
+{{- if eq (.Values.replicas | int) 1 }}
+WARNING: You set replica count as 1 and workload kind as Deployment however leaderElection is not enabled. Consider enabling Leader Election for HA mode.
+{{- end}}
+{{- if .Values.leaderElection }}
+{{- if and (hasKey .Values.cmdOptions "dry-run") (eq (get .Values.cmdOptions "dry-run") true) }}
+WARNING: You enabled DryRun mode, you can't use Leader Election.
+{{- end}}
+{{- end}}
+{{- end}}
+{{- if .Values.deschedulerPolicy }}
+A DeschedulerPolicy has been applied for you. You can view the policy with:
+
+kubectl get configmap -n {{ include "descheduler.namespace" . }} {{ template "descheduler.fullname" . }} -o yaml
+
+If you wish to define your own policies out of band from this chart, you may define a configmap named {{ template "descheduler.fullname" . }}.
+To avoid a conflict between helm and your out of band method to deploy the configmap, please set deschedulerPolicy in values.yaml to an empty object as below.
+
+deschedulerPolicy: {}
+{{- end }}

@@ -1,0 +1,1256 @@
+{
+  "uid": "llm-health",
+  "title": "服务健康总览",
+  "tags": [
+    "llm",
+    "health"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 42,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "graphTooltip": 2,
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(bodylog_service_replicas{service!=\"unknown\"}, service)",
+          "refId": "sv"
+        },
+        "regex": "/(.*?)(?:-leader)?$/",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1,
+        "label": "service"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 2,
+      "title": "服务健康总览",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "table",
+      "id": 3,
+      "title": "当前服务健康",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "就绪",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))",
+          "legendFormat": "期望",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "legendFormat": "实际",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "sum by(service)(label_replace(rate(bodylog_requests_total{backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "QPS",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "(sum by(service)(label_replace(rate(bodylog_requests_total{status_class=\"5xx\",backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * sum by(service)(label_replace(rate(bodylog_requests_total{backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) / clamp_min(sum by(service)(label_replace(rate(bodylog_requests_total{backend!=\"(none)\",service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")),0.001)\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "错误率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "expr": "histogram_quantile(0.95, (((sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))\n      - sum by(service)(label_replace(rate(bodylog_rt_seconds{stream=\"unknown\",service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n      or sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 1))\n  or (sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[5m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) and on(service) ((abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - sum by(service)(label_replace(rate(bodylog_requests_total{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) < bool abs(histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) - (sum by(service)(label_replace(rate(bodylog_requests_total{stream=\"true\",service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\")) or (0 * histogram_count(sum by(service)(label_replace(rate(bodylog_ttft_seconds{service=~\"$service\",service!=\"unknown\"}[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))))) == 0)))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "TTFT_p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "G",
+          "expr": "sum by(service)(label_replace(rate(bodylog_completion_tokens_total{service=~\"$service\",service!=\"unknown\"}[1m]), \"service\", \"$1\", \"service\", \"(.*)-leader$\"))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "出词tok/s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "H",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) > bool 0) + (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) >= bool (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "状态",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "I",
+          "expr": "sum by(service)(label_join(label_replace({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\"))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "并发",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "J",
+          "expr": "round(sum by(service)(increase(kube_pod_container_status_restarts_total[24h])\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\")))))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
+          "legendFormat": "重启24h",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 84
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "就绪"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "期望"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "实际"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "QPS"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 104
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "并发"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误率"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 88
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT_p95"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "出词tok/s"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "降级",
+                        "color": "orange"
+                      },
+                      "2": {
+                        "text": "UP",
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误率"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.02
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.05
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TTFT_p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "QPS"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "就绪",
+              "Value #B": "期望",
+              "Value #C": "实际",
+              "Value #D": "QPS",
+              "Value #E": "错误率",
+              "Value #F": "TTFT_p95",
+              "Value #G": "出词tok/s",
+              "Value #H": "状态",
+              "Value #I": "并发",
+              "Value #J": "重启24h",
+              "service": "service"
+            },
+            "indexByName": {
+              "service": 0,
+              "Value #H": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #J": 5,
+              "Value #D": 6,
+              "Value #I": 7,
+              "Value #E": 8,
+              "Value #F": 9,
+              "Value #G": 10
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "service"
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "id": 4,
+      "title": "组件健康(网关 / 控制面)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      }
+    },
+    {
+      "type": "table",
+      "id": 5,
+      "title": "组件健康(openresty / logserver / autoconfig / CART)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "网关与控制面组件的副本健康:就绪/期望 + 24h 重启次数。这些组件没有 ServiceMonitor(Prometheus 只 scrape 了 bodylog exporter),所以走 kube-state-metrics 的副本口径 —— 能发现「挂了/没起来/在反复重启」,但看不到进程内部指标(如 openresty 的 QPS 在上面的服务表里看)。CART 按服务分开部署,故有多行。",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by(namespace,deployment)(kube_deployment_status_replicas_ready{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"}) > bool 0) + (sum by(namespace,deployment)(kube_deployment_status_replicas_ready{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"}) >= bool sum by(namespace,deployment)(kube_deployment_spec_replicas{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"}))",
+          "legendFormat": "状态",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(namespace,deployment)(kube_deployment_status_replicas_ready{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"})",
+          "legendFormat": "就绪",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "sum by(namespace,deployment)(kube_deployment_spec_replicas{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"})",
+          "legendFormat": "期望",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "round(sum by(namespace,deployment)(increase(kube_pod_container_status_restarts_total[24h])\n  * on(namespace,pod) group_left(deployment)\n    (0 * label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\"}, \"deployment\", \"$1\", \"owner_name\", \"(.*)-[^-]+\") + 1)))\n  and on(namespace,deployment) (sum by(namespace,deployment)(kube_deployment_spec_replicas{deployment=~\"openresty|bodylog.*|autoconfig-controller|.*cart.*|decision-gen\"}))",
+          "legendFormat": "重启24h",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "组件"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 240
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "namespace"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "就绪"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "期望"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 88
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "状态"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "降级",
+                        "color": "orange"
+                      },
+                      "2": {
+                        "text": "UP",
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "green",
+                      "value": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "重启24h"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "状态",
+              "Value #B": "就绪",
+              "Value #C": "期望",
+              "Value #D": "重启24h",
+              "namespace": "namespace",
+              "deployment": "组件"
+            },
+            "indexByName": {
+              "deployment": 0,
+              "namespace": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "组件"
+          }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "id": 9,
+      "title": "autoconfig 控制面详情(点击展开:卡死探测 / reconcile / apiserver)",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "panels": [
+        {
+          "type": "timeseries",
+          "id": 6,
+          "title": "autoconfig 卡死探测(队列积压 / 未完成时长)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "健康时三条都贴 0。【未完成时长持续上涨且不归零 = reconcile 卡死】(如 cart ConfigMap wedge:peer 不更新但进程活着、探针全绿、restartCount 恒 0)。队列积压持续 >0 = 处理速度跟不上入队。只统计 leader 副本。",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 23
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum((workqueue_depth{job=~\"autoconfig.*\"}\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "队列积压",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "sum((workqueue_unfinished_work_seconds{job=~\"autoconfig.*\"}\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "当前调谐已跑(秒)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "C",
+              "expr": "sum((workqueue_longest_running_processor_seconds{job=~\"autoconfig.*\"}\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "最久处理(秒)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 12,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 7,
+          "title": "autoconfig reconcile(次/分)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "result=requeue_after 是常态 —— 每次调谐结束都预约 resyncEvery(10s)后再跑一轮(informer 事件之外的兜底重扫),所以【空转也有稳定速率,不代表配置在变】,稳态约 16 次/分。判断有没有真失败看 errors 这条(应恒 0);retries_total 会跟着 requeue 涨,不是失败次数。",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 23
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "60 * sum by(result)((rate(controller_runtime_reconcile_total{job=~\"autoconfig.*\"}[$__rate_interval])\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "{{result}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "60 * sum((rate(controller_runtime_reconcile_errors_total{job=~\"autoconfig.*\"}[$__rate_interval])\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "errors",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 12,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "type": "timeseries",
+          "id": 8,
+          "title": "autoconfig → apiserver(次/分 · 按状态码)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "controller 对【k8s kube-apiserver】的调用(list/watch ModelRoute、读写 ConfigMap、查 Pod/EndpointSlice、续 Lease),与推理服务无关。出现 429 = 被 APF 限流,此时调谐会变慢甚至堆积。",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 23
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "60 * sum by(code)((rate(rest_client_requests_total{job=~\"autoconfig.*\"}[$__rate_interval])\n     and on(pod) (leader_election_master_status{job=~\"autoconfig.*\"} == 1)))",
+              "legendFormat": "{{code}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 12,
+                "showPoints": "never",
+                "lineWidth": 1
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 10,
+      "title": "历史",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      }
+    },
+    {
+      "type": "state-timeline",
+      "id": 11,
+      "title": "历史服务状态(绿=全就绪 / 橙=部分就绪 / 红=无就绪)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "值 = 就绪副本 / 【期望】副本(百分比),鼠标划过看该 service 该时刻的就绪比例 —— 100%=全就绪(绿) / 0<x<100%=降级(橙,数字即降级程度) / 0%=无就绪(红)。未合并相邻同值,所以 tooltip 时刻≈鼠标位置;精确的 ready/total 个数看下方「历史副本数」(已开共享 tooltip,hover 会同步弹出)或最上面那张表。",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_max((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) / clamp_min((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))), 1), 1)",
+          "legendFormat": "{{service}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 80
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN 无就绪副本",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "UP 全部就绪",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 1e-06,
+                "to": 0.999999,
+                "result": {
+                  "color": "orange",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1e-06
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": false,
+        "tooltip": {
+          "mode": "single",
+          "sort": "none",
+          "hideZeros": false
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "历史副本数(期望/就绪,随扩缩实时)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "每 service 后端 pod 数随时间(扩缩容动态);desired=期望副本(虚线,工作负载 spec.replicas),ready=就绪(实线),同 service 同色且图例里相邻。**两线贴合=健康,ready 掉到 desired 之下=降级**。不画 EndpointSlice 的实际数:滚动更新的 maxSurge 会让它鼓包,是正常 surge 不是降级,画出来只会干扰(要看实际数去上面的表格)。tooltip=multi(鼠标在图里任意高度都列出该时刻全部值)。-leader 已并入。已删/改名服务旧名字随 retention 老化。",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} desired",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} ready",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} desired",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} ready",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} desired",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
+          "legendFormat": "{{service}} ready",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* desired$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^kimi/kimi-k25 (desired|ready)$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#7EB26D"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^modelforge/fallback-modelforge-01 (desired|ready)$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#EAB839"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

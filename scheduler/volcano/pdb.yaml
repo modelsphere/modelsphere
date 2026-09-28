@@ -1,0 +1,36 @@
+# 让 Volcano 的三个组件在节点排空 / 自愿中断时至少各留一个实例。
+# 开了 gang 之后 volcano-admission 是 LWS reconcile 的硬依赖(validatepodgroup 是
+# failurePolicy: Fail),它整组被排空会卡住所有 LWS 的 pod 创建 —— 这是这几个 PDB 里
+# 最要紧的一个。scheduler / controllers 是主备,少一个不影响在跑的负载。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volcano-scheduler
+  namespace: volcano-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: volcano-scheduler
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volcano-controllers
+  namespace: volcano-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: volcano-controller
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: volcano-admission
+  namespace: volcano-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: volcano-admission

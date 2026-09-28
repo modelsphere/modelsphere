@@ -1,0 +1,58 @@
+# Air-gapped image addresses for the rook-ceph operator release.
+#
+# Only referenced from helmfile.yaml.gotmpl when registryMode is `rewrite`, so a normal
+# install never reads this file and renders exactly as it did before.
+#
+# Why a separate file instead of editing an existing overrides.yaml: the rook-ceph
+# release had no `values:` at all, and elsewhere in this repo an overrides file
+# can legitimately hold a Go-template expression meant for a downstream consumer
+# rather than for helmfile -- observability/npd/overrides.yaml carries one for
+# Prometheus. Renaming those to .gotmpl would hand them to the template engine
+# and quietly blank them out. Keeping the offline addresses in their own .gotmpl
+# sidesteps that for every release, not just the ones that happen to be safe.
+#
+# Note this comment describes such expressions instead of quoting one: helmfile
+# renders the whole file before any YAML is parsed, so a literal double-brace
+# expression in a comment is evaluated too, and an undefined variable in it
+# fails the render.
+#
+# The upstream host is dropped and the rest of the path kept, so
+# quay.io/cephcsi/cephcsi becomes <registry>/cephcsi/cephcsi -- see the note on
+# `offline` in environments/default.yaml. script/offline_load.sh retags by the
+# same rule when it pushes.
+#
+# csi.* matters more than it looks: rook-ceph's templates/configmap.yaml renders
+# rook-csi-operator-image-set-configmap from these values, and that ConfigMap is
+# what ceph/csi/values.yaml points the ceph-csi-drivers release at via
+# driverSpecDefaults.imageSet.name. The ceph-csi-drivers chart itself carries no
+# image values, so these eight lines are the only place those images are named.
+image:
+  repository: {{ .Values.registry }}/rook/ceph
+csi:
+  cephcsi:
+    repository: {{ .Values.registry }}/cephcsi/cephcsi
+  registrar:
+    repository: {{ .Values.registry }}/sig-storage/csi-node-driver-registrar
+  provisioner:
+    repository: {{ .Values.registry }}/sig-storage/csi-provisioner
+  snapshotter:
+    repository: {{ .Values.registry }}/sig-storage/csi-snapshotter
+  attacher:
+    repository: {{ .Values.registry }}/sig-storage/csi-attacher
+  resizer:
+    repository: {{ .Values.registry }}/sig-storage/csi-resizer
+  csiAddons:
+    repository: {{ .Values.registry }}/csiaddons/k8s-sidecar
+
+# ceph-csi-operator is a SUBCHART of rook-ceph (csi.installCsiOperator is true
+# above), and the parent exposes only its nameOverride and a service-account
+# env -- not its image. The eight csi.* values above reach the sidecars the
+# operator deploys, but not the operator's own container, so without this block
+# every csi sidecar is internal and the controller that manages them is not.
+# Rendering rook-ceph from the chart tarball is what caught it; the values files
+# on their own look complete.
+ceph-csi-operator:
+  controllerManager:
+    manager:
+      image:
+        repository: {{ .Values.registry }}/cephcsi/ceph-csi-operator

@@ -1,0 +1,14 @@
+# Clears the PCIe ACS redirect on every boot, because BIOS and PCIe
+# re-enumeration set it again -- see disable_acs.sh for what it costs when it is
+# left on. Installed by `make gpu-prep`.
+[Unit]
+Description=Disable PCIe ACS redirect for GPUDirect RDMA
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/disable_acs.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

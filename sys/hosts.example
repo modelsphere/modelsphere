@@ -1,0 +1,15 @@
+# Appended to every node's /etc/hosts by `make setup-k8s-offline`, inside a
+# marked block it rewrites rather than duplicates.
+#
+# Point k8s_hosts_file at this file in the inventory once you have copied it to
+# sys/hosts and filled it in. Leave k8s_hosts_file unset and the step is skipped
+# without a word, so an entry a cluster needs -- the controlPlaneEndpoint name
+# above all -- is worth adding BEFORE node prep rather than after.
+
+# The control-plane endpoint, which must resolve on every node.
+10.0.0.10   cluster-control-plane
+10.0.0.10   cluster-control-plane.lan
+
+# Any other name the nodes have to resolve without DNS.
+10.0.0.20   node-1
+10.0.0.21   node-2

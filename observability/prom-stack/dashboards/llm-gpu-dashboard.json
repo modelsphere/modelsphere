@@ -1,0 +1,1381 @@
+{
+  "uid": "llm-gpu",
+  "title": "GPU硬件监控",
+  "tags": [
+    "llm",
+    "gpu"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 42,
+  "refresh": "30s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(bodylog_service_replicas{service!=\"unknown\"}, service)",
+          "refId": "sv"
+        },
+        "regex": "/(.*?)(?:-leader)?$/",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1,
+        "label": "service"
+      },
+      {
+        "name": "gpu_model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "label": "GPU 类型",
+        "description": "按 GPU 型号过滤(DCGM 的 modelName),多选;表格与曲线面板都生效",
+        "query": {
+          "query": "label_values(DCGM_FI_DEV_GPU_TEMP, modelName)",
+          "refId": "gm"
+        },
+        "regex": "/NVIDIA ([A-Z]+[0-9]+).*/",
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "host",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "label": "GPU 主机",
+        "description": "按 GPU 服务器过滤,多选",
+        "query": {
+          "query": "label_values(DCGM_FI_DEV_GPU_TEMP, Hostname)",
+          "refId": "hv"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "id": 2,
+      "title": "集群 GPU 利用率(已用卡 / 总卡数)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "已用卡 / 总卡数。**已用 = 被 k8s pod 分配走的卡**(DCGM 的 exported_pod 非空),衡量的是【k8s 侧分配率】而非实际算力占用 —— 裸机 docker 跑的服务(a100-5 / a100-24)显存实打实被占但 kubelet 不知情,在这里算作空闲,会低估整体利用率;那两台在 k8s 里是 cordon 状态、本就不参与调度,所以这个口径对「还能调度多少」是准的。受顶部「GPU 主机」「GPU 类型」筛选 —— 想看单一型号切「GPU 类型」下拉即可。右轴虚线是已用/总卡的绝对值,便于看清是分子变了还是分母变了。",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(count(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}) or vector(0))\n  / count(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "已分配占比",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "count(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"})",
+          "legendFormat": "已用卡数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "count(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "总卡数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(已用卡数|总卡数)$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    8
+                  ]
+                }
+              },
+              {
+                "id": "max",
+                "value": null
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "id": 3,
+      "title": "GPU 机器一览",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "一行一台 GPU 服务器。**service=All → 全部主机(含空闲);选具体 service → 只列跑该 service 的机器**(空闲机/别的 service 的机器隐掉)。(下面的曲线面板在「按 service」档会把空闲机整台滤掉 —— 那对趋势图是对的,但清单漏机器就没意义了);「GPU 主机」下拉仍然生效,用于收窄。已用卡 = DCGM 报告了 exported_pod 的卡数 —— 即【被 k8s pod 分配走】的卡。注意它反映的是 k8s 侧的分配,不是实际算力占用:裸机 docker 跑的服务(如 a100-* 那几台 modelforge)显存明明被占,已用卡仍是 0。服务 = 经 POD2SVC 桥拿到的 service 名,与服务健康表/性能页口径一致;空白 = 无 k8s pod 占卡。温度阈值 75 橙 / 83 红,与 monitor.conf 的 gpu_temp_warn/alert 一致。热降频 = 该机【有百分之多少的时间在因过热降频】(THERMAL_VIOLATION 计数器的增速 / 1e9 / 卡数)。⚠️ 该计数器单位是【纳秒】不是微秒 —— 实测 h100-46 gpu1 在 2.1 小时内增长 5.1e10,按微秒解释等于降频了 686% 的时间(不可能),按纳秒 = 0.69%,合理。0% = 此刻没有任何卡在热降频;>1% 橙 / >10% 红。注意它与「降频原因」列的分工:本列只管【热】且表达【持续时长】,「降频原因」管【任意原因】且表达【此刻状态】—— 所以出现「降频原因=SW 功耗墙 但热降频=0%」是自洽的,不是矛盾。降频原因由 DCGM 的按位掩码翻译成文字(不再让人肉换算 0x 值):正常 / 空闲(0x01 GPU 空闲、0x02 管理员设定时钟 —— 这两位良性,实测 20 台里 15 台常驻「空闲」)/ SW 功耗墙(0x04,满载撞功耗上限,正常,但说明吞吐已被功耗限制)/ HW 降速(0x08)/ Sync Boost(0x10)/ SW 热降频(0x20)/ HW 热降频(0x40)/ HW 功耗刹车(0x80)。位可组合,故按 2 的幂分区间映射,落在哪段=最高置位在哪位=最严重的原因;上游取 max by(Hostname),位越高越严重,天然凸显最严重的那张卡。要定位到具体是哪张卡,看下方曲线面板。某台若同时跑两个 namespace 会出现两行 —— 那是事实不是 bug。",
+      "gridPos": {
+        "h": 13,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "卡数",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "expr": "(count by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"})\n   or (0 * count by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})))\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "已用卡",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "最高温度",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "D",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_MEMORY_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "显存温度",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "E",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_FB_USED{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "最大显存占用",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "F",
+          "expr": "avg by(Hostname)(DCGM_FI_DEV_GPU_UTIL{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "平均利用率",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "G",
+          "expr": "sum by(Hostname)(DCGM_FI_DEV_POWER_USAGE{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "整机功耗",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "H",
+          "expr": "sum by(Hostname)(rate(DCGM_FI_DEV_THERMAL_VIOLATION{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"}[$__rate_interval]))\n  / (1e9 * count by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"}))\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "热降频",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "I",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "降频原因",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "K",
+          "expr": "group by(Hostname, modelName)(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"}, \"modelName\", \"$1\", \"modelName\", \"NVIDIA ([A-Z]+[0-9]+).*\"))\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "型号",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "J",
+          "expr": "group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n  and on(Hostname) (group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))\n   and on(service) count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n or (group by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n      unless on(Hostname) group by(Hostname)(group by(Hostname, service)(\n  label_replace(label_replace(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\",exported_pod!=\"\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\"), \"namespace\", \"$1\", \"exported_namespace\", \"(.+)\")\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * label_join(label_replace(max by(namespace,pod,service)({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\") + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\"))))))\n   and on() (count(count by(service)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) == count(count by(service)(label_replace(bodylog_service_replicas{service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "legendFormat": "服务",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "主机"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "型号"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "服务"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 280
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "卡数"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "已用卡"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "最高温度"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 88
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "显存温度"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 88
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "最大显存占用"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 112
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "平均利用率"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "整机功耗"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "热降频"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "降频原因"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "最高温度"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 75
+                    },
+                    {
+                      "color": "red",
+                      "value": 83
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "显存温度"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "celsius"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "最大显存占用"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "decmbytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "平均利用率"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "整机功耗"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "watt"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "热降频"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.01
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "降频原因"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0,
+                      "to": 0,
+                      "result": {
+                        "text": "正常",
+                        "color": "green",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 1,
+                      "to": 3,
+                      "result": {
+                        "text": "空闲",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 4,
+                      "to": 7,
+                      "result": {
+                        "text": "SW 功耗墙",
+                        "color": "orange",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 8,
+                      "to": 15,
+                      "result": {
+                        "text": "HW 降速",
+                        "color": "orange",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 16,
+                      "to": 31,
+                      "result": {
+                        "text": "Sync Boost",
+                        "color": "orange",
+                        "index": 4
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 32,
+                      "to": 63,
+                      "result": {
+                        "text": "SW 热降频",
+                        "color": "red",
+                        "index": 5
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 64,
+                      "to": 127,
+                      "result": {
+                        "text": "HW 热降频",
+                        "color": "red",
+                        "index": 6
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 128,
+                      "to": 100000,
+                      "result": {
+                        "text": "HW 功耗刹车",
+                        "color": "red",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 4
+                    },
+                    {
+                      "color": "red",
+                      "value": 32
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "已用卡"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "blue",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "服务"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto",
+                  "wrapText": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #J": true,
+              "Value #K": true
+            },
+            "renameByName": {
+              "Value #A": "卡数",
+              "Value #B": "已用卡",
+              "Value #C": "最高温度",
+              "Value #D": "显存温度",
+              "Value #E": "最大显存占用",
+              "Value #F": "平均利用率",
+              "Value #G": "整机功耗",
+              "Value #H": "热降频",
+              "Value #I": "降频原因",
+              "Hostname": "主机",
+              "service": "服务",
+              "modelName": "型号"
+            },
+            "indexByName": {
+              "Hostname": 0,
+              "modelName": 1,
+              "service": 2,
+              "Value #A": 3,
+              "Value #B": 4,
+              "Value #C": 5,
+              "Value #D": 6,
+              "Value #E": 7,
+              "Value #F": 8,
+              "Value #G": 9,
+              "Value #H": 10,
+              "Value #I": 11
+            }
+          }
+        },
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "主机": {
+                "operation": "groupby",
+                "aggregations": []
+              },
+              "服务": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "uniqueValues"
+                ]
+              },
+              "型号": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "卡数": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "已用卡": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "最高温度": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "显存温度": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "最大显存占用": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "平均利用率": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "整机功耗": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "热降频": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              },
+              "降频原因": {
+                "operation": "aggregate",
+                "aggregations": [
+                  "lastNotNull"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "服务 (uniqueValues)": "服务",
+              "型号 (lastNotNull)": "型号",
+              "卡数 (lastNotNull)": "卡数",
+              "已用卡 (lastNotNull)": "已用卡",
+              "最高温度 (lastNotNull)": "最高温度",
+              "显存温度 (lastNotNull)": "显存温度",
+              "最大显存占用 (lastNotNull)": "最大显存占用",
+              "平均利用率 (lastNotNull)": "平均利用率",
+              "整机功耗 (lastNotNull)": "整机功耗",
+              "热降频 (lastNotNull)": "热降频",
+              "降频原因 (lastNotNull)": "降频原因"
+            },
+            "indexByName": {
+              "主机": 0,
+              "型号": 1,
+              "服务": 2,
+              "卡数": 3,
+              "已用卡": 4,
+              "最高温度": 5,
+              "显存温度": 6,
+              "最大显存占用": 7,
+              "平均利用率": 8,
+              "整机功耗": 9,
+              "热降频": 10,
+              "降频原因": 11
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "主机"
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 4,
+      "title": "GPU 温度 °C(每 host 最高)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "曲线是每主机最热的那张卡。**把顶部「GPU 主机」筛到一台时,鼠标悬停会额外列出该机每张卡的温度**(逐卡数据只进 tooltip,不画线也不进图例;多机时自动不出 —— 8 卡 x N 机会让 tooltip 有几十行没法读)。DCGM 硬件指标,只受「GPU 主机」「GPU 类型」过滤,**不受「service」下拉影响** —— 温度/显存/利用率/降频属于机器而不属于某个服务,空闲机器(刚重装、待分配、怀疑硬件问题)也画得出来。要按服务看哪些卡被谁占用,见上方一览表。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "{{Hostname}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max by(Hostname,gpu)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})\n  and on() (count(count by(Hostname)(DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})) == 1)",
+          "legendFormat": "{{Hostname}} #{{gpu}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* #\\d+$"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": true,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "显存占用 MiB(每 host 最高)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "DCGM 硬件指标,只受「GPU 主机」「GPU 类型」过滤,**不受「service」下拉影响** —— 温度/显存/利用率/降频属于机器而不属于某个服务,空闲机器(刚重装、待分配、怀疑硬件问题)也画得出来。要按服务看哪些卡被谁占用,见上方一览表。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_FB_USED{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "{{Hostname}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decmbytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "GPU 利用率 %(每 host 均值)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "DCGM 硬件指标,只受「GPU 主机」「GPU 类型」过滤,**不受「service」下拉影响** —— 温度/显存/利用率/降频属于机器而不属于某个服务,空闲机器(刚重装、待分配、怀疑硬件问题)也画得出来。要按服务看哪些卡被谁占用,见上方一览表。",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by(Hostname)(DCGM_FI_DEV_GPU_UTIL{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "{{Hostname}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "热降频(THERMAL_VIOLATION 增速)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "THERMAL_VIOLATION 计数器的增速(全机各卡之和)。该计数器累计因过热被限频的时长,单位【纳秒】(不是微秒,实测验证过);故数值 / (1e9 x 卡数) = 降频时间占比,上面的一览表直接给的就是这个百分比。数值大于 0 = 正在因过热降频。DCGM 硬件指标,只受「GPU 主机」「GPU 类型」过滤,**不受「service」下拉影响** —— 温度/显存/利用率/降频属于机器而不属于某个服务,空闲机器(刚重装、待分配、怀疑硬件问题)也画得出来。要按服务看哪些卡被谁占用,见上方一览表。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(Hostname)(rate(DCGM_FI_DEV_THERMAL_VIOLATION{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"}[$__rate_interval]))",
+          "legendFormat": "{{Hostname}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "max by(Hostname,gpu)(rate(DCGM_FI_DEV_THERMAL_VIOLATION{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"}[$__rate_interval]))\n  and on() (count(count by(Hostname)(DCGM_FI_DEV_THERMAL_VIOLATION{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})) == 1)",
+          "legendFormat": "{{Hostname}} #{{gpu}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "showPoints": "never",
+            "lineWidth": 1
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* #\\d+$"
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "viz": true,
+                  "legend": true,
+                  "tooltip": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "state-timeline",
+      "id": 8,
+      "title": "降频原因(每 host 最严重)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "CLOCK_THROTTLE_REASONS 位掩码翻成文字(按最高置位取最严重那个)。**绿=正常**(掩码 0~3:满速、空闲、管理员设定时钟,都良性,合并成一个状态以免忙闲切换把图糊满);**橙=功耗墙(0x04),满载撞 TDP,仅提示**;**红=SW/HW 热降频(0x20/0x40),散热问题,要处理**。DCGM 硬件指标,只受「GPU 主机」「GPU 类型」过滤,**不受「service」下拉影响** —— 温度/显存/利用率/降频属于机器而不属于某个服务,空闲机器(刚重装、待分配、怀疑硬件问题)也画得出来。要按服务看哪些卡被谁占用,见上方一览表。",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(Hostname)(DCGM_FI_DEV_CLOCK_THROTTLE_REASONS{Hostname=~\"$host\",modelName=~\".*$gpu_model.*\"})",
+          "legendFormat": "{{Hostname}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 80
+          },
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 0,
+                "to": 3,
+                "result": {
+                  "text": "正常",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 4,
+                "to": 7,
+                "result": {
+                  "text": "功耗墙",
+                  "color": "orange",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 8,
+                "to": 15,
+                "result": {
+                  "text": "HW 降速",
+                  "color": "orange",
+                  "index": 2
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 16,
+                "to": 31,
+                "result": {
+                  "text": "Sync Boost",
+                  "color": "orange",
+                  "index": 3
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 32,
+                "to": 63,
+                "result": {
+                  "text": "SW 热降频",
+                  "color": "red",
+                  "index": 4
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 64,
+                "to": 127,
+                "result": {
+                  "text": "HW 热降频",
+                  "color": "red",
+                  "index": 5
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 128,
+                "to": 1000000000.0,
+                "result": {
+                  "text": "HW 功耗刹车",
+                  "color": "red",
+                  "index": 6
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 4
+              },
+              {
+                "color": "red",
+                "value": 32
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

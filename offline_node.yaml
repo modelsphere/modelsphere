@@ -1,0 +1,339 @@
+- name: containerd config for an air-gapped registry
+  hosts: all
+  become: true
+  diff: true
+  tags: ['offline-node']
+
+  # The node half of an air-gapped install, for BOTH registry modes. Neither is
+  # a thing to type on each node by hand -- that is what this file is for.
+  #
+  #   rewrite  image ADDRESSES already name the local registry, because the
+  #            render rewrote them. The node needs one thing: to trust that
+  #            registry over plain HTTP. Without it every pull fails with
+  #            `http: server gave HTTP response to HTTPS client`.
+  #
+  #   mirror   addresses stay public and the NODE redirects them. That needs a
+  #            certs.d entry per upstream host, from the bundle's
+  #            mirror-hosts.txt -- plus the same trust entry, which is harmless
+  #            here and keeps one playbook for both.
+  #
+  # Why this exists next to network_accesslator.yaml, which also writes certs.d:
+  # that one points at public caches (daocloud) and keeps `server = <upstream>`
+  # as a fallback. Both are wrong here. The fallback is the dangerous half -- in
+  # a room with no network it turns a missing image into a long timeout, and in
+  # a room with SOME network it silently pulls from the internet the install was
+  # supposed to do without, so the bundle is never actually tested.
+  #
+  # ⚠️ The two playbooks write the SAME files. Whichever ran last wins, and
+  #    `make setup-all` ends with setup-mirror. On an air-gapped cluster run
+  #    this one after, and do not run setup-mirror again.
+  #
+  # Usage:
+  #   ansible-playbook -i inventory.ini offline_node.yaml \
+  #     -e offline_registry=10.0.0.5:5000 \
+  #     -e registry_mode=mirror \
+  #     -e bundle_dir=/root/offline
+  #
+  # registry_mode is the environment file's `registryMode`, and the same word:
+  # passing the wrong one leaves a node configured for the other mode, which
+  # fails at the first pull rather than quietly.
+  #
+  # The upstream "hosts" are REGISTRY hostnames -- quay.io and friends -- not
+  # the machines, which is what the inventory holds. bundle_dir is read on the
+  # CONTROL host for mirror-hosts.txt, which script/offline_bundle.sh derives
+  # from the image list, so it already covers wherever a site's own images live
+  # -- including the private registry a model's chart pins for its sidecars.
+  # mirror_hosts set where ansible reads variables overrides the file; that is
+  # an escape hatch for a list that is wrong, not the normal path.
+
+  vars:
+    offline_registry_scheme: http
+    registry_mode: mirror
+    marker: "# managed by offline_node.yaml -- `make setup-mirror` would overwrite this"
+
+  tasks:
+    # A mirror entry addresses a registry ROOT: containerd appends /v2/<path>
+    # to it. A registry reached under a path prefix needs override_path, which
+    # is not written here because it has not been measured -- better to say so
+    # than to emit a config that looks right and 404s every pull.
+    - name: Check the registry address
+      assert:
+        that:
+          - offline_registry is defined and offline_registry | length > 0
+          - "'/' not in offline_registry"
+        fail_msg: >-
+          offline_registry must be a registry root, host:port with no path --
+          the one script/offline_load.sh pushed into. Got:
+          {{ offline_registry | default('(unset)') }}
+
+    - name: Check the registry mode
+      assert:
+        that: registry_mode in ['mirror', 'rewrite']
+        fail_msg: >-
+          registry_mode must be `mirror` or `rewrite` -- the same word as
+          `registryMode` in the environment file this cluster renders with. Got:
+          {{ registry_mode }}
+
+    - name: Read the upstream hosts the bundle needs answered
+      set_fact:
+        mirror_hosts: >-
+          {{ (lookup('file', bundle_dir ~ '/mirror-hosts.txt')).splitlines()
+             | map('trim') | select('!=', '') | list }}
+      when: mirror_hosts is not defined and registry_mode == 'mirror'
+      run_once: true
+
+    # Under rewrite nothing is redirected, so there is no upstream list at all
+    # -- and requiring the bundle's file would refuse to configure a node that
+    # does not need it.
+    - name: No upstream list is needed under rewrite
+      set_fact:
+        mirror_hosts: []
+      when: registry_mode == 'rewrite'
+
+    - name: Require a non-empty host list
+      assert:
+        that: mirror_hosts | length > 0
+        fail_msg: >-
+          mirror-hosts.txt named no hosts. It is written by
+          script/offline_bundle.sh next to images.txt; a bundle built before
+          that existed has none, and rebuilding is the fix. Pass
+          -e '{"mirror_hosts": ["quay.io", ...]}' only if you know the full set
+          -- a host missing from it is a pod that pulls from the internet, or
+          hangs.
+      when: registry_mode == 'mirror'
+
+    # certs.d is consulted only when this is set and NOT empty. containerd's own
+    # generated default carries config_path = "", which a bare grep matches --
+    # so every file this playbook writes would be inert and nothing would say so.
+    - name: Point containerd at certs.d in its main config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: '(\[plugins\.[''"]io\.containerd\.(?:grpc\.v1\.cri|cri\.v1\.images)[''"]\.registry\][^\[]*?config_path\s*=\s*)[''"]{2}'
+        replace: '\1"/etc/containerd/certs.d"'
+      notify: restart containerd
+
+    - name: Verify certs.d is actually consulted
+      command: grep -qE 'config_path[[:space:]]*=[[:space:]]*"[^"]+"' /etc/containerd/config.toml
+      changed_when: false
+      register: cfgpath
+      failed_when: cfgpath.rc != 0
+
+    # certs.d entries that are not part of THIS mode's config. Two kinds, and
+    # they are not the same problem:
+    #
+    #  - ours, from a previous run or the other mode (they carry the marker).
+    #    Removed: left behind under `rewrite`, a redirect for quay.io still
+    #    answers, so an address the render forgot to rewrite would be quietly
+    #    covered and the mode never actually tested.
+    #  - an entry with a `server =` line, from `make setup-mirror` or by hand.
+    #    That key IS the upstream fallback, which on an air-gapped cluster is
+    #    dead at best and -- on a node with partial network -- a quiet pull from
+    #    the internet. Measured: gcr.io and k8s.gcr.io aimed at
+    #    a public cache. Removed too.
+    #
+    # Anything else is only named. A hand-written entry pointing at a second
+    # internal registry with no fallback is a legitimate thing to have, and
+    # deleting it silently is not this playbook's business.
+    - name: Find certs.d entries this bundle did not ask for
+      find:
+        paths: /etc/containerd/certs.d
+        file_type: directory
+      register: certsd
+
+    - name: What counts as a stray
+      set_fact:
+        stray_paths: >-
+          {{ certsd.files | map(attribute='path') | list
+             | reject('in', (mirror_hosts + [offline_registry])
+                            | map('regex_replace', '^', '/etc/containerd/certs.d/') | list)
+             | list }}
+
+    # One grep on the node, not the find module's `contains`: measured on
+    # a node, `find` with contains: 'managed' matched 0 of the 7 hosts.toml
+    # files that all contain that word, so every entry looked like someone
+    # else's and nothing was ever cleaned up. A judgement that cannot fail
+    # loudly is worse than none.
+    #
+    # Two reasons to remove an entry, and the marker has named two files over
+    # time -- match either, or an entry written before the rename looks foreign.
+    - name: Which certs.d entries are ours, or keep an upstream fallback?
+      shell: |
+        for f in /etc/containerd/certs.d/*/hosts.toml; do
+          [ -f "$f" ] || continue
+          if grep -qE 'managed by offline_(mirror|node)\.yaml' "$f" \
+             || grep -qE '^[[:space:]]*server[[:space:]]*=' "$f"; then
+            dirname "$f"
+          fi
+        done
+      register: removable
+      changed_when: false
+      # Reads files; safe in --check, and a check run that skips it would then
+      # compute an empty removal list and report success having checked nothing.
+      check_mode: false
+
+    - name: Remove ours from another mode, and anything that falls back to the internet
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ removable.stdout_lines | intersect(stray_paths) }}"
+      notify: restart containerd
+
+    - name: Say which other entries point somewhere else
+      debug:
+        msg: >-
+          {{ stray_left | join(', ') }} have certs.d entries that are not in
+          this bundle's host list, not the registry itself, not written here and
+          with no upstream fallback -- so they were left alone. Check what they
+          point at; on an air-gapped cluster they are dead at best.
+      vars:
+        stray_left: >-
+          {{ stray_paths | difference(removable.stdout_lines) | map('basename') | list }}
+      when: (stray_paths | difference(removable.stdout_lines)) | length > 0
+
+    # BOTH modes. Under rewrite this is the only entry the node gets, and the
+    # one that makes a plain-HTTP registry usable at all; under mirror the
+    # entries below point HERE, and an address that names the registry directly
+    # (kubeadm's, say) still needs it.
+    - name: Trust the bundle's registry over plain HTTP
+      file:
+        path: "/etc/containerd/certs.d/{{ offline_registry }}"
+        state: directory
+        mode: '0755'
+
+    - name: Write the registry's own entry
+      copy:
+        dest: "/etc/containerd/certs.d/{{ offline_registry }}/hosts.toml"
+        mode: '0644'
+        content: |
+          {{ marker }}
+          # The bundle's own registry, named directly by rewritten addresses.
+          # Plain HTTP and an unverified certificate are deliberate: it is a
+          # registry on the install media, not a public one.
+          [host."{{ offline_registry_scheme }}://{{ offline_registry }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = true
+      notify: restart containerd
+
+    - name: Create a certs.d directory per upstream
+      file:
+        path: "/etc/containerd/certs.d/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ mirror_hosts }}"
+
+    # No `server =` line, on purpose -- but know what that does and does not
+    # buy. It removes the EXPLICIT upstream fallback, so while the registry is
+    # up, an image it does not hold fails immediately with `not found` instead
+    # of being fetched from the internet. It does NOT make the upstream
+    # unreachable: containerd still falls back to the namespace host itself when
+    # the listed host does not answer at all. Measured by another session on
+    # another cluster -- with the registry stopped, a pull went to quay.io and
+    # On an air-gapped node that path is a timeout rather than a wrong pull, but
+    # `no fallback` would be too strong a claim for this file to make.
+    - name: Write each mirror entry
+      copy:
+        dest: "/etc/containerd/certs.d/{{ item }}/hosts.toml"
+        mode: '0644'
+        content: |
+          {{ marker }}
+          # {{ item }} is served from the bundle's registry. No `server =`, so
+          # a missing image fails here instead of being fetched from the
+          # internet while the registry is up.
+          [host."{{ offline_registry_scheme }}://{{ offline_registry }}"]
+            capabilities = ["pull", "resolve"]
+            skip_verify = true
+      loop: "{{ mirror_hosts }}"
+      notify: restart containerd
+
+    - name: Flush so the check below sees the new config
+      meta: flush_handlers
+
+    # Reachability, not correctness: /v2/ answering 200 proves the node can get
+    # to the registry at all, which is the failure this catches (wrong address,
+    # firewall, registry not started). Whether the right images are IN it is
+    # what offline_load.sh reported when it pushed.
+    - name: Check the registry answers from this node
+      uri:
+        url: "{{ offline_registry_scheme }}://{{ offline_registry }}/v2/"
+        status_code: [200, 401]
+        validate_certs: false
+      register: v2
+      retries: 5
+      delay: 3
+      until: v2 is succeeded
+
+    # The sandbox (pause) image is containerd's own, not helm's and not
+    # kubeadm's: it is a literal in config.toml, and every pod on the node needs
+    # it. An address the bundle does not cover means nothing starts, with no
+    # error that names the image -- pods simply sit in ContainerCreating.
+    #
+    # Measured: a node still had an internal registry's pause image stamped by
+    # an earlier run. Under
+    # `mirror` that is fine -- that host is one of the redirected ones. Under
+    # `rewrite` nothing redirects it, so the node goes there for real: it
+    # worked there, because that node could reach it, and on a genuinely
+    # isolated node it would not have. That is the failure this rewrites away.
+    - name: What sandbox image is containerd configured with?
+      shell: |
+        grep -oE "(sandbox_image|sandbox)[[:blank:]]*=[[:blank:]]*['\"][^'\"]+['\"]" /etc/containerd/config.toml | head -1 | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/"
+      register: sandbox
+      changed_when: false
+      # Reads a file; safe in --check, and without this the task below has no
+      # value to test and silently skips -- which is how a check run came back
+      # green having verified nothing.
+      check_mode: false
+
+    # `<registry>/pause:<tag>`, not `<registry>/<original path>/pause:<tag>`:
+    # kubeadm flattens its images to one level under --image-repository, and the
+    # bundle was pushed to match, so the registry holds `pause` at the root.
+    # The tag is kept as it is -- it is the one kubelet and kubeadm agree on.
+    # Two things measured the hard way on this exact task:
+    #   - `\1` followed by the replacement, which starts with a digit, is read as
+    #     group 11 / an octal escape: `\1` + `10.0.0.5...` became `O.0.0.5...` and
+    #     containerd would not start. `\g<1>` ends the reference explicitly.
+    #   - the value is quoted with ' on some nodes and " on others (measured:
+    #     two nodes of the same cluster), so a pattern that only knows " matches
+    #     nothing there and reports ok -- the node then pulls
+    #     registry.k8s.io/pause for real, which is the failure this exists to
+    #     prevent. The quote is captured and put back.
+    - name: Point the sandbox image at the bundle's registry (rewrite only)
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: '((?:sandbox_image|sandbox)[ \t]*=[ \t]*[''"])[^''"]+([''"])'
+        replace: '\g<1>{{ offline_registry }}/{{ sandbox.stdout | basename }}\g<2>'
+      when:
+        - registry_mode == 'rewrite'
+        - sandbox.stdout | length > 0
+        - not sandbox.stdout.startswith(offline_registry ~ '/')
+      notify: restart containerd
+
+    - name: Flush so the pull below tests what the node will actually use
+      meta: flush_handlers
+
+    - name: Re-read the sandbox image
+      shell: |
+        grep -oE "(sandbox_image|sandbox)[[:blank:]]*=[[:blank:]]*['\"][^'\"]+['\"]" /etc/containerd/config.toml | head -1 | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/"
+      register: sandbox
+      changed_when: false
+      check_mode: false
+
+    # Every pod needs it, so a failure here is "nothing will start on this node".
+    - name: Can this node pull its sandbox image, {{ sandbox.stdout }}?
+      command: "crictl pull {{ sandbox.stdout }}"
+      register: sandbox_pull
+      changed_when: false
+      failed_when: sandbox_pull.rc != 0
+      when: sandbox.stdout | length > 0
+      # Runs in --check too. A check run that skips the one task that can catch
+      # "every pod on this node will fail to start" reports success and has
+      # verified nothing; fetching an image the node needs anyway is not a
+      # change worth protecting from.
+      check_mode: false
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes

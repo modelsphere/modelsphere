@@ -1,0 +1,60 @@
+---
+- name: Prepare K8s Nodes for Ceph
+  hosts: all
+  become: true
+  # `omit` is only honoured for module arguments. Inside `environment:` it is
+  # rendered literally, so on a host with no proxy configured every task was
+  # handed http_proxy=__omit_place_holder__<hash> and the first download died
+  # with "curl: (5) Could not resolve proxy". An empty value is what "no proxy"
+  # actually means to curl, apt and requests.
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    HTTP_PROXY: "{{ http_proxy | default('') }}"
+    HTTPS_PROXY: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+    NO_PROXY: "{{ no_proxy | default('127.0.0.1,localhost') }}"
+  vars:
+    # Toggle to load required modules
+    ceph_kernel_modules:
+      - rbd
+      - ceph
+
+  tasks:
+    - name: Install Ceph storage prerequisites (lvm2 & smartmontools)
+      apt:
+        name:
+          - lvm2
+          - smartmontools
+          - util-linux
+        state: present
+        update_cache: yes
+
+    - name: Load Ceph-required kernel modules immediately
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ ceph_kernel_modules }}"
+
+    - name: Configure kernel modules to load on boot
+      copy:
+        dest: /etc/modules-load.d/ceph.conf
+        content: |
+          # Created by Ansible for Ceph storage requirements
+          {% for module in ceph_kernel_modules %}
+          {{ module }}
+          {% endfor %}
+        mode: '0644'
+
+    - name: Inspect existing disk devices for debugging/validation
+      command: lsblk -o NAME,FSTYPE,SIZE,MOUNTPOINT,TYPE
+      register: lsblk_output
+      changed_when: false
+
+    - name: Display available disk devices per node
+      debug:
+        msg: |
+          === Disk layout on {{ ansible_hostname }} ===
+          {{ lsblk_output.stdout }}
+
+
