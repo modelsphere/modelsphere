@@ -18,19 +18,19 @@ ModelSphere is an open-source LLM inference platform designed to make production
 - **Intelligent Auto Scaling.** Dynamically adjusts inference replicas and compute resources based on real-time service demand, while prioritizing resources for high-priority models to improve overall GPU utilization.
 - **Quality-Aware Dynamic Throttling.** Goes beyond traditional RPM/TPM limits by dynamically controlling traffic based on real-time service metrics such as TTFT and output speed, maintaining service quality under changing workloads.
 - **Advanced Serving Architecture.** Supports advanced inference architectures such as Prefill/Decode disaggregation and a unified L3 KV cache pool, enabling efficient cache sharing and higher resource utilization across serving instances.
-- **Performance-Tuned Day-0 Deployment.** Rapidly supports newly released models with production-ready, performance-tuned deployment configurations optimized for real-world serving workloads. Please refer to our [model catalog](https://github.com/modelsphere/model-catalog) for more information.
+- **Performance-Tuned Day-0 Deployment.** Rapidly supports newly released models with production-ready, performance-tuned deployment configurations optimized for real-world serving workloads. Please refer to our [model catalog](https://modelsphere.github.io/model-catalog/) for more information.
 - **Broad Heterogeneous Accelerator Support.** Provides a unified serving stack across NVIDIA GPUs, Huawei Ascend, Iluvatar CoreX, and dozens of other AI accelerators, together with mainstream inference frameworks such as SGLang and vLLM.
+- **Seamless In-Flight Generation Recovery.** When a serving pod fails mid-generation, ModelSphere transfers the in-flight request to a healthy pod and resumes generation from the interruption point, without restarting the request or disrupting the client stream ([read more](https://github.com/modelsphere/continuation_gateway)).
 - **Workload-Driven AutoTune (preview version).** Uses real production workloads to automatically explore better serving configurations during idle compute periods ([read more](https://github.com/modelsphere/llm-autotune)).
-- **Seamless In-Flight Generation Recovery (coming soon).** When a serving pod fails mid-generation, ModelSphere transfers the in-flight request to a healthy pod and resumes generation from the interruption point, without restarting the request or disrupting the client stream.
 
 ## Quick start
 
-**Prerequisites**
+### **Prerequisites**
 
 1. a Kubernetes cluster, and `kubectl` pointing at it;
 2. `helm`, `helmfile` and the `helm-diff` plugin.
 
-**Step 1: install the stack**
+### **Step 1: install the stack**
 
 ```bash
 # 1. the stack itself, one pass
@@ -44,7 +44,9 @@ cp environments/private.yaml.example environments/mycluster.yaml   # edit it,
 make helm-apply ENV=mycluster
 ```
 
-**Step 2: deploy a model**
+### **Step 2: deploy a model**
+
+**Method 1: Using the command line**
 
 ```bash
 helm repo add modelsphere https://modelsphere.github.io/helm-charts
@@ -52,10 +54,15 @@ helm upgrade --install qwen modelsphere/sglang -n llm-demo --create-namespace \
   -f <your values.yaml>       # models/examples/sglang-qwen.yaml is a worked example
 ```
 
-The model is served through the routing layer, at `http://openresty.llm-route.svc:8080/<release>/v1/chat/completions` -- the
-release name from step 2 is the path prefix (`qwen` above), and it is how the router picks the model.
+The model is served through the routing layer, at `http://openresty.llm-route.svc:8080/<release>/v1/chat/completions` -- the release name from step 2 is the path prefix (`qwen` above), and it is how the router picks the model.
 
-**Step 3: test the service**
+**Method 2: Using the GUI platform**
+
+Alternatively, you can use our GUI platform to deploy a model.
+
+![image-20261008152111862](docs/model_catalog.png)
+
+### **Step 3: test the service**
 
 ```bash
 kubectl -n llm-route port-forward svc/openresty 8080:8080 &
