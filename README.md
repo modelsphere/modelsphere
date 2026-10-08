@@ -95,6 +95,8 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 | bodylog, bodylog-exporter | Full request/response records from the router, and Prometheus metrics from them | [llm-openresty](https://github.com/modelsphere/llm-openresty) |
 | **Engines** | | |
 | sglang, vllm charts | The engine binaries are upstream; the charts are what makes them serve: shutdown that drains in-flight requests and then gets the GPUs released, hang-watcher wired to the liveness probe, the model's own CART, one instance spanning several nodes (LeaderWorkerSet), and the routing and scaling CRs that put the model on the router | [helm-charts](https://github.com/modelsphere/helm-charts) |
+| **Portal** | | |
+| console | ModelSphere community portal: identity (users, roles, login) and a federation gateway to Swiss and other backends | [console](https://github.com/modelsphere/console) |
 
 ## Documentation
 
@@ -102,6 +104,7 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 |---|---|
 | [`docs/install.md`](docs/install.md) | the complete install: preparing the machines, creating the Kubernetes cluster, and installing the stack on it -- with the air-gapped path and the detail on each step linked from there |
 | [`docs/configuration.md`](docs/configuration.md) | what to change once it runs, and where: the cluster's environment file against a model's values file, with the guides for models, routing and rate limits, CART, autoscaling and rolling updates linked from there |
+| [`docs/console.md`](docs/console.md) | opening the portal the first time: the address, the first login, and what the Model Serving pages need |
 
 ## Contributing
 

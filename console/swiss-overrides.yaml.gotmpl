@@ -1,0 +1,29 @@
+# swissd, the model deployment backend behind the console portal.
+#
+# The image follows registry (public Docker Hub by default in default.yaml,
+# overridden to a private registry where a cluster has one). Tag follows the
+# chart's appVersion, so an upgrade is a one-line change to versions.swiss.
+image:
+  repository: {{ .Values.registry }}/swissd
+
+# Console logs users in and calls swissd with the front-proxy key: the key is
+# generated into swissd's auth Secret, which console reads directly (same
+# namespace). The password login stays on beside it.
+auth:
+  proxyKey: true
+
+# The namespaces holding model releases, so swissd can see them: every
+# models[] entry's namespace, defaulting to llm-demo the way the model
+# releases themselves do -- llm-demo when the cluster declares no models yet.
+rbac:
+  namespaces:
+{{- $swissNs := list }}
+{{- range $m := (dig "models" (list) .Values) }}
+{{-   $swissNs = append $swissNs (dig "namespace" "llm-demo" $m) }}
+{{- end }}
+{{- if not $swissNs }}
+{{-   $swissNs = list "llm-demo" }}
+{{- end }}
+{{- range $ns := $swissNs | uniq }}
+      - {{ $ns | quote }}
+{{- end }}

@@ -774,6 +774,37 @@ releases:
       - llm-operator/canary-images.yaml.gotmpl
 {{- end }}
 
+  # ─────────────────────────────────────────────────────────────────── portal
+  # ModelSphere Console plus swissd, the model deployment backend it talks to.
+  # Two releases rather than the chart's swiss.enabled subchart mode, so each
+  # upgrades and rolls back on its own. They share a namespace so console reads
+  # swissd's auth Secret directly -- no copy of the proxy key to keep in step.
+  #
+  # Both charts come from chartRepo like the other charts of ours, so this
+  # needs modelsphere/helm-charts to have published the pinned versions
+  # (versions.console and versions.swiss below).
+  - name: swissd
+    namespace: {{ .Values.namespaces.console }}
+    chart: {{ template "chartref" (dict "local" $local "name" "swiss" "ver" .Values.versions.swiss "fallback" "modelsphere/swiss") }}
+    version: {{ .Values.versions.swiss | quote }}
+    installed: {{ .Values.enabled.console }}
+    labels:
+      tier: portal
+    values:
+      - console/swiss-overrides.yaml.gotmpl
+
+  - name: console
+    namespace: {{ .Values.namespaces.console }}
+    chart: {{ template "chartref" (dict "local" $local "name" "console" "ver" .Values.versions.console "fallback" "modelsphere/console") }}
+    version: {{ .Values.versions.console | quote }}
+    installed: {{ .Values.enabled.console }}
+    needs:
+      - {{ .Values.namespaces.console }}/swissd
+    labels:
+      tier: portal
+    values:
+      - console/overrides.yaml.gotmpl
+
   # ─────────────────────────────────────────────────────────────── gang scheduling
   # Volcano schedules an LWS leader+worker group as a unit, so a group either
   # lands whole or takes nothing — the failure it prevents is a leader holding 8

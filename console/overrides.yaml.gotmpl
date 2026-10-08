@@ -1,0 +1,24 @@
+# The console image follows registry (public Docker Hub by default in
+# default.yaml, overridden to a private registry where a cluster has one).
+#
+# tag is not pinned here: it follows the chart's appVersion, so an upgrade is
+# a one-line change to versions.console, a single source of truth.
+image:
+  repository: {{ .Values.registry }}/console
+
+# swissd runs as its own release (see the swissd release in the helmfile), not
+# as this chart's subchart, so the two upgrade and roll back independently.
+# Console reaches it over the cluster DNS inside the shared namespace and
+# reads its front-proxy key from swissd's auth Secret directly -- no copy of
+# the key to keep in step. A cluster with a swissd of its own elsewhere
+# overrides externalSwiss (and leaves swiss.enabled false) in its own
+# environment file.
+swiss:
+  enabled: false
+externalSwiss:
+  url: http://swissd.{{ .Values.namespaces.console }}.svc.cluster.local:80/api
+  proxyKey:
+    secretName: swissd-auth
+    key: proxyKey
+  # swissd creates this the first time the site profile is saved from the web.
+  profile: {{ .Values.namespaces.console }}/swissd-profile
