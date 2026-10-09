@@ -1,4 +1,4 @@
-# ModelSphere
+# ModelSphere: Production-Grade Infrastructure for LLM Inference
 
 <p align="center">
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
