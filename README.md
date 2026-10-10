@@ -6,6 +6,10 @@
   <a href="docs/install.md"><img alt="Docs" src="https://img.shields.io/badge/docs-install%20guide-blue"></a>
 </p>
 
+<p align="center">
+  English | <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
 
 ## Overview
 
@@ -58,7 +62,7 @@ The model is served through the routing layer, at `http://openresty.llm-route.sv
 
 **Method 2: Using the GUI platform**
 
-Alternatively, you can use our GUI platform to deploy a model.
+Alternatively, you can use the GUI platform to deploy a model.
 
 ![image-20261008152111862](docs/model_catalog.png)
 
