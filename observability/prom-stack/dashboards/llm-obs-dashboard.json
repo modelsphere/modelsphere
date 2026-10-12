@@ -1092,12 +1092,12 @@
     {
       "type": "timeseries",
       "id": 14,
-      "title": "KV / token_usage 占用",
+      "title": "KV / token_usage 占用(最热实例)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "sglang token_usage / vllm gpu_cache_usage_perc(0-1)。汇总线 = 该 service 所有实例均值。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。",
+      "description": "sglang token_usage / vllm kv_cache_usage_perc(旧名 gpu_cache_usage_perc,两者都查)(0-1)。**汇总线 = 该 service 实例中的最高值**,不是均值 —— 这是个有硬顶的量,要看的是余量,而先到 100% 的那个实例才是约束。均值会把它冲淡(34 副本里一个卡在 95%,平均下来接近空闲);PD 分离部署下 prefill 与 decode 占用差一倍以上,max 会落在真正受限的 decode 侧。反方向的倾斜(某实例特别闲)看「实例明细」。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1107,7 +1107,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(avg by(service)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(max by(service)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1116,7 +1116,7 @@
         },
         {
           "refId": "B",
-          "expr": "(max by(service,pod)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:token_usage, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}}",
           "datasource": {
             "type": "prometheus",
@@ -1125,7 +1125,7 @@
         },
         {
           "refId": "C",
-          "expr": "(avg by(service)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(max by(service)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1134,7 +1134,25 @@
         },
         {
           "refId": "D",
-          "expr": "(max by(service,pod)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:gpu_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "E",
+          "expr": "(max by(service)(label_join(label_replace(vllm:kv_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:kv_cache_usage_perc, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}}",
           "datasource": {
             "type": "prometheus",
@@ -1216,7 +1234,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(sum by(service)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(sum by(service)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 运行中 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1225,7 +1243,7 @@
         },
         {
           "refId": "B",
-          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_running_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}} 运行中",
           "datasource": {
             "type": "prometheus",
@@ -1234,7 +1252,7 @@
         },
         {
           "refId": "C",
-          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 运行中 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1243,7 +1261,7 @@
         },
         {
           "refId": "D",
-          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_running, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}} 运行中",
           "datasource": {
             "type": "prometheus",
@@ -1252,7 +1270,7 @@
         },
         {
           "refId": "E",
-          "expr": "(sum by(service)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(sum by(service)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 等待中 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1261,7 +1279,7 @@
         },
         {
           "refId": "F",
-          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(sglang:num_queue_reqs, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}} 等待中",
           "datasource": {
             "type": "prometheus",
@@ -1270,7 +1288,7 @@
         },
         {
           "refId": "G",
-          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(sum by(service)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 等待中 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1279,7 +1297,7 @@
         },
         {
           "refId": "H",
-          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(max by(service,pod)(label_join(label_replace(vllm:num_requests_waiting, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}} 等待中",
           "datasource": {
             "type": "prometheus",
@@ -1360,7 +1378,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(sum by(service)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "expr": "(sum by(service)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
           "legendFormat": "{{service}} 汇总",
           "datasource": {
             "type": "prometheus",
@@ -1369,7 +1387,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by(service,pod)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service,pod)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "expr": "(sum by(service,pod)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service,pod)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}}",
           "datasource": {
             "type": "prometheus",

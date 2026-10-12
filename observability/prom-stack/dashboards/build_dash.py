@@ -176,7 +176,16 @@ def eng(sel):
     # 引擎(sglang/vllm)指标的 service label 是 k8s Service 名(kimi-k25-leader),
     # 跟 bodylog/openresty 的 "<ns>/<name>" 口径不是一套 → 归一:剥 -leader 再拼 namespace/
     #   kimi + kimi-k25-leader  ->  kimi/kimi-k25
-    strip = 'label_replace(%s, "service", "$1", "service", "(.*?)(?:-leader)?")' % sel
+    # Suffixes stripped: -leader on a single-instance release, and
+    # -prefill-hl-s<N> / -decode-hl-s<N> on a prefill/decode-disaggregated one,
+    # whose engines are published through one Service per role. Without the
+    # second form such a release normalises to <ns>/<rel>-prefill-hl-s0, which
+    # no bodylog series matches, so flt()/live()'s `and on(service)` drops it
+    # and every engine panel is blank with nothing logged anywhere. Handled here
+    # rather than by relabeling at scrape time so that one rule covers every
+    # cluster, including those on a chart that predates the fix.
+    strip = ('label_replace(%s, "service", "$1", "service", '
+             '"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?")') % sel
     return 'label_join(%s, "service", "/", "namespace", "service")' % strip
 
 def flt(expr):
@@ -273,7 +282,7 @@ TOTAL_OV = [{"matcher": {"id": "byRegexp", "options": ".* 汇总$"},
 
 def eng_panel(agg, metrics):
     # 每个 metric(sglang / vllm 两套名字)出两个 target:
-    #   ① 该 service 的汇总(sum 面板求和 / avg 面板求均值)—— 常驻
+    #   ① 该 service 的汇总(sum 面板求和 / max 面板取最热实例)—— 常驻
     #   ② 每实例(pod)明细 —— 默认【不显示】,顶部「实例明细」下拉切到「显示」才画
     # 明细默认关是因为 modelforge 有 34 个副本,一上来 34 条细线会把汇总线埋掉。
     # 开关同 $gpu_scope 手法:`and on() (vector($eng_pods) == 1)`,为 0 时右侧空 vector,整条 target 消失。
@@ -634,10 +643,30 @@ def build_main():
                "归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。"
                "默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。"
                "图例是表格,列当前值/峰值,可点表头排序。")
-    ts("KV / token_usage 占用",
-       eng_panel("avg", ["sglang:token_usage", "vllm:gpu_cache_usage_perc"]),
+    # vLLM renamed this gauge when the V1 engine landed: gpu_cache_usage_perc ->
+    # kv_cache_usage_perc. Both are queried because a fleet can be mid-upgrade,
+    # and whichever name an engine does not export simply yields no series.
+    # Measured on a cluster running vLLM 0.30: gpu_cache_usage_perc had 0 series
+    # across every vLLM release there while kv_cache_usage_perc had one per
+    # instance -- this panel had been empty for every vLLM service without anyone
+    # noticing, because an empty panel and an idle service look alike.
+    # max, not avg. This gauge has a hard ceiling, so the question it answers is
+    # "how much headroom is left", and the answer is the hottest instance: the
+    # first one to reach 100% is what bounds the service. An average dilutes it
+    # -- 34 replicas with one wedged at 95% average out near idle, and on a
+    # prefill/decode-disaggregated release the two roles differ by more than 2x
+    # (measured: prefill 11-17%, decode 28-30%), so their mean describes neither
+    # while max lands on the decode side that actually binds. Skew in the other
+    # direction is what the per-instance toggle is for.
+    ts("KV / token_usage 占用(最热实例)",
+       eng_panel("max", ["sglang:token_usage",
+                         "vllm:gpu_cache_usage_perc", "vllm:kv_cache_usage_perc"]),
        unit="percentunit", w=8, x=0, minv=0, maxv=1, overrides=TOTAL_OV, legend_calcs=LEGEND_CALCS, linestyle=DASH,
-       desc="sglang token_usage / vllm gpu_cache_usage_perc(0-1)。汇总线 = 该 service 所有实例均值。" + ENGDESC)
+       desc="sglang token_usage / vllm kv_cache_usage_perc(旧名 gpu_cache_usage_perc,两者都查)(0-1)。"
+            "**汇总线 = 该 service 实例中的最高值**,不是均值 —— 这是个有硬顶的量,要看的是余量,"
+            "而先到 100% 的那个实例才是约束。均值会把它冲淡(34 副本里一个卡在 95%,平均下来接近空闲);"
+            "PD 分离部署下 prefill 与 decode 占用差一倍以上,max 会落在真正受限的 decode 侧。"
+            "反方向的倾斜(某实例特别闲)看「实例明细」。" + ENGDESC)
     # 运行中 / 等待中 合成一张:两者是同一队列的两端(在跑 vs 排队),分开看要来回扫视,
     # 而且 num_queue 平时恒 0、单独占一格浪费。合并后「等待中抬头而运行中压顶」= 后端打满。
     _run = ["sglang:num_running_reqs", "vllm:num_requests_running"]
