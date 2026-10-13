@@ -701,12 +701,29 @@ def build_main():
     # to it. bodylog records the response's usage.prompt_tokens_details, which
     # vLLM documents as "local + external" -- the user-visible saving. Engine-side
     # local reuse and user-visible saving are different questions; keep both.
+    #
+    # The decode half of a disaggregated release is excluded. It is handed KV per
+    # request rather than matching a prompt against its own tree, so its local
+    # hits can never be anything but zero while its queries still land in the
+    # denominator -- the published rate would then move with the prefill:decode
+    # ratio instead of with how well the cache is doing. Measured on a 2P1D
+    # release replaying one prompt: each prefill reported 4224/4307 = 98.1%,
+    # which is the number worth drawing, and the decode side 0/0.
+    #
+    # Matched on the service label BEFORE eng() normalises it away, using the
+    # same `<rel>-<role>-hl-s<N>` naming the suffix strip already relies on, so
+    # it adds no coupling that was not there -- if that naming ever changes, both
+    # break together rather than this one going quietly wrong. PromQL anchors
+    # regex matchers, so a single-instance release whose own name happens to end
+    # that way is still safe: its service carries a -leader suffix, and the
+    # pattern has to match the label in full.
+    NO_DECODE = 'service!~".*-decode-hl-s[0-9]+"'
     _ENG_CACHE = [('sglang:cached_tokens_total', 'sglang:prompt_tokens_total'),
                   ('vllm:prefix_cache_hits_total', 'vllm:prefix_cache_queries_total')]
     _cache_tg = []
     for _h, _q in _ENG_CACHE:
-        _cn = eng('rate(%s[$__rate_interval])' % _h)
-        _cd = eng('rate(%s[$__rate_interval])' % _q)
+        _cn = eng('rate(%s{%s}[$__rate_interval])' % (_h, NO_DECODE))
+        _cd = eng('rate(%s{%s}[$__rate_interval])' % (_q, NO_DECODE))
         _cache_tg.append((flt('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_cn, _cd)),
                           "{{service}} 汇总"))
         _cache_tg.append(('%s\n  and on() (vector($eng_pods) == 1)'
