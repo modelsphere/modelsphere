@@ -684,16 +684,44 @@ def build_main():
     # ⚠️ 不能用 avg(sglang:cache_hit_rate):那是【瞬时比率】,空闲 pod 报 0,
     #    实测 modelforge 40 个 pod 里 37 个是 0,一平均把 59% 稀释成 5.96%(差 10 倍)。
     #    正确口径是 token 加权:sum(cached_tokens)/sum(prompt_tokens),分子分母各自先求和再相除。
-    _cn = eng('rate(sglang:cached_tokens_total[$__rate_interval])')
-    _cd = eng('rate(sglang:prompt_tokens_total[$__rate_interval])')
-    ts("引擎 cache 命中率(token 加权)",
-       [(flt('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_cn, _cd)), "{{service}} 汇总"),
-        ('%s\n  and on() (vector($eng_pods) == 1)'
-         % flt('sum by(service,pod)(%s) / clamp_min(sum by(service,pod)(%s), 0.001)' % (_cn, _cd)), "{{pod}}")],
+    # One (hits, queries) pair per engine, both already counted in TOKENS, so the
+    # ratio is token-weighted without further work. vLLM's pair was missing, which
+    # left this panel blank on any vLLM-only cluster -- and since an empty panel
+    # and an engine with no cache traffic look the same, nobody noticed.
+    #
+    # vLLM's LOCAL pair is the analogue of sglang's: `prefix_cache_hits_total`
+    # counts tokens served from this engine's own radix tree. The separate
+    # `external_prefix_cache_*` pair counts tokens a KV connector brought in from
+    # another instance and is deliberately NOT folded in here: on a
+    # prefill/decode-disaggregated release the decode side receives nearly every
+    # prompt that way, so adding it would read as a ~100% local hit rate and hide
+    # whether prefix reuse is working at all.
+    #
+    # That exclusion is also what separates this panel from the bodylog one next
+    # to it. bodylog records the response's usage.prompt_tokens_details, which
+    # vLLM documents as "local + external" -- the user-visible saving. Engine-side
+    # local reuse and user-visible saving are different questions; keep both.
+    _ENG_CACHE = [('sglang:cached_tokens_total', 'sglang:prompt_tokens_total'),
+                  ('vllm:prefix_cache_hits_total', 'vllm:prefix_cache_queries_total')]
+    _cache_tg = []
+    for _h, _q in _ENG_CACHE:
+        _cn = eng('rate(%s[$__rate_interval])' % _h)
+        _cd = eng('rate(%s[$__rate_interval])' % _q)
+        _cache_tg.append((flt('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_cn, _cd)),
+                          "{{service}} 汇总"))
+        _cache_tg.append(('%s\n  and on() (vector($eng_pods) == 1)'
+                          % flt('sum by(service,pod)(%s) / clamp_min(sum by(service,pod)(%s), 0.001)'
+                                % (_cn, _cd)), "{{pod}}"))
+    ts("引擎 cache 命中率(token 加权)", _cache_tg,
        unit="percentunit", w=8, x=16, minv=0, maxv=1, overrides=TOTAL_OV, legend_calcs=LEGEND_CALCS, linestyle=DASH,
-       desc="命中前缀缓存的 prompt token 占比(sum(cached)/sum(prompt),按 token 量加权)。"
+       desc="命中前缀缓存的 prompt token 占比(sum(hits)/sum(queries),按 token 量加权)。"
+            "sglang 取 cached_tokens/prompt_tokens,vllm 取 prefix_cache_hits/prefix_cache_queries —— "
+            "两者都是 token 计数,引擎没导出的那套自然没有序列。"
             "不是各 pod 命中率的平均 —— 空闲 pod 的瞬时命中率是 0,直接平均会把结果稀释十倍。"
-            "与「性能」区那个 bodylog 口径的缓存命中率可互相印证(一个是引擎自报,一个是网关记账)。" + ENGDESC + RATE_NOTE)
+            "**只算本地命中**:KV connector 跨实例传来的 token 走 external_prefix_cache_*,不计入,"
+            "否则 PD 分离部署的 decode 侧几乎每条 prompt 都来自传输,这条线会恒等于 100%。"
+            "旁边那个 bodylog 口径记的是响应里的 usage(vllm 定义为 local + external,即用户视角省下的量),"
+            "两者问的不是同一个问题,互相印证而不是互相替代。" + ENGDESC + RATE_NOTE)
     _y[0] += 8
     _y[0] += 8
 

@@ -1368,7 +1368,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "命中前缀缓存的 prompt token 占比(sum(cached)/sum(prompt),按 token 量加权)。不是各 pod 命中率的平均 —— 空闲 pod 的瞬时命中率是 0,直接平均会把结果稀释十倍。与「性能」区那个 bodylog 口径的缓存命中率可互相印证(一个是引擎自报,一个是网关记账)。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
+      "description": "命中前缀缓存的 prompt token 占比(sum(hits)/sum(queries),按 token 量加权)。sglang 取 cached_tokens/prompt_tokens,vllm 取 prefix_cache_hits/prefix_cache_queries —— 两者都是 token 计数,引擎没导出的那套自然没有序列。不是各 pod 命中率的平均 —— 空闲 pod 的瞬时命中率是 0,直接平均会把结果稀释十倍。**只算本地命中**:KV connector 跨实例传来的 token 走 external_prefix_cache_*,不计入,否则 PD 分离部署的 decode 侧几乎每条 prompt 都来自传输,这条线会恒等于 100%。旁边那个 bodylog 口径记的是响应里的 usage(vllm 定义为 local + external,即用户视角省下的量),两者问的不是同一个问题,互相印证而不是互相替代。引擎指标的 service 是 k8s Service 名,已归一到 bodylog 的 <ns>/<name> 口径(剥 -leader)并受顶部「service」下拉过滤;归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。图例是表格,列当前值/峰值,可点表头排序。  ⏱ 速率窗口 = $__rate_interval(随所选时间范围自适应,下限 2m)。写死窗口在长时间范围下每个点只覆盖步长里的一小段、其余时间不被采样,实测 7 天视图偏高 52%。代价:①短范围窗口反而变大(1m→2m),3 小时视图峰值实测 -23%,短突发会显得矮;②长范围查询慢约 2 倍;③窗口随面板像素宽度变 —— 同一面板全屏和缩小时数值会不同,截图对不上。「服务健康总览」表和告警规则仍用固定 5m(比阈值的口径必须稳定),与本图数值对不上是正常的。",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1388,6 +1388,24 @@
         {
           "refId": "B",
           "expr": "(sum by(service,pod)(label_join(label_replace(rate(sglang:cached_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service,pod)(label_join(label_replace(rate(sglang:prompt_tokens_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
+          "legendFormat": "{{pod}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "(sum by(service)(label_join(label_replace(rate(vllm:prefix_cache_hits_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service)(label_join(label_replace(rate(vllm:prefix_cache_queries_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))",
+          "legendFormat": "{{service}} 汇总",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "(sum by(service,pod)(label_join(label_replace(rate(vllm:prefix_cache_hits_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) / clamp_min(sum by(service,pod)(label_join(label_replace(rate(vllm:prefix_cache_queries_total[$__rate_interval]), \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")), 0.001))\n  and on(service) (count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  and on() (vector($eng_pods) == 1)",
           "legendFormat": "{{pod}}",
           "datasource": {
             "type": "prometheus",
