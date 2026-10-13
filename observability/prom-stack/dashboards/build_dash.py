@@ -590,21 +590,42 @@ def build_main():
     # calib 是 cache-sim 的口径版本,变了就是新序列,用 $calib 锁定当前那批。
     CS = 'service=~"$service",service!="unknown",calib="$calib"'
     CS_DEN = 'clamp_min(sum by(service)(rate(cachesim_prompt_tokens_total{%s}[$__rate_interval])),0.001)' % CS
+    # The two lines come from different sources on purpose. cache-sim is a
+    # separate service and most clusters do not run it; while it is absent BOTH
+    # lines used to vanish, taking the measured number along with the modelled
+    # one and leaving a panel that reads as "no cache hits" rather than "no
+    # simulator". The actual line now comes from bodylog, which exists wherever
+    # the gateway does, so the panel degrades to one line instead of none.
+    #
+    # The cost is that they no longer share a denominator. cache-sim counts only
+    # the requests it can replay -- 200, usage present, not truncated, model
+    # known to it -- while bodylog counts them all; the measured difference is
+    # 0.2-0.4pp, against a gap between the lines that runs to tens of points. A
+    # line that is always there is worth that, but the comparison is no longer
+    # exact arithmetic over one population, and a difference of under half a
+    # point should not be read as signal.
+    _ACT_N = mrg('rate(bodylog_cached_tokens_total{%s}[$__rate_interval])' % SVC)
+    _ACT_D = mrg('rate(bodylog_prompt_tokens_total{%s}[$__rate_interval])' % SVC)
     ts("缓存命中率(cached / prompt tokens)",
        [('sum by(service)(rate(cachesim_theoretical_cached_tokens_total{%s}[$__rate_interval])) / %s' % (CS, CS_DEN),
          "{{service}} 理论最大"),
-        ('sum by(service)(rate(cachesim_actual_cached_tokens_total{%s}[$__rate_interval])) / %s' % (CS, CS_DEN),
+        ('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_ACT_N, _ACT_D),
          "{{service}} 实际")],
        unit="percentunit", w=8, x=16, minv=0, maxv=1, transformations=STRIP_SVC,
        overrides=[{"matcher": {"id": "byRegexp", "options": ".*理论最大"},
                    "properties": [{"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}},
                                   {"id": "custom.fillOpacity", "value": 0}]}],
-       desc="两条线,**共用同一个分母**(后端真实 prompt_tokens),所以可以直接比大小:\n"
-            "· 实际:cache-sim 记录的后端真实 cached_tokens;\n"
+       desc="两条线,**分母不同,不要当成同一批请求的精确差**:\n"
+            "· 实际:bodylog 记的 usage.prompt_tokens_details.cached_tokens / prompt_tokens —— "
+            "网关侧全量,没部署 cache-sim 的集群也有这条线;\n"
             "· 理论最大:同一批请求在「无多实例打散 / 无驱逐」的理想前缀缓存里重放算出的上界。\n"
-            "两者的差 = 路由打散 + 驱逐吃掉的部分;理论低于实际说明口径或渲染有问题,不是好事。\n\n"
-            "只统计 200 + 有 usage + 未截断 + cache-sim 认识的模型,覆盖率见 cachesim_skipped_total"
-            "(实测与 bodylog 全量口径差 0.2–0.4pp)。calib 是口径版本,变了就是新序列,故用 $calib 锁定当前那批。")
+            "两者的差 ≈ 路由打散 + 驱逐吃掉的部分;理论低于实际说明口径或渲染有问题,不是好事。\n\n"
+            "**理论那条只统计** 200 + 有 usage + 未截断 + cache-sim 认识的模型(覆盖率见 cachesim_skipped_total),"
+            "实际那条是全量 —— 两者口径差 0.2–0.4pp,所以半个点以内的差别不是信号。"
+            "cache-sim 没部署时只剩实际那条,这是预期行为不是故障。"
+            "calib 是 cache-sim 的口径版本,变了就是新序列,故用 $calib 锁定当前那批。\n\n"
+            "⚠️ 实际那条含**跨实例传输**:vllm 的 cached_tokens 文档定义是 local + external,"
+            "PD 分离下 decode 收到的 KV 会被计入,所以它不等于前缀缓存命中率 —— 那个看「引擎 cache 命中率」。")
     _y[0] += 8
     # TPM / RPM:速率 × 60 换算成「每分钟」。× 60 与窗口大小无关 —— rate() 返回的就是每秒值,
     # 乘 60 即每分钟;窗口只决定平滑程度。(曾经写死 [1m] 并把理由记成「换算成每分钟」,是误解。)
