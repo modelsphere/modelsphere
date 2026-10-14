@@ -657,6 +657,27 @@ releases:
     values:
       - llmgateway/bodylog-exporter.yaml.gotmpl
 
+  - name: bodylog-victorialogs
+    namespace: {{ .Values.namespaces.llmRoute }}
+    chart: {{ template "chartref" (dict "local" $local "name" "bodylog-victorialogs" "ver" .Values.versions.bodylogVictorialogs "fallback" "modelsphere/bodylog-victorialogs") }}
+    version: {{ .Values.versions.bodylogVictorialogs | quote }}
+    installed: {{ .Values.enabled.bodylogVictorialogs }}
+{{- if .Values.enabled.bodylog }}
+    # Vector's podAffinity on the bodylog pod is `required`, so without bodylog
+    # the pod is Pending rather than failed -- ordering keeps that from being the
+    # first thing a new cluster sees. The values file refuses to render when
+    # bodylog is switched off entirely.
+    needs:
+      - {{ .Values.namespaces.llmRoute }}/bodylog
+{{- end }}
+    labels:
+      tier: llmgate
+    values:
+      - llmgateway/bodylog-victorialogs.yaml.gotmpl
+{{- if $rewrite }}
+      - llmgateway/bodylog-victorialogs-offline-images.yaml.gotmpl
+{{- end }}
+
   - name: autoconfig
     namespace: {{ .Values.namespaces.llmRoute }}
     chart: {{ template "chartref" (dict "local" $local "name" "autoconfig" "ver" .Values.versions.autoconfig "fallback" "modelsphere/autoconfig") }}

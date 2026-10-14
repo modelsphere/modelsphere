@@ -122,6 +122,7 @@ versions:
   # stays on them until it migrates, pinning the old versions in its own file.
   bodylogExporter: "0.3.1"       # appVersion 0.2.7: the finish_reason="none"
                                  # bucket the LLMSilentTruncation alert needs
+  bodylogVictorialogs: "0.1.0"
   autoconfig: "0.4.0"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
@@ -232,6 +233,12 @@ enabled:
   openresty: true
   bodylog: true
   bodylogExporter: true
+  # Vector next to the bodylog pod, shipping each record into VictoriaLogs so the
+  # bodies can be searched with LogsQL instead of grepped out of JSONL on one
+  # node. It costs a VictoriaLogs StatefulSet with a claim of its own
+  # (llmGateway.victorialogsSize), so a cluster that does not want that sets this
+  # false and keeps the files.
+  bodylogVictorialogs: true
   autoconfig: true
 
   llmOperator: true
@@ -395,6 +402,18 @@ llmGateway:
   hostPath: ""
   memoryLimit: 64Gi
   serviceMonitor: true            # the exporter's; needs monitoring.coreos.com/v1
+
+  # enabled.bodylogVictorialogs only.
+  #
+  # Records carry whole request and response bodies. Measured on a production
+  # router: ~10GB/hour of raw records store as ~12GB/day, so 14 days needed
+  # ~170GB. Size it from a day of the cluster's own traffic -- the default is the
+  # chart's, not a measurement of yours.
+  victorialogsSize: 100Gi
+  victorialogsRetention: 14d
+  # The Grafana datasource ConfigMap. Empty follows enabled.kubePrometheusStack;
+  # a cluster with its own Grafana sets it true, one that wants none sets false.
+  grafanaDatasource: ""
 
 # Cluster label put in front of every alert message by alert-webhook.
 # Required when enabled.alertWebhook is true; each environment sets its own.

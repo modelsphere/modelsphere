@@ -1,0 +1,55 @@
+{{- $g := .Values.llmGateway }}
+{{- if not .Values.enabled.bodylog }}
+{{-   fail "enabled.bodylogVictorialogs is true but enabled.bodylog is false. This release ships bodylog's records, so without it there is nothing to read -- and Vector's podAffinity on the bodylog pod is `required`, so the pod would sit Pending rather than fail. Set enabled.bodylogVictorialogs: false." }}
+{{- end }}
+{{- if not $g.hostPath }}
+{{-   fail (printf "llmGateway.hostPath is empty for environment %q. It is the node directory bodylog writes its records to, and the one Vector reads." .Environment.Name) }}
+{{- end }}
+
+# Vector reads the same node directory bodylog writes to, read-only. It is put on
+# that node by a required podAffinity on the bodylog pod rather than by repeating
+# llmGateway.node here, so moving bodylog moves Vector with it.
+bodylog:
+  hostPath: {{ $g.hostPath | quote }}
+  namespace: {{ .Values.namespaces.llmRoute | quote }}
+  podLabels:
+    app.kubernetes.io/name: bodylog
+    # This helmfile's release name. The chart's default selects on name alone,
+    # which a second bodylog release in the same namespace would also satisfy.
+    app.kubernetes.io/instance: bodylog
+
+vector:
+  state:
+    # Vector's read positions and its disk buffer. A claim, not a node directory:
+    # podAffinity follows the bodylog pod, and read positions left behind on the
+    # old node are read positions Vector does not have -- it then applies
+    # readFrom to a file bodylog is in the middle of writing and skips to the end
+    # of it. Empty storageClass would take the cluster's default class; this
+    # repo's storage.className is explicit everywhere else, so it is here too.
+    storageClass: {{ .Values.storage.className | quote }}
+
+victorialogs:
+  server:
+    image:
+      # The subchart leaves registry empty, which renders a host-less
+      # `victoriametrics/victoria-logs:<tag>`. script/offline_bundle.sh scrapes
+      # only addresses with a dotted host -- on purpose, so documentation
+      # examples do not end up in the bundle -- so the bundle would come out
+      # without the VictoriaLogs image at all, and nothing would say so.
+      # Measured on the default render: the Vector and helm-test addresses carry
+      # docker.io, this one did not.
+      registry: docker.io
+    retentionPeriod: {{ $g.victorialogsRetention | quote }}
+    persistentVolume:
+      storageClassName: {{ .Values.storage.className | quote }}
+      size: {{ $g.victorialogsSize | quote }}
+
+grafana:
+  datasource:
+    # A ConfigMap for Grafana's datasource sidecar. It is only of use if this
+    # stack installs the Grafana that reads it; a cluster running its own sets
+    # llmGateway.grafanaDatasource explicitly. Same shape as autoconfig's
+    # serviceMonitor below in the helmfile, and for the same reason.
+    enabled: {{ if kindIs "bool" (dig "grafanaDatasource" "" $g) }}{{ dig "grafanaDatasource" false $g }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
+    namespace: {{ .Values.namespaces.monitoring | quote }}
+
