@@ -39,15 +39,6 @@ victorialogs:
     # The chart's own URL helper calls the subchart's vm.plain.fullname, so
     # Vector, the Grafana datasource and `helm test` all follow this override.
     fullnameOverride: victorialogs
-    image:
-      # The subchart leaves registry empty, which renders a host-less
-      # `victoriametrics/victoria-logs:<tag>`. script/offline_bundle.sh scrapes
-      # only addresses with a dotted host -- on purpose, so documentation
-      # examples do not end up in the bundle -- so the bundle would come out
-      # without the VictoriaLogs image at all, and nothing would say so.
-      # Measured on the default render: the Vector and helm-test addresses carry
-      # docker.io, this one did not.
-      registry: docker.io
     retentionPeriod: {{ $g.victorialogsRetention | quote }}
     persistentVolume:
       storageClassName: {{ .Values.storage.className | quote }}

@@ -123,6 +123,12 @@ versions:
   bodylogExporter: "0.3.1"       # appVersion 0.2.7: the finish_reason="none"
                                  # bucket the LLMSilentTruncation alert needs
   bodylogVictorialogs: "0.1.0"
+  # The Grafana plugin for the datasource bodylog-victorialogs provisions,
+  # carried as an image so the offline bundle picks it up with every other one.
+  # Its version is the plugin's. Built by hand from
+  # observability/grafana-victorialogs-plugin/ -- no release workflow, because
+  # it holds nothing of ours.
+  grafanaVictorialogsPlugin: "0.32.0"
   autoconfig: "0.4.0"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo

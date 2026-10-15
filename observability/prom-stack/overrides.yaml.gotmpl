@@ -157,17 +157,34 @@ alertmanager:
 grafana:
 {{- /* The VictoriaLogs datasource that bodylog-victorialogs provisions is a
        backend plugin, and Grafana cannot use a datasource whose plugin it does
-       not have -- it shows up registered and unusable. This installs it.
+       not have -- it shows up registered and unusable. This installs it, from
+       an image that carries the plugin's files and nothing else; Grafana stays
+       the upstream image, and the init container copies and exits.
 
-       `upstream` only. This value becomes GF_PLUGINS_PREINSTALL_SYNC on the
-       grafana container (its _pod.tpl), which downloads from grafana.com at
-       startup, synchronously: with no route out, Grafana does not start at all.
-       The offline modes therefore leave it alone, and charts/bodylog-victorialogs
-       README.md has the init-container recipe for installing it from somewhere
-       reachable. */}}
-{{- if and .Values.enabled.bodylogVictorialogs (eq (.Values.registryMode | default "") "upstream") }}
-  plugins:
-    - victoriametrics-logs-datasource
+       The obvious alternative, grafana.plugins, is not used in either mode.
+       Online it works, but it becomes GF_PLUGINS_PREINSTALL_SYNC on the grafana
+       container, which downloads from grafana.com at startup and synchronously
+       -- so it cannot be the offline answer, and having one mechanism online and
+       another offline put the image outside what the bundle sees:
+       script/offline_bundle.sh renders with registryMode upstream to collect
+       addresses, so a plugin image that only appears in the offline render is a
+       plugin image the bundle does not contain.
+
+       One path for all three modes. Online it is an image pull like any other;
+       the copy runs on every pod start, so it works whether /var/lib/grafana is
+       the claim below or an emptyDir. */}}
+{{- if .Values.enabled.bodylogVictorialogs }}
+  extraInitContainers:
+    - name: victorialogs-plugin
+      image: {{ .Values.registry }}/grafana-victorialogs-plugin:{{ .Values.versions.grafanaVictorialogsPlugin }}
+      command: ["sh", "-c"]
+      args:
+        - mkdir -p /var/lib/grafana/plugins &&
+          cp -r /plugin/victoriametrics-logs-datasource /var/lib/grafana/plugins/ &&
+          echo "victoriametrics-logs-datasource installed"
+      volumeMounts:
+        - name: storage
+          mountPath: /var/lib/grafana
 {{- end }}
   persistence:
     # Off, the chart renders a Deployment with an emptyDir instead of this
