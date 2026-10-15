@@ -30,6 +30,15 @@ vector:
 
 victorialogs:
   server:
+    # A fixed Service name, so the address is something another workload can be
+    # configured with. Left alone, the subchart derives it from the release name
+    # (`<release>-server` when that name already contains "victorialogs",
+    # `<release>-victorialogs-server` otherwise), which is a name nobody outside
+    # this file can predict. The result here is
+    #     http://victorialogs.<llmRoute>.svc:9428
+    # The chart's own URL helper calls the subchart's vm.plain.fullname, so
+    # Vector, the Grafana datasource and `helm test` all follow this override.
+    fullnameOverride: victorialogs
     image:
       # The subchart leaves registry empty, which renders a host-less
       # `victoriametrics/victoria-logs:<tag>`. script/offline_bundle.sh scrapes
