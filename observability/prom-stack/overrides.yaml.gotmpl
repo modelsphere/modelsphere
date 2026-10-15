@@ -155,6 +155,20 @@ alertmanager:
 {{- end }}
 
 grafana:
+{{- /* The VictoriaLogs datasource that bodylog-victorialogs provisions is a
+       backend plugin, and Grafana cannot use a datasource whose plugin it does
+       not have -- it shows up registered and unusable. This installs it.
+
+       `upstream` only. This value becomes GF_PLUGINS_PREINSTALL_SYNC on the
+       grafana container (its _pod.tpl), which downloads from grafana.com at
+       startup, synchronously: with no route out, Grafana does not start at all.
+       The offline modes therefore leave it alone, and charts/bodylog-victorialogs
+       README.md has the init-container recipe for installing it from somewhere
+       reachable. */}}
+{{- if and .Values.enabled.bodylogVictorialogs (eq (.Values.registryMode | default "") "upstream") }}
+  plugins:
+    - victoriametrics-logs-datasource
+{{- end }}
   persistence:
     # Off, the chart renders a Deployment with an emptyDir instead of this
     # StatefulSet. Dashboards survive either way -- the sidecar provisions them
