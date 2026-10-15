@@ -30,7 +30,7 @@ components decide how many engine replicas each model runs.
 | C | 6. Install the stack | `make helm-apply ENV=<env>` | never -- this is the step |
 | C | 7. Gateway objects | `kubectl apply -f gateway-api/openresty/` | the routing layer only serves traffic inside the cluster |
 | C | 8. Deploy a model | `helm install` | you are installing infrastructure now and models later |
-| C | 9. LLM AutoTune (optional) | `helm install` (its own chart) | you do not need to tune serving configurations |
+| C | 9. LLM AutoTune (optional, preview) | `helm install` | you do not need to tune serving configurations |
 
 Each step below repeats its own skip condition, so you can read from wherever
 you are starting.
@@ -565,9 +565,12 @@ This needs `gpuOperator` from step 6 -- without it the node advertises no
 kubectl get node <gpu node> -o jsonpath='{.status.allocatable.nvidia\.com/gpu}'
 ```
 
-### 9. Optional: LLM AutoTune
+### 9. Optional: LLM AutoTune (preview)
 
 *Skip it unless you want to tune serving configurations.*
+
+> **Preview.** LLM AutoTune is a preview release: its settings and behaviour
+> may change between versions.
 
 [LLM AutoTune](https://github.com/modelsphere/llm-autotune) finds the best
 serving configuration for a model on your GPUs: it launches candidate engine
@@ -576,23 +579,22 @@ configurations (sglang, vLLM), benchmarks each one with
 the configuration you run today. It is not needed to serve models; install it
 when you want to tune them.
 
-It is installed with its own Helm chart, from the llm-autotune repository. The
+Its chart is in the same Helm repository as the rest of the stack. The
 platform itself needs no GPUs: it can run on this cluster or on a separate one,
 and sends its runs to GPU clusters you register in its UI.
 
 ```bash
-git clone https://github.com/modelsphere/llm-autotune
-cd llm-autotune
-helm upgrade --install llm-autotune deploy/helm/llm-autotune \
+helm repo add modelsphere https://modelsphere.github.io/helm-charts
+helm repo update
+helm upgrade --install llm-autotune modelsphere/llm-autotune \
   -n llm-autotune --create-namespace \
   --set jwtSecret=$(openssl rand -hex 32) \
   --set adminPassword=<password>
 ```
 
 `jwtSecret` is the only required value; generate it once and keep it. Runs are
-benchmarked by LLMBench, installed from its own chart and connected with
-`llmbench.url` and `llmbench.apiKey`; `deploy/quickstart.sh` in that
-repository installs both together.
+benchmarked by LLMBench, whose chart (`modelsphere/llm-bench`) is in the same
+repository; connect the two with `llmbench.url` and `llmbench.apiKey`.
 
 Installation, configuration and every chart setting are documented in the
 llm-autotune repository:
