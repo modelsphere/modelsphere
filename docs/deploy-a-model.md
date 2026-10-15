@@ -18,10 +18,9 @@ Clients call the model at **`/<route>/v1/...`**, and the route is the
   e.g. `/mnt/disk0/models/<org>/<model>`. `model.localPath` is a hostPath, so
   shared storage (NFS, CephFS) is not supported. A multi-node model needs a
   copy on every node of the group.
-- **A model that spans several nodes** needs the sglang chart and
-  `enabled.lws`, plus `enabled.volcano` if it uses `schedulerName: volcano`.
-  An environment file copied from `environments/private.yaml.example` turns
-  both off. The vllm chart is single-node only.
+- **A model that spans several nodes** needs `enabled.lws` (either chart),
+  plus `enabled.volcano` if it uses `schedulerName: volcano`. An environment
+  file copied from `environments/private.yaml.example` turns both off.
 
 ## Write the values file
 
@@ -85,6 +84,7 @@ one replica. See
 | `modelRoute.nginx.route` | release name | The path prefix, `/<route>/v1/...` |
 | `modelRoute.nginx.values.expose_routed_peer` | `"true"` | Names the serving pod in `X-Routed-Peer`. Set `"false"` on any route reachable from outside the cluster |
 | `modelRoute.monitor.enabled` | `true` | `false` unless you run the monitor ConfigMap |
+| `lws.enabled`, `lws.size` | `false`, `2` | One model instance across several nodes; `lws.size` pods per group. See [Multi-node service](#multi-node-service) |
 | `cart.enabled` | `true` | Deploys the model's CART and routes through it. See [cart.md](cart.md) |
 | `continuationGateway.enabled` | `false` | Resumes streams that stall or drop mid-generation. See [Continuation gateway](#continuation-gateway-optional) |
 | `scaler.*`, `sloRequirement.*` | | See [autoscaling.md](autoscaling.md) |
@@ -93,7 +93,7 @@ The charts reject unknown keys, so a typo fails the install.
 
 ## vLLM
 
-The same model on the vllm chart (single node only):
+The same model on the vllm chart, on one node:
 
 ```yaml
 image:
@@ -125,11 +125,26 @@ modelRoute:
     enabled: false
 ```
 
-## Multi-nodes service (sglang only)
+## Multi-node service
 
-Add a LeaderWorkerSet. `model.gpus` stays per pod; `--tp-size` covers the
-whole group. Do not pass `--nnodes`, `--node-rank` or `--dist-init-addr`: the
-chart sets them.
+Both charts can spread one model instance across several nodes, as a
+LeaderWorkerSet instead of a Deployment: a **group** of `lws.size` pods (one
+leader and its workers) loads the model, scales and restarts as one unit. It
+needs the LWS controller (`enabled.lws`). Merge the values below into the
+single-node values above.
+
+- `model.gpus` stays **per pod**; the parallelism you give the engine covers
+  the **whole group**.
+- The chart derives the flags that describe the group. Do not pass them in
+  `extraArgs`.
+- The Service is `<release>-leader`; CART, the ModelRoute and the autoscaler
+  work as for a single node, with one replica being one whole group.
+- Workers have no probes: a worker at `1/1` is running, not loaded. The
+  group is ready when the leader is.
+- A restart of any pod in the group recreates the whole group. Rollout
+  behaviour is in [rolling-updates.md](rolling-updates.md#engine).
+
+### sglang
 
 ```yaml
 model:
@@ -138,13 +153,35 @@ lws:
   enabled: true
   size: 2                  # pods per group, leader included
 extraArgs:
-  - --tp-size=16           # 2 x 8
+  - --tp-size=16           # covers the group: 2 x 8
 schedulerName: volcano     # optional: place the group whole or not at all
 ```
 
-Merge this into the single-node values above. The Service is
-`<release>-leader`. Rollout behaviour for a group is in
-[rolling-updates.md](rolling-updates.md#engine).
+The chart sets `--nnodes`, `--node-rank` and `--dist-init-addr`. The
+leader waits for its workers for the engine's `--dist-timeout` (600 s by
+default), not for the startup probe's budget.
+
+### vLLM
+
+vLLM's own multi-node mode, without Ray: the leader runs `vllm serve` with the
+API server, every worker runs `vllm serve --headless`, and one executor spans
+the nodes.
+
+```yaml
+model:
+  gpus: "8"
+lws:
+  enabled: true
+  size: 2                            # pods per group, leader included
+extraArgs:
+  - --tensor-parallel-size=8
+  - --pipeline-parallel-size=2       # 8 x 2 = 2 pods x 8 GPUs
+schedulerName: volcano               # optional: place the group whole or not at all
+```
+
+The chart sets `--nnodes`, `--node-rank`, `--master-addr`, `--master-port`,
+`--distributed-executor-backend=mp` and `--headless`. The layout must add up:
+`tensor-parallel-size x pipeline-parallel-size = lws.size x model.gpus`.
 
 ## Continuation gateway (optional)
 
@@ -181,20 +218,11 @@ continuationGateway:
   and `resources` for that traffic.
 
 **Supported models.** Each engine and model combination has its own
-continuation strategy. Verified so far:
-
-| Engine | Model | Status |
-| --- | --- | --- |
-| sglang | Kimi-K3 | Verified |
-| sglang | Qwen3.6-35B-A3B | Verified |
-| sglang | GLM-5.3 | Verified |
-| vLLM | GLM-5.3 | Verified |
-| vLLM | Kimi-K3 | Not supported |
-
-Other combinations are unverified: they may work, but check them before
-relying on them. The current list, the gateway's settings and how it decides
-to resume are in the
-[continuation_gateway repository](https://github.com/modelsphere/continuation_gateway).
+continuation strategy, and not every combination is supported. Check the
+compatibility table at the top of the
+[continuation_gateway README](https://github.com/modelsphere/continuation_gateway#readme)
+before turning it on; the repository also documents the gateway's settings
+and how it decides to resume.
 
 ## Install
 
