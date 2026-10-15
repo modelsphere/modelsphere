@@ -86,6 +86,7 @@ one replica. See
 | `modelRoute.nginx.values.expose_routed_peer` | `"true"` | Names the serving pod in `X-Routed-Peer`. Set `"false"` on any route reachable from outside the cluster |
 | `modelRoute.monitor.enabled` | `true` | `false` unless you run the monitor ConfigMap |
 | `cart.enabled` | `true` | Deploys the model's CART and routes through it. See [cart.md](cart.md) |
+| `continuationGateway.enabled` | `false` | Resumes streams that stall or drop mid-generation. See [Continuation gateway](#continuation-gateway-optional) |
 | `scaler.*`, `sloRequirement.*` | | See [autoscaling.md](autoscaling.md) |
 
 The charts reject unknown keys, so a typo fails the install.
@@ -144,6 +145,56 @@ schedulerName: volcano     # optional: place the group whole or not at all
 Merge this into the single-node values above. The Service is
 `<release>-leader`. Rollout behaviour for a group is in
 [rolling-updates.md](rolling-updates.md#engine).
+
+## Continuation gateway (optional)
+
+The [continuation gateway](https://github.com/modelsphere/continuation_gateway)
+resumes a streaming completion that stalls or drops mid-generation: it asks
+the model to continue once from what the client has already received, so the
+client sees one continuous, complete stream. Both engine charts deploy it as
+part of the model's release. With it on, the model's traffic goes
+
+```
+openresty -> continuation gateway -> CART -> engine
+```
+
+```yaml
+continuationGateway:
+  enabled: true
+  config:
+    continuationModel: "glm-5.3"    # required: the real model this release serves
+    # bufferToolCalls: true
+    # stallIdleTimeoutSeconds: 600
+  # resources: {}
+```
+
+- **`continuationModel` is required.** It is the model the engine actually
+  serves, as one string, not the `model.name` clients send. It picks how the
+  gateway rebuilds the prefix it continues from: `kimi-k3` uses Kimi-K3's own
+  format; any other value uses a generic `<think>...</think>` format.
+- `continuationEngine` is set by the chart (`sglang` or `vllm`); leave it.
+- It needs `cart.enabled` and `modelRoute.enabled` (both on by default):
+  openresty's CART peer is then pointed at the gateway's Service,
+  `<release>-continuation-gateway`, and the gateway forwards to the CART.
+  Turning it off points the peer back at the CART.
+- The gateway is on the request path of the whole model, so size its replicas
+  and `resources` for that traffic.
+
+**Supported models.** Each engine and model combination has its own
+continuation strategy. Verified so far:
+
+| Engine | Model | Status |
+| --- | --- | --- |
+| sglang | Kimi-K3 | Verified |
+| sglang | Qwen3.6-35B-A3B | Verified |
+| sglang | GLM-5.3 | Verified |
+| vLLM | GLM-5.3 | Verified |
+| vLLM | Kimi-K3 | Not supported |
+
+Other combinations are unverified: they may work, but check them before
+relying on them. The current list, the gateway's settings and how it decides
+to resume are in the
+[continuation_gateway repository](https://github.com/modelsphere/continuation_gateway).
 
 ## Install
 
