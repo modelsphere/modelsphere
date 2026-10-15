@@ -34,6 +34,12 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 Then raise `versions.grafanaVictorialogsPlugin` in `environments/default.yaml`.
 
+**Re-pushing a tag does not reach a node that already has it.** Image pull policy
+is IfNotPresent for a tag that is not `latest`, so a node holding the old layers
+keeps using them and the fix looks like it did not work. Either give the rebuild
+a new tag, or clear the old one from the nodes (`crictl rmi <image>:<tag>`)
+before testing.
+
 **Do not trim the release.** It carries a ~25MB backend binary for each of eight
 platforms, 212MB unpacked, and a cluster uses one of them — but MANIFEST.txt is
 signed and lists every file. Delete the seven a cluster will never run and

@@ -125,12 +125,10 @@ versions:
   bodylogVictorialogs: "0.1.0"
   # The Grafana plugin for the datasource bodylog-victorialogs provisions,
   # carried as an image so the offline bundle picks it up with every other one.
-  # The tag is the plugin's version plus a packaging revision -- `-1` because
-  # `0.32.0` was published with the release trimmed to the two backend binaries
-  # a cluster can run, which breaks its signature. Built by hand from
+  # The tag is the plugin's own version. Built by hand from
   # observability/grafana-victorialogs-plugin/ -- no release workflow, because
   # it holds nothing of ours.
-  grafanaVictorialogsPlugin: "0.32.0-1"
+  grafanaVictorialogsPlugin: "0.32.0"
   autoconfig: "0.4.0"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
