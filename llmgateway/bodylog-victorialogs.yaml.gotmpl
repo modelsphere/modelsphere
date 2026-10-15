@@ -48,8 +48,9 @@ grafana:
   datasource:
     # A ConfigMap for Grafana's datasource sidecar. It is only of use if this
     # stack installs the Grafana that reads it; a cluster running its own sets
-    # llmGateway.grafanaDatasource explicitly. Same shape as autoconfig's
-    # serviceMonitor below in the helmfile, and for the same reason.
+    # llmGateway.grafanaDatasource explicitly. Same shape as the autoconfig
+    # release's metrics.serviceMonitor in helmfile.yaml.gotmpl, for the same
+    # reason.
     enabled: {{ if kindIs "bool" (dig "grafanaDatasource" "" $g) }}{{ dig "grafanaDatasource" false $g }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
     namespace: {{ .Values.namespaces.monitoring | quote }}
 

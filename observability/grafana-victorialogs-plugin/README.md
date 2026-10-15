@@ -1,23 +1,29 @@
 # grafana-victorialogs-plugin
 
 The [VictoriaLogs datasource plugin](https://github.com/VictoriaMetrics/victorialogs-datasource)
-packaged as files, for air-gapped clusters. `bodylog-victorialogs` provisions the
-datasource; Grafana cannot use it without this plugin, and a closed cluster has
-no way to download one.
+packaged as files. `bodylog-victorialogs` provisions the datasource; Grafana
+cannot use a datasource whose plugin it does not have, so
+`observability/prom-stack/overrides.yaml.gotmpl` copies these files in with an
+init container.
 
-Online installs do not need this image: `grafana.plugins` in
-`observability/prom-stack/overrides.yaml.gotmpl` has Grafana fetch the plugin
-itself. That value becomes `GF_PLUGINS_PREINSTALL_SYNC`, which downloads from
-grafana.com at startup and synchronously — so it is set for `registryMode:
-upstream` only, and the offline modes use this image instead.
+## Why an image, and why in every mode
 
-## Why an image
+`grafana.plugins` would do the job online — Grafana fetches the plugin itself —
+but it becomes `GF_PLUGINS_PREINSTALL_SYNC`, which downloads from grafana.com at
+startup and synchronously: a closed cluster would not start Grafana at all. So
+it cannot be the air-gapped answer.
 
-The offline bundle fills two addresses: a registry and a chart directory.
-Charts are read by helmfile on the installer's filesystem, which a pod cannot
-see, and a ConfigMap stops at 1MiB against a 26MB backend binary. The registry
-is the one channel into a pod, so the plugin travels as an image — and then the
-bundle, `rewrite` and `mirror` all handle it with no new code.
+Using it online and an image offline is worse than either. The offline bundle
+collects image addresses by rendering with `registryMode: upstream`
+(`script/offline_bundle.sh`) — the mode that would not have named the image — so
+the bundle would come out without it, and the install that needs it is the one
+that could not pull it. One path for all three modes instead.
+
+The plugin has to be an image rather than a file in the bundle because the
+bundle fills two addresses, a registry and a chart directory, and only the
+registry is readable from a pod: charts are read by helmfile on the installer's
+filesystem, and a ConfigMap stops at 1MiB against a 26MB backend binary. As an
+image it rides the bundle, `rewrite` and `mirror` with no new code.
 
 ## Build and push
 

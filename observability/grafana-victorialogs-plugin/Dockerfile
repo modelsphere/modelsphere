@@ -2,13 +2,17 @@
 # copy -- NOT a Grafana image. Grafana itself stays the upstream one, so a
 # Grafana upgrade does not drag this along.
 #
-# It exists for air-gapped installs only. Online, grafana.plugins lets Grafana
-# fetch the plugin itself (observability/prom-stack/overrides.yaml.gotmpl), but
-# that becomes GF_PLUGINS_PREINSTALL_SYNC and a closed cluster would then fail
-# to start Grafana at all. The offline bundle's only channel a pod can read is
-# the registry -- charts are read from the installer's disk, and a ConfigMap
-# caps at 1MiB against a 26MB backend binary -- so the plugin travels as an
-# image and rides the bundle/rewrite/mirror machinery with every other image.
+# Every install uses it, online and air-gapped alike. grafana.plugins would do
+# the job online -- Grafana fetches the plugin itself -- but it becomes
+# GF_PLUGINS_PREINSTALL_SYNC, which downloads at startup and synchronously, so a
+# closed cluster would not start Grafana at all. And an image used only offline
+# would not be in the offline bundle: script/offline_bundle.sh collects addresses
+# by rendering with registryMode upstream, the mode that would not have named it.
+#
+# The plugin has to travel as an image because the bundle's only channel a pod
+# can read is the registry -- charts are read from the installer's disk, and a
+# ConfigMap caps at 1MiB against a 26MB backend binary. As an image it rides the
+# bundle/rewrite/mirror machinery with everything else.
 #
 # Built by hand, like the other images with no source repository of their own.
 # See README.md in this directory.
