@@ -22,12 +22,20 @@ RUN apk add --no-cache curl unzip \
       "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v${VERSION}/victoriametrics-logs-datasource-v${VERSION}.zip" \
  && unzip -q /tmp/p.zip -d /out \
  && ls -d /out/victoriametrics-logs-datasource \
- # The release carries a ~25MB backend binary for each of eight platforms
- # (darwin, freebsd, windows, linux x 4 arches), 212MB unpacked. Grafana loads
- # the one matching its own, so keep the two a cluster can run and drop 157MB.
- && find /out -name 'victoriametrics_logs_backend_plugin_*' \
-      ! -name '*_linux_amd64' ! -name '*_linux_arm64' -delete \
  && du -sh /out/victoriametrics-logs-datasource
+
+# Unpacked as released, all 212MB of it. The release carries a ~25MB backend
+# binary for each of eight platforms and a cluster runs one of them, so dropping
+# the other seven is the obvious thing to do -- and it breaks the plugin.
+# MANIFEST.txt is signed and lists every file, so a missing one makes the
+# signature `modified` and Grafana refuses to load it. Measured, with the image
+# that had been trimmed to 55MB:
+#
+#   plugins.signature  "Plugin file listed in the manifest was not found"
+#                      path=victoriametrics_logs_backend_plugin_linux_s390x
+#   plugins.validation "plugin ... has an modified signature"
+#
+# and the datasource answered "Unable to find datasource plugin". Leave it whole.
 
 FROM alpine:3.21
 # Nothing runs here; the image is a carrier. The init container that copies

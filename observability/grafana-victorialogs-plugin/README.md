@@ -33,5 +33,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 ```
 
 Then raise `versions.grafanaVictorialogsPlugin` in `environments/default.yaml`.
-Both architectures carry both backend binaries: Grafana loads the one matching
-its own, and which of the two it is depends on the node, not on the image.
+
+**Do not trim the release.** It carries a ~25MB backend binary for each of eight
+platforms, 212MB unpacked, and a cluster uses one of them — but MANIFEST.txt is
+signed and lists every file. Delete the seven a cluster will never run and
+Grafana reports the signature as `modified` and declines to load the plugin,
+while the files sit there looking installed. That is what the first build of this
+image did; the Dockerfile has the log lines.
