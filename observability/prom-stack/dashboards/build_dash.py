@@ -214,7 +214,13 @@ def live(expr):
 #      (kimi-k25-0-1 --owner--> StatefulSet kimi-k25-0 == leader pod),
 #      拿 kube_pod_owner 搭桥 join 回 ① 拿到 service
 _ENGSEL = '{__name__=~"sglang:num_running_reqs|vllm:num_requests_running"}'
-LEADER2SVC = '(0 * %s + 1)' % eng('max by(namespace,pod,service)(%s)' % _ENGSEL)
+# Normalise the service label first, then aggregate -- not the other way round. A
+# prefill/decode colocated pod is scraped through two Services (<rel>-prefill-hl-s0 and
+# <rel>-decode-hl-s0) that eng() maps to the same name: aggregated first, the pod's two
+# (namespace,pod,service) series become identical inside label_replace and Prometheus
+# rejects the whole query ("vector cannot contain metrics with the same labelset"),
+# blanking every panel built on POD2SVC. The raw series still differ by instance.
+LEADER2SVC = '(0 * max by(namespace,pod,service)(%s) + 1)' % eng(_ENGSEL)
 WORKER2SVC = ('max by(namespace,pod,service)(\n'
               '  label_replace(kube_pod_owner{owner_kind="StatefulSet"}, "leader_pod", "$1", "owner_name", "(.+)")\n'
               '  * on(namespace,leader_pod) group_left(service)\n'
