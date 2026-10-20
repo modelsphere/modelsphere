@@ -51,6 +51,19 @@ VAR_GPU_SCOPE = {"name": "gpu_scope", "type": "custom", "label": "GPU 范围",
                              {"text": "全集群", "value": "1", "selected": True}],
                  "current": {"text": "全集群", "value": "1"}, "includeAll": False, "multi": False}
 
+# H3 runs as one release per namespace (a second stack with a replacement text
+# encoder lives alongside the first). Every H3 query below filters on this, and
+# every aggregation keeps the namespace label -- without it `max by (capability,
+# status)` silently merges the stacks and label_replace stamps the result with
+# whichever deployment name is hardcoded.
+H3_NS = 'namespace=~"$namespace"'
+
+VAR_H3_NS = {"name": "namespace", "type": "query", "datasource": DS,
+             "query": {"query": 'label_values(kube_deployment_status_replicas'
+                                '{deployment=~".*minimax-h3-server-.*"}, namespace)', "refId": "ns"},
+             "refresh": 2, "includeAll": True, "allValue": ".*", "multi": True,
+             "current": {"text": "All", "value": "$__all"}, "sort": 1, "label": "namespace"}
+
 panels, _id, _y = [], [1], [0]
 
 def reset():
@@ -1359,13 +1372,18 @@ def h3_status_table():
          (h3-minimax-h3-server-fl2va-0)会匹配成 deployment="h3-minimax-h3-server",
          再加上匹配不上的会归到空名字,表里多出 `?` 和半截名的假行。
     """
-    NS = 'namespace="minimax-h3"'
+    NS = H3_NS
     # 每条查询都必须 sum by (deployment) —— KSM 的原始 series 带着 __name__/container/
     # endpoint/instance/job/pod/uid 一大串标签,各条查询标签集不同,表格的 merge 就 join 不到
     # 同一行:结果是【同一个 deployment 裂成多行】(一行只有"就绪"、另一行只有"期望"),
     # 而且那些标签会全部变成多余的列。聚合掉只剩 deployment,才能合成一行。(踩过)
-    R = 'sum by (deployment) (kube_deployment_status_replicas_ready{%s})' % NS
-    D = 'sum by (deployment) (kube_deployment_status_replicas{%s})' % NS
+    # ⚠️ 必须同时按 deployment 名过滤,不能只靠 namespace:变量选 All 时
+    # namespace=~".*" 匹配所有 namespace,KSM 的通用指标会把全集群上百个
+    # deployment 拉进这张表(回放实测:rook-ceph / cert-manager / network-operator 全来了)。
+    # 过滤用 chart 名 minimax-h3(不带 release 名),两套 release 都匹配得上。
+    H3D = 'deployment=~".*minimax-h3-.*"'
+    R = 'sum by (deployment) (kube_deployment_status_replicas_ready{%s,%s})' % (NS, H3D)
+    D = 'sum by (deployment) (kube_deployment_status_replicas{%s,%s})' % (NS, H3D)
     Z = '(0 * sum by (deployment) (%s))' % R          # 空闲时补 0,见坑 ①
     POD_RE = '[a-f0-9]{8,10}-[a-z0-9]{5}'
     qs = [
@@ -1373,21 +1391,25 @@ def h3_status_table():
         (D, "期望"),
         # 2=就绪>=期望 / 1=有就绪但不足 / 0=全挂。分母用期望而非实际,理由同健康总览。
         ('(%s > bool 0) + (%s >= bool %s)' % (R, R, D), "状态"),
-        ('sum by (deployment) (label_replace(h3_queue_running_on_instance,'
-         ' "deployment", "$1", "h3_instance", "(.*)-[^-]+-[^-]+")) or %s' % Z, "正在执行"),
-        ('sum by (deployment) (label_replace(max by (capability,status) '
-         '(h3_queue_tasks{status=~"queued|running"}),'
-         ' "deployment", "h3-minimax-h3-server-$1", "capability", "(.*)")) or %s' % Z, "积压"),
+        ('sum by (deployment) (label_replace(h3_queue_running_on_instance{%s},'
+         ' "deployment", "$1", "h3_instance", "(.*)-[^-]+-[^-]+")) or %s' % (NS, Z), "正在执行"),
+        # deployment 名从 **job** 取,不再拼 "h3-minimax-h3-server-<capability>":
+        # 那个前缀是写死的 release 名,第二套 release 的任务会被记到第一套那一行上。
+        # job 标签就是 Service 名 = Deployment 名(实测两套各自的 job 与 capability 一一对应)。
+        # by 里保留 namespace:否则 max 会跨 namespace 取两套的最大值。
+        ('sum by (deployment) (label_replace(max by (namespace,job,status) '
+         '(h3_queue_tasks{%s,status=~"queued|running"}),'
+         ' "deployment", "$1", "job", "(.*)")) or %s' % (NS, Z), "积压"),
         # ⚠️ 24h 失败数【不能】用 h3_queue_completed_24h:它带着 job/service 标签、看着像按服务分,
         #    但值是集群级的(每个副本都从共享 PG 读同一份,两个 job 报的是同一个数)——
         #    按 job 拆会把同一批失败在每行各显示一次。只能从 capability 推(实测:capability 推出
         #    fl2va=2 / ref2va 无 series,合计正好等于集群级的 2)。
         #    子查询分辨率给 5m 而不是 1h:1h 的话最近一小时内的失败要等到下个整点才进得来。
-        ('round(sum by (deployment) (label_replace(delta(max by (capability,status) '
-         '(h3_queue_tasks{status="failed"})[24h:5m]),'
-         ' "deployment", "h3-minimax-h3-server-$1", "capability", "(.*)"))) or %s' % Z, "错误24h"),
+        ('round(sum by (deployment) (label_replace(delta(max by (namespace,job,status) '
+         '(h3_queue_tasks{%s,status="failed"})[24h:5m]),'
+         ' "deployment", "$1", "job", "(.*)"))) or %s' % (NS, Z), "错误24h"),
         ('round(sum by (deployment) (increase(label_replace('
-         'kube_pod_container_status_restarts_total{%s,pod=~"h3-minimax-h3-.*-%s"},'
+         'kube_pod_container_status_restarts_total{%s,pod=~".*minimax-h3-.*-%s"},'
          ' "deployment", "$1", "pod", "^(.*)-%s$")[24h:1h]))) or %s' % (NS, POD_RE, POD_RE, Z), "重启24h"),
     ]
     tg = [{"refId": chr(65 + i), "expr": e, "legendFormat": l, "datasource": DS,
@@ -1485,12 +1507,12 @@ def build_h3():
     #     · 按池:用 `0 * max by(capability)(h3_queue_backend_up)` 兜底 ——
     #       backend_up 每个 capability 恒有,正好提供带正确标签的 0。
     ts("积压任务(按能力池 × 状态)",
-       [('max by (capability,status) (h3_queue_tasks{status="queued"}) '
-         'or label_replace(0 * max by (capability) (h3_queue_backend_up), "status", "queued", "", "")',
-         "{{capability}} {{status}}"),
-        ('max by (capability,status) (h3_queue_tasks{status="running"}) '
-         'or label_replace(0 * max by (capability) (h3_queue_backend_up), "status", "running", "", "")',
-         "{{capability}} {{status}}")],
+       [('max by (namespace,capability,status) (h3_queue_tasks{%s,status="queued"}) '
+         'or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{%s}), "status", "queued", "", "")' % (H3_NS, H3_NS),
+         "{{namespace}} {{capability}} {{status}}"),
+        ('max by (namespace,capability,status) (h3_queue_tasks{%s,status="running"}) '
+         'or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{%s}), "status", "running", "", "")' % (H3_NS, H3_NS),
+         "{{namespace}} {{capability}} {{status}}")],
        w=8, stacking=True,
        desc="**只画 queued/running**:h3_queue_tasks 含历史累计的 succeeded,一起画会被存量压平、"
             "看不出积压。堆叠,所以顶端就是总积压;分组同时按能力池(fl2va 文生视频 / ref2va 参考图)"
@@ -1501,14 +1523,14 @@ def build_h3():
             "这样补出来的 0 标签集与真实 series 一致,图例不会多出没名字的一条。"
             "这张图抬头 = 产能跟不上或有任务卡住。")
     ts("完成量(每 10 分钟)+ 历史累计",
-       [('sum by (status) (rate(max by (capability,status) '
-         '(h3_queue_tasks{status=~"succeeded|failed|cancelled"})[$__rate_interval:])) * 600',
-         "{{status}}"),
+       [('sum by (namespace,status) (rate(max by (namespace,capability,status) '
+         '(h3_queue_tasks{%s,status=~"succeeded|failed|cancelled"})[$__rate_interval:])) * 600' % H3_NS,
+         "{{namespace}} {{status}}"),
         # 累计线:h3_queue_tasks 本身就是累计值,直接画(24h 实测单调、零回退)。
         # 量级与速率差两个数量级(324 vs 0~2),必须挂右轴,否则速率线会被压成一条贴地的直线。
-        ('sum by (status) (max by (capability,status) '
-         '(h3_queue_tasks{status=~"succeeded|failed|cancelled"}))',
-         "{{status}} 累计")],
+        ('sum by (namespace,status) (max by (namespace,capability,status) '
+         '(h3_queue_tasks{%s,status=~"succeeded|failed|cancelled"}))' % H3_NS,
+         "{{namespace}} {{status}} 累计")],
        unit="short", w=8, x=8,
        # ⚠️ interval="10m" 是这张图的关键:任务完成是【稀疏离散事件】(高峰期也才每分钟 2~4 个),
        #   窗口短于 10 分钟时曲线会在 0 和 1 之间高频跳变、糊成一片竖线(2026-09-16 实拍:
@@ -1547,8 +1569,8 @@ def build_h3():
     # 这个**故意不补 0**:0 的含义是「有任务、刚进来 0 秒」,和「根本没有任务」是两回事,
     # 补零等于撒谎(会让"有没有卡住的任务"这个判断失真)。改成在标题里点明空闲即无数据。
     ts("最老任务年龄(空闲时无数据)",
-       [('max(h3_queue_oldest_queued_age_seconds)', "最老排队"),
-        ('max(h3_queue_oldest_running_age_seconds)', "最老运行中")],
+       [('max by (namespace) (h3_queue_oldest_queued_age_seconds{%s})' % H3_NS, "{{namespace}} 最老排队"),
+        ('max by (namespace) (h3_queue_oldest_running_age_seconds{%s})' % H3_NS, "{{namespace}} 最老运行中")],
        unit="s", w=8, x=16,
        desc="没有排队/运行中的任务时**不上报**,所以空闲时是 No data —— 这里**故意不补 0**:"
             "0 表示「有任务、刚进来」,与「没有任务」语义不同,补零会让判断失真。"
@@ -1563,16 +1585,16 @@ def build_h3():
     #     TaskWorker、最多一条在途任务;state=queued 也必然恒 0(一次只提交一个)。
     row("运行与健康")
     ts("各副本正在执行的任务",
-       [('sum by (h3_instance) (h3_queue_running_on_instance)', "{{h3_instance}}")],
+       [('sum by (h3_instance) (h3_queue_running_on_instance{%s})' % H3_NS, "{{h3_instance}}")],
        w=8, desc="每个副本手上正在跑的任务数(单副本最多 1)。既能看负载分布,也能看出谁在干活、谁闲着。")
     ts("副本数(期望 / 就绪)",
-       [('kube_deployment_status_replicas{namespace="minimax-h3"}', "{{deployment}} 期望"),
-        ('kube_deployment_status_replicas_ready{namespace="minimax-h3"}', "{{deployment}} 就绪")],
+       [('kube_deployment_status_replicas{%s,deployment=~".*minimax-h3-.*"}' % H3_NS, "{{deployment}} 期望"),
+        ('kube_deployment_status_replicas_ready{%s,deployment=~".*minimax-h3-.*"}' % H3_NS, "{{deployment}} 就绪")],
        w=8, x=8, desc="来自 kube-state-metrics。就绪 < 期望 = 正在滚动或有副本起不来(**包含 SGLang 没就绪**"
                       "的情况,因为 sglang 容器有自己的 readinessProbe);滚动更新时 maxSurge=1 会短暂出现就绪 > 期望。")
     ts("异常任务",
-       [('max(h3_queue_waiting_takeover)', "等待接管"),
-        ('max(h3_queue_backend_unavailable)', "与 SGLang 失联")],
+       [('max by (namespace) (h3_queue_waiting_takeover{%s})' % H3_NS, "{{namespace}} 等待接管"),
+        ('max by (namespace) (h3_queue_backend_unavailable{%s})' % H3_NS, "{{namespace}} 与 SGLang 失联")],
        w=8, x=16,
        desc="两条都是**持续大于 0 才算问题**。等待接管:租约过期/为空、等别副本接手 —— 持续大于 0 = "
             "该能力池副本全挂或全卡(滚动时短暂抬头正常)。与 SGLang 失联:running 但连不上后端、仍在租约内重试。")
@@ -1582,7 +1604,7 @@ def build_h3():
             "timezone": "browser", "schemaVersion": 42, "refresh": "30s",
             "time": {"from": "now-6h", "to": "now"},
             "graphTooltip": 2,
-            "templating": {"list": []}, "panels": panels}
+            "templating": {"list": [VAR_H3_NS]}, "panels": panels}
 
 
 # 参数名 -> (生成函数, 快照文件名)。文件名是 kustomization.yaml 里引用的名字,改名要两边一起改。
