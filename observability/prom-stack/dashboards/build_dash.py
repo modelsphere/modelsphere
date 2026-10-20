@@ -1450,13 +1450,19 @@ def h3_status_table():
                                   "错误24h=过去 24 小时进入 failed 终态的任务数(按能力池拆开,"
                                   "不是集群级的 h3_queue_completed_24h —— 那个按服务拆会重复计数)。"
                                   "router 没有业务指标,这几列恒为 0 属正常。",
-                   "gridPos": {"h": 6, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
+                   # 高度按行数给:每套 release 占 3 行(router/fl2va/ref2va)。h=6 只放得下
+                   # 表头+3 行,第二套 release 上线后表格就得滚动(实拍:6 行只露出 3 行半)。
+                   # Grafana 的 table 没有自适应高度,只能给够:h=10 配 cellHeight=sm
+                   # 约容纳 8 行,够两套半;再加一套要连同下面的 _y[0] 一起调。
+                   "gridPos": {"h": 10, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
                    "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": ov},
                    "transformations": [{"id": "merge", "options": {}},
                        {"id": "organize", "options": {"excludeByName": {"Time": True},
                                                       "renameByName": rename, "indexByName": order}}],
-                   "options": {"showHeader": True, "sortBy": [{"displayName": "工作负载"}]}})
-    _y[0] += 6
+                   "options": {"showHeader": True, "cellHeight": "sm",
+                               "sortBy": [{"displayName": "工作负载"}]}})
+    # ⚠️ 必须与上面的 gridPos.h 一致:_y[0] 不跟着加,下一排面板会压在这张表上。
+    _y[0] += 10
 
 
 
