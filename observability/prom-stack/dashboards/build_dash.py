@@ -428,6 +428,14 @@ def repl_desired(filt=None):
 # left out, a group counts once). kube-state-metrics has their spec / ready / current replicas, so
 # the table reads them per role from there, no exporter change. A rollout briefly runs two hashes
 # side by side; both are summed, as the router's maxSurge pod is.
+# Two naming assumptions tie a StatefulSet to its service: the release name it starts with is the
+# ModelRoute's name (the chart derives both from one fullname), and the service label is
+# "<namespace>/<that name>". A route renamed through modelRoute.nginx.route breaks the match; the
+# service then falls back to the router-only numbers above (as before this split), never to wrong
+# per-role ones.
+# A role is counted only while its StatefulSet exists. If the DisaggregatedSet never created one
+# (e.g. the LWS controller is down), that role is simply missing here -- the router's own readiness
+# still catches it, since the chart's router does not go ready without an upstream for every role.
 PD_STS = '.+-[0-9]+-[0-9a-f]+-(prefill|decode)'
 SVC_FILT = 'service=~"$service",service!="unknown"'
 
@@ -450,13 +458,17 @@ def child_rows(expr):
     return 'sum by(service)(label_join(%s, "service", " · ", "service", "role"))' % expr
 
 def repl_rows(filt=None, wrap=lambda e: e):
-    """Replica series with PD services split by role, for the table and the two history panels.
+    """Replica series with PD services handled, for the health table and the two history panels.
 
-    Returns ready / desired / actual / state (0 DOWN, 1 degraded, 2 UP) / ratio (ready / desired,
-    capped at 1). A non-PD service keeps its one series. A PD service gets one child series per
-    role ("<service> · router / prefill / decode"); for state and ratio it also keeps a series
-    under its own name, its worst role. wrap() is applied while the service label is still the
-    service's own name (live() matches on it), before the children are renamed.
+    A non-PD service always keeps its one series. For a PD service:
+      ready / desired   replica history: one series per role, "<service> · <role>"
+      ratio             status timeline: ready / desired (capped at 1) per role, plus one under
+                        the service's own name for its worst role
+      *_total           table: one row, the sum over roles (state_total: the worst role's state,
+                        0 DOWN / 1 degraded / 2 UP)
+      per_role(role)    table's P / D / R columns: that role's ready count, see PD_SHORT_MAPPINGS
+    wrap() is applied while the service label is still the service's own name (live() matches
+    on it), before roles are renamed.
     """
     f = filt or SVC_FILT
     R, D, T = repl_ready(filt), repl_desired(filt), repl_actual(filt)
@@ -484,8 +496,7 @@ def repl_rows(filt=None, wrap=lambda e: e):
         # the same, and a range mapping colours it orange (PD_SHORT_MAPPINGS); 0 is red, the rest green.
         return '%s - 0.1 * ((%s < bool %s) * (%s > bool 0))' % (r, r, d, r)
     return {
-        "ready": split(R, rr), "desired": split(D, rd), "actual": split(T, ra),
-        "state": split(st(R, D), st(rr, rd), worst=True),
+        "ready": split(R, rr), "desired": split(D, rd),
         "ratio": split(rt(R, D), rt(rr, rd), worst=True),
         "ready_total": total(R, rr), "desired_total": total(D, rd), "actual_total": total(T, ra),
         "state_total": '%s\n  or min by(service)(%s)' % (plain(st(R, D)), st(rr, rd)),
