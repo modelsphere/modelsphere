@@ -61,7 +61,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
+      "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身);PD 分离服务仍是一行:副本三列 = router+prefill+decode 之和,状态取最差的角色,P/D/R 三列 = 各角色就绪数(绿=满 / 橙=不足期望 / 红=0;prefill/decode 取 kube-state-metrics 的 StatefulSet 副本);实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
       "gridPos": {
         "h": 9,
         "w": 24,
@@ -71,7 +71,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))))\n  or sum by(service)(((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")))",
           "legendFormat": "就绪",
           "datasource": {
             "type": "prometheus",
@@ -82,7 +82,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))",
+          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))))\n  or sum by(service)(((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")))",
           "legendFormat": "期望",
           "datasource": {
             "type": "prometheus",
@@ -93,7 +93,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))",
+          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))))\n  or sum by(service)(((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")))",
           "legendFormat": "实际",
           "datasource": {
             "type": "prometheus",
@@ -148,7 +148,7 @@
         },
         {
           "refId": "H",
-          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) > bool 0) + (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) >= bool (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))",
+          "expr": "(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) > bool 0) + (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) >= bool (sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))))\n  or min by(service)(((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")) > bool 0) + (((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")) >= bool ((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")))))",
           "legendFormat": "状态",
           "datasource": {
             "type": "prometheus",
@@ -159,6 +159,39 @@
         },
         {
           "refId": "I",
+          "expr": "sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) - 0.1 * ((sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) < bool sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"})))) * (sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) > bool 0))",
+          "legendFormat": "P",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "J",
+          "expr": "sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) - 0.1 * ((sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) < bool sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"})))) * (sum by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))) > bool 0))",
+          "legendFormat": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "K",
+          "expr": "sum by(service)(label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")) - 0.1 * ((sum by(service)(label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")) < bool sum by(service)(label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\"))) * (sum by(service)(label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")) > bool 0))",
+          "legendFormat": "R",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "L",
           "expr": "sum by(service)(label_join(label_replace({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\"))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
           "legendFormat": "并发",
           "datasource": {
@@ -169,7 +202,7 @@
           "instant": true
         },
         {
-          "refId": "J",
+          "refId": "M",
           "expr": "round(sum by(service)(increase(kube_pod_container_status_restarts_total[24h])\n  * on(namespace,pod) group_left(service) (max by(namespace,pod,service)((0 * max by(namespace,pod,service)(label_join(label_replace({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) + 1))\n   or max by(namespace,pod,service)(\n  label_replace(kube_pod_owner{owner_kind=\"StatefulSet\"}, \"leader_pod\", \"$1\", \"owner_name\", \"(.+)\")\n  * on(namespace,leader_pod) group_left(service)\n    label_replace((0 * max by(namespace,pod,service)(label_join(label_replace({__name__=~\"sglang:num_running_reqs|vllm:num_requests_running\"}, \"service\", \"$1\", \"service\", \"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?\"), \"service\", \"/\", \"namespace\", \"service\")) + 1), \"leader_pod\", \"$1\", \"pod\", \"(.+)\")))))\n  and on(service) (max by(service)(max_over_time(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}[24h])) > 0)",
           "legendFormat": "重启24h",
           "datasource": {
@@ -244,6 +277,42 @@
               {
                 "id": "custom.width",
                 "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 48
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "D"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 48
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "R"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 48
               }
             ]
           },
@@ -426,6 +495,397 @@
           },
           {
             "matcher": {
+              "id": "byRegexp",
+              "options": "^(P|D|R)$"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "red",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.85,
+                      "to": 0.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 1.85,
+                      "to": 1.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 2.85,
+                      "to": 2.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 3.85,
+                      "to": 3.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 4
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 4.85,
+                      "to": 4.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 5
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 5.85,
+                      "to": 5.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 6
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 6.85,
+                      "to": 6.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 7
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 7.85,
+                      "to": 7.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 8
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 8.85,
+                      "to": 8.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 9
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 9.85,
+                      "to": 9.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 10
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 10.85,
+                      "to": 10.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 11
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 11.85,
+                      "to": 11.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 12
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 12.85,
+                      "to": 12.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 13
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 13.85,
+                      "to": 13.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 14
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 14.85,
+                      "to": 14.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 15
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 15.85,
+                      "to": 15.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 16
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 16.85,
+                      "to": 16.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 17
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 17.85,
+                      "to": 17.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 18
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 18.85,
+                      "to": 18.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 19
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 19.85,
+                      "to": 19.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 20
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 20.85,
+                      "to": 20.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 21
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 21.85,
+                      "to": 21.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 22
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 22.85,
+                      "to": 22.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 23
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 23.85,
+                      "to": 23.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 24
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 24.85,
+                      "to": 24.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 25
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 25.85,
+                      "to": 25.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 26
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 26.85,
+                      "to": 26.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 27
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 27.85,
+                      "to": 27.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 28
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 28.85,
+                      "to": 28.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 29
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 29.85,
+                      "to": 29.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 30
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 30.85,
+                      "to": 30.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 31
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 31.85,
+                      "to": 31.95,
+                      "result": {
+                        "color": "orange",
+                        "index": 32
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
               "id": "byName",
               "options": "重启24h"
             },
@@ -492,8 +952,11 @@
               "Value #F": "TTFT_p95",
               "Value #G": "出词tok/s",
               "Value #H": "状态",
-              "Value #I": "并发",
-              "Value #J": "重启24h",
+              "Value #I": "P",
+              "Value #J": "D",
+              "Value #K": "R",
+              "Value #L": "并发",
+              "Value #M": "重启24h",
               "service": "service"
             },
             "indexByName": {
@@ -502,12 +965,15 @@
               "Value #A": 2,
               "Value #B": 3,
               "Value #C": 4,
-              "Value #J": 5,
-              "Value #D": 6,
-              "Value #I": 7,
-              "Value #E": 8,
-              "Value #F": 9,
-              "Value #G": 10
+              "Value #I": 5,
+              "Value #J": 6,
+              "Value #K": 7,
+              "Value #M": 8,
+              "Value #D": 9,
+              "Value #L": 10,
+              "Value #E": 11,
+              "Value #F": 12,
+              "Value #G": 13
             }
           }
         }
@@ -1028,7 +1494,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "clamp_max((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) / clamp_min((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))), 1), 1)",
+          "expr": "(clamp_max((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) / clamp_min((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))), 1), 1) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))))\n  or sum by(service)(label_join(clamp_max((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\"))) / clamp_min(((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")), 1), 1), \"service\", \" · \", \"service\", \"role\"))\n  or min by(service)(clamp_max((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\"))) / clamp_min(((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\"}))), \"role\", \"router\", \"\", \"\")), 1), 1))",
           "legendFormat": "{{service}}",
           "datasource": {
             "type": "prometheus",
@@ -1125,8 +1591,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} desired",
+          "expr": "label_replace((((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"desired\", \"\", \"\")\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"ready\", \"\", \"\")",
+          "legendFormat": "{{service}} {{z_kind}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1134,8 +1600,8 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"kimi/kimi-k25\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} ready",
+          "expr": "label_replace((((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"desired\", \"\", \"\")\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"ready\", \"\", \"\")",
+          "legendFormat": "{{service}} {{z_kind}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1143,35 +1609,8 @@
         },
         {
           "refId": "C",
-          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} desired",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "refId": "D",
-          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service=\"modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} ready",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "refId": "E",
-          "expr": "((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} desired",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "refId": "F",
-          "expr": "(sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))",
-          "legendFormat": "{{service}} ready",
+          "expr": "label_replace((((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}))\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_desired{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))\n  or sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"desired\", \"\", \"\")\n  or label_replace(((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\"))) unless on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"})))))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end())))\n  or sum by(service)(label_join((((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_status_replicas_ready{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}))\n  or label_replace((sum by(service)(avg by(service, route)(label_replace(bodylog_service_replicas_ready{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}, \"service\", \"$1\", \"service\", \"(.*)-leader$\")))) and on(service) count by(service)((sum by(service, role)(label_join(label_replace(label_replace(max by(namespace, statefulset)(kube_statefulset_replicas{statefulset=~\".+-[0-9]+-[0-9a-f]+-(prefill|decode)\"}),\n    \"rel\", \"$1\", \"statefulset\", \"(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)\"),\n    \"role\", \"$1\", \"statefulset\", \".+-(prefill|decode)\"),\n    \"service\", \"/\", \"namespace\", \"rel\"))\n  and on(service) count by(service)(bodylog_service_replicas{service=~\"$service\",service!=\"unknown\",service!~\"kimi/kimi-k25|modelforge/fallback-modelforge-01\"}))), \"role\", \"router\", \"\", \"\")))\n  and on(service) (count by(service)(last_over_time(bodylog_service_replicas{service!=\"unknown\"}[10m] @ end()))), \"service\", \" · \", \"service\", \"role\")), \"z_kind\", \"ready\", \"\", \"\")",
+          "legendFormat": "{{service}} {{z_kind}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
