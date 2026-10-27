@@ -46,6 +46,17 @@ environments:
   default:
     values:
       - environments/default.yaml
+  # A single-node, CPU-only kind cluster: what test/e2e/kind installs (make test-e2e-kind).
+  kind:
+    values:
+      - environments/default.yaml
+      - environments/kind.yaml
+  # The same with cilium as the CNI, replacing kube-proxy (make test-e2e-kind KIND_PROFILE=cilium).
+  kind-cilium:
+    values:
+      - environments/default.yaml
+      - environments/kind.yaml
+      - environments/kind-cilium.yaml
   # Two air-gapped environments, one per registry mode. The files themselves are
   # NOT in the repo -- they describe one particular cluster, which is nobody
   # else's business -- so copy environments/offline.yaml.example to
@@ -631,6 +642,11 @@ releases:
       tier: llmgate
     values:
       - llmgateway/openresty.yaml.gotmpl
+{{- with dig "llmGateway" "openrestyOverrides" nil .Values }}
+      # Chart values merged last, e.g. replicas and resources on a small
+      # cluster (environments/kind.yaml). Unset adds nothing.
+      - {{ toJson . }}
+{{- end }}
 
   - name: bodylog
     namespace: {{ .Values.namespaces.llmRoute }}

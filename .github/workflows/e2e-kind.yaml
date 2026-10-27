@@ -1,0 +1,73 @@
+name: e2e-kind
+
+# test/e2e/kind on a kind cluster: the stack installed with `helmfile -e kind apply`,
+# then a mock model deployed through swissd and called directly and through
+# openresty. Once per profile: `default` (kind's CNI and kube-proxy) and
+# `cilium` (no kube-proxy; cilium's eBPF kube-proxy replacement). Not a
+# required check: charts, images and the model catalog all come from the
+# internet (Docker Hub pulls are unauthenticated).
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', '**.png', '**.jpg', '**.jpeg', '**.gif', '**.svg']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-kind-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  e2e-kind:
+    name: e2e-kind (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, cilium]
+    timeout-minutes: 60
+    env:
+      KIND_VERSION: v0.33.0
+      # kind v0.33.0 linux-amd64, from
+      # https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64.sha256sum
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+      HELMFILE_VERSION: 1.8.2
+      # helmfile_1.8.2_checksums.txt, linux_amd64
+      HELMFILE_SHA256: f179485c5bb9f8e20fbd8ea16d8807915988aba4d60131ee864fb3232452716e
+      HELM_DIFF_VERSION: v3.15.15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: test/e2e/kind/go.mod
+          cache-dependency-path: test/e2e/kind/go.sum
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - name: Install kind and helmfile
+        run: |
+          curl -fsSLo kind-linux-amd64 "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  kind-linux-amd64" | sha256sum -c
+          sudo install -m 0755 kind-linux-amd64 /usr/local/bin/kind
+          tgz="helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$tgz" "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/$tgz"
+          echo "${HELMFILE_SHA256}  $tgz" | sha256sum -c
+          tar -xzf "$tgz" helmfile
+          sudo install -m 0755 helmfile /usr/local/bin/helmfile
+          rm -f kind-linux-amd64 "$tgz" helmfile
+          kind version
+          helmfile version
+      - name: Install helm-diff
+        # helm v4 refuses this plugin without --verify=false (it ships no provenance).
+        run: helm plugin install https://github.com/databus23/helm-diff --version "${HELM_DIFF_VERSION}" --verify=false
+      - name: e2e
+        env:
+          KIND_PROFILE: ${{ matrix.profile }}
+          E2E_VERBOSE: "true"
+        run: make test-e2e-kind

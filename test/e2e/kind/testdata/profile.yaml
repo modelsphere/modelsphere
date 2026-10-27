@@ -1,0 +1,22 @@
+# swissd site profile for the kind cluster, PUT by the suite before any deploy.
+name: kind-e2e
+namespace: llm-demo
+chartRepo: https://modelsphere.github.io/helm-charts
+catalogs:
+  - name: public
+    url: https://modelsphere.github.io/model-catalog/
+    schemaVersion: v2
+    default: true
+model:
+  pathTemplate: /models/{{org}}/{{name}}
+defaults:
+  features:
+    cart: false
+    # No monitoring.coreos.com/v1 on kind: kube-prometheus-stack is off.
+    serviceMonitor: false
+# Every deploy publishes a ModelRoute, so openresty serves it at /<release>/.
+route:
+  enabled: true
+  nginxConfigMap: llm-route/openresty-conf
+  nginxService: llm-route/openresty
+  nginxPort: 8080

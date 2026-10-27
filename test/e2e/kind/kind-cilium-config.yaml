@@ -1,0 +1,11 @@
+# Kind cluster for the cilium profile of test/e2e/kind: one CPU-only
+# control-plane node with neither a CNI nor kube-proxy. The node stays NotReady
+# until `helmfile -e kind-cilium apply` installs cilium with kubeProxyReplacement.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: none
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
