@@ -184,6 +184,19 @@ namespaces:
 # ---------------------------------------------------------------- what to install
 # Anything false here is rendered but not applied. Flip a flag and re-run
 # `helmfile diff` to see exactly what it would add.
+# Chart values merged last into one release, keyed by release name, for what the shipped values
+# cannot know about a cluster: tolerations for tainted nodes, a nodeSelector, resources. Covers
+# autoconfig, llm-slo, llmscaleoperator, swissd and console; openresty keeps its own
+# llmGateway.openrestyOverrides. Each chart names these keys its own way -- llmscaleoperator puts the
+# pod settings under `manager:` -- so read the chart's values.yaml for the path. Empty adds nothing.
+#   releaseValues:
+#     autoconfig:
+#       tolerations: [{key: example.com/dedicated, operator: Exists, effect: NoSchedule}]
+#     llmscaleoperator:
+#       manager:
+#         tolerations: [{key: example.com/dedicated, operator: Exists, effect: NoSchedule}]
+releaseValues: {}
+
 enabled:
   # OFF by default: most clusters arriving here already have a CNI, and this
   # helmfile installing a second one is not a thing to do by accident. A cluster

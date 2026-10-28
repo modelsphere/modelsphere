@@ -728,6 +728,9 @@ releases:
         metrics:
           serviceMonitor:
             enabled: {{ if kindIs "bool" (dig "serviceMonitor" "" .Values.autoconfig) }}{{ dig "serviceMonitor" false .Values.autoconfig }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
+{{- with dig "releaseValues" "autoconfig" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
 
   # ────────────────────────────────────────────────────────────────── operators
   - name: llm-slo
@@ -770,6 +773,9 @@ releases:
       tier: operator
     values:
       - llm-operator/llmslo-images.yaml.gotmpl
+{{- with dig "releaseValues" "llm-slo" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
 
   - name: llmscaleoperator
     namespace: {{ .Values.namespaces.llmOperator }}
@@ -780,6 +786,9 @@ releases:
       tier: operator
     values:
       - llm-operator/overrides.yaml.gotmpl
+{{- with dig "releaseValues" "llmscaleoperator" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
 
   - name: llm-canary-operator
     namespace: {{ .Values.namespaces.llmCanaryOperator }}
@@ -829,6 +838,9 @@ releases:
       tier: portal
     values:
       - console/swiss-overrides.yaml.gotmpl
+{{- with dig "releaseValues" "swissd" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
 
   - name: console
     namespace: {{ .Values.namespaces.console }}
@@ -841,6 +853,9 @@ releases:
       tier: portal
     values:
       - console/overrides.yaml.gotmpl
+{{- with dig "releaseValues" "console" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
 
   # ─────────────────────────────────────────────────────────────── gang scheduling
   # Volcano schedules an LWS leader+worker group as a unit, so a group either
