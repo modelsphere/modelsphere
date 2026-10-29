@@ -13,10 +13,17 @@ bodylog:
 fullnameOverride: openresty
 image:
   repository: {{ .Values.registry }}/llm-openresty
-  tag: 0.1.28
+  # The chart's own version: the two are released together. Taken from
+  # versions.openresty rather than written here, so that an environment
+  # pinning another chart gets that chart's image as well.
+  tag: {{ .Values.versions.openresty | quote }}
 # The two sidecars autoconfig injects have image names that differ from their
-# repository name, but they follow registry the same way.
+# repository name, but they follow registry the same way. They are autoconfig's,
+# so they follow versions.autoconfig too, as CART's do in
+# models/images.yaml.gotmpl. Written here they drifted from it (0.3.47 beside
+# an autoconfig at 0.4.0), and an environment pinning an older autoconfig got
+# sidecars from a newer one.
 reload:
-  image: {{ .Values.registry }}/autoconfig-reload:0.4.3
+  image: {{ printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote }}
 ha:
-  image: {{ .Values.registry }}/autoconfig-hagate:0.4.3
+  image: {{ printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote }}
