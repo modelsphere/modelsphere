@@ -427,7 +427,11 @@ def repl_desired(filt=None):
 # <release>-<slice>-<hash>-<prefill|decode> (LWS leader sets; multi-node workers end in -<n> and are
 # left out, a group counts once). kube-state-metrics has their spec / ready / current replicas, so
 # the table reads them per role from there, no exporter change. A rollout briefly runs two hashes
-# side by side; both are summed, as the router's maxSurge pod is.
+# side by side. Their ready / current replicas are summed, as the router's maxSurge pod is; their
+# desired is not: both StatefulSets' spec.replicas added up would put desired above the role's real
+# target while the new hash comes up, and the service would read degraded on every rollout -- the
+# false alarm health_table divides by desired to avoid. So desired takes the larger of the hashes'
+# per slice (pd_role's hashes="max"), the way the router's desired is its Deployment's spec alone.
 # Two naming assumptions tie a StatefulSet to its service: the release name it starts with is the
 # ModelRoute's name (the chart derives both from one fullname), and the service label is
 # "<namespace>/<that name>". A route renamed through modelRoute.nginx.route breaks the match; the
@@ -439,16 +443,22 @@ def repl_desired(filt=None):
 PD_STS = '.+-[0-9]+-[0-9a-f]+-(prefill|decode)'
 SVC_FILT = 'service=~"$service",service!="unknown"'
 
-def pd_role(metric, filt=SVC_FILT, roles="prefill|decode"):
-    """A kube-state-metrics StatefulSet gauge per (service="<ns>/<release>", role), PD releases only."""
+def pd_role(metric, filt=SVC_FILT, roles="prefill|decode", hashes="sum"):
+    """A kube-state-metrics StatefulSet gauge per (service="<ns>/<release>", role), PD releases only.
+
+    hashes: how one slice's StatefulSets of different hashes (a rollout) combine before slices are
+    summed -- "sum" for ready / current replicas, "max" for spec.replicas.
+    """
     sts_re = PD_STS.replace("(prefill|decode)", "(%s)" % roles)
     sts = 'max by(namespace, statefulset)(%s{statefulset=~"%s"})' % (metric, sts_re)  # max: dedupe KSM replicas
-    tagged = ('label_join(label_replace(label_replace(%s,\n'
+    tagged = ('label_join(label_replace(label_replace(label_replace(%s,\n'
               '    "rel", "$1", "statefulset", "(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)"),\n'
               '    "role", "$1", "statefulset", ".+-(prefill|decode)"),\n'
+              '    "slice", "$1", "statefulset", ".+-([0-9]+)-[0-9a-f]+-(?:prefill|decode)"),\n'
               '    "service", "/", "namespace", "rel")') % sts
-    return ('(sum by(service, role)(%s)\n  and on(service) count by(service)(bodylog_service_replicas{%s}))'
-            % (tagged, filt))
+    return ('(sum by(service, role)(%s by(service, role, slice)(%s))\n'
+            '  and on(service) count by(service)(bodylog_service_replicas{%s}))'
+            % (hashes, tagged, filt))
 
 def pd_set(filt=SVC_FILT):
     return 'count by(service)(%s)' % pd_role('kube_statefulset_replicas', filt)
@@ -475,7 +485,7 @@ def repl_rows(filt=None, wrap=lambda e: e):
     pds = pd_set(f)
     router = lambda e: 'label_replace((%s) and on(service) %s, "role", "router", "", "")' % (e, pds)
     rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(R)))
-    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f), router(D)))
+    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(D)))
     ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(T)))
     plain = lambda e: wrap('(%s unless on(service) %s)' % (e, pds))
     def split(svc_expr, role_expr, worst=False):
@@ -490,7 +500,8 @@ def repl_rows(filt=None, wrap=lambda e: e):
         if role == "router":
             r, d = router(R), router(D)
         else:
-            r, d = (pd_role(m, f, role) for m in ('kube_statefulset_status_replicas_ready', 'kube_statefulset_replicas'))
+            r = pd_role('kube_statefulset_status_replicas_ready', f, role)
+            d = pd_role('kube_statefulset_replicas', f, role, hashes="max")
         r, d = 'sum by(service)(%s)' % wrap(r), 'sum by(service)(%s)' % wrap(d)
         # Short of desired but not zero -> 0.1 below the count: shown with 0 decimals the number reads
         # the same, and a range mapping colours it orange (PD_SHORT_MAPPINGS); 0 is red, the rest green.
@@ -1324,7 +1335,7 @@ def health_table():
         {"matcher": {"id": "byName", "options": "QPS"}, "properties": [{"id": "unit", "value": "reqps"}]},
     ]
     panels.append({"type": "table", "id": nid(), "title": "当前服务健康", "datasource": DS,
-                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身);PD 分离服务仍是一行:副本三列 = router+prefill+decode 之和,状态取最差的角色,P/D/R 三列 = 各角色就绪数(绿=满 / 橙=不足期望 / 红=0;prefill/decode 取 kube-state-metrics 的 StatefulSet 副本);实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
+                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。PD 分离服务仍是一行:副本三列 = router+prefill+decode 之和,状态取最差的角色,P/D/R 三列 = 各角色就绪数(绿=满 / 橙=不足期望 / 红=0;prefill/decode 取 kube-state-metrics 的 StatefulSet 副本)。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
                    "gridPos": {"h": 9, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
                    "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": ov},
                    "transformations": [{"id": "merge", "options": {}},
