@@ -421,6 +421,105 @@ def repl_desired(filt=None):
     d = _repl('bodylog_service_replicas_desired', filt) if filt else _repl('bodylog_service_replicas_desired')
     return '(%s\n  or %s)' % (d, repl_actual(filt))
 
+# Prefill/decode-disaggregated releases. Their ModelRoute points at the router, so the three replica
+# series above count the router and nothing else: a PD service whose prefill engines are all down
+# still reads 1/1/1 UP. The engines run in one StatefulSet per role, named
+# <release>-<slice>-<hash>-<prefill|decode> (LWS leader sets; multi-node workers end in -<n> and are
+# left out, a group counts once). kube-state-metrics has their spec / ready / current replicas, so
+# the table reads them per role from there, no exporter change. A rollout briefly runs two hashes
+# side by side. Their ready / current replicas are summed, as the router's maxSurge pod is; their
+# desired is not: both StatefulSets' spec.replicas added up would put desired above the role's real
+# target while the new hash comes up, and the service would read degraded on every rollout -- the
+# false alarm health_table divides by desired to avoid. So desired takes the larger of the hashes'
+# per slice (pd_role's hashes="max"), the way the router's desired is its Deployment's spec alone.
+# Two naming assumptions tie a StatefulSet to its service: the release name it starts with is the
+# ModelRoute's name (the chart derives both from one fullname), and the service label is
+# "<namespace>/<that name>". A route renamed through modelRoute.nginx.route breaks the match; the
+# service then falls back to the router-only numbers above (as before this split), never to wrong
+# per-role ones.
+# A role is counted only while its StatefulSet exists. If the DisaggregatedSet never created one
+# (e.g. the LWS controller is down), that role is simply missing here -- the router's own readiness
+# still catches it, since the chart's router does not go ready without an upstream for every role.
+PD_STS = '.+-[0-9]+-[0-9a-f]+-(prefill|decode)'
+SVC_FILT = 'service=~"$service",service!="unknown"'
+
+def pd_role(metric, filt=SVC_FILT, roles="prefill|decode", hashes="sum"):
+    """A kube-state-metrics StatefulSet gauge per (service="<ns>/<release>", role), PD releases only.
+
+    hashes: how one slice's StatefulSets of different hashes (a rollout) combine before slices are
+    summed -- "sum" for ready / current replicas, "max" for spec.replicas.
+    """
+    sts_re = PD_STS.replace("(prefill|decode)", "(%s)" % roles)
+    sts = 'max by(namespace, statefulset)(%s{statefulset=~"%s"})' % (metric, sts_re)  # max: dedupe KSM replicas
+    tagged = ('label_join(label_replace(label_replace(label_replace(%s,\n'
+              '    "rel", "$1", "statefulset", "(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)"),\n'
+              '    "role", "$1", "statefulset", ".+-(prefill|decode)"),\n'
+              '    "slice", "$1", "statefulset", ".+-([0-9]+)-[0-9a-f]+-(?:prefill|decode)"),\n'
+              '    "service", "/", "namespace", "rel")') % sts
+    return ('(sum by(service, role)(%s by(service, role, slice)(%s))\n'
+            '  and on(service) count by(service)(bodylog_service_replicas{%s}))'
+            % (hashes, tagged, filt))
+
+def pd_set(filt=SVC_FILT):
+    return 'count by(service)(%s)' % pd_role('kube_statefulset_replicas', filt)
+
+def child_rows(expr):
+    """(service, role) -> one series per role, named "<service> · <role>" (sorts right under its service)."""
+    return 'sum by(service)(label_join(%s, "service", " · ", "service", "role"))' % expr
+
+def repl_rows(filt=None, wrap=lambda e: e):
+    """Replica series with PD services handled, for the health table and the two history panels.
+
+    A non-PD service always keeps its one series. For a PD service:
+      ready / desired   replica history: one series per role, "<service> · <role>"
+      ratio             status timeline: ready / desired (capped at 1) per role, plus one under
+                        the service's own name for its worst role
+      *_total           table: one row, the sum over roles (state_total: the worst role's state,
+                        0 DOWN / 1 degraded / 2 UP)
+      per_role(role)    table's P / D / R columns: that role's ready count, see PD_SHORT_MAPPINGS
+    wrap() is applied while the service label is still the service's own name (live() matches
+    on it), before roles are renamed.
+    """
+    f = filt or SVC_FILT
+    R, D, T = repl_ready(filt), repl_desired(filt), repl_actual(filt)
+    pds = pd_set(f)
+    router = lambda e: 'label_replace((%s) and on(service) %s, "role", "router", "", "")' % (e, pds)
+    rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(R)))
+    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(D)))
+    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(T)))
+    plain = lambda e: wrap('(%s unless on(service) %s)' % (e, pds))
+    def split(svc_expr, role_expr, worst=False):
+        out = '%s\n  or %s' % (plain(svc_expr), child_rows(role_expr))
+        return out + ('\n  or min by(service)(%s)' % role_expr if worst else '')
+    st = lambda r, d: '((%s > bool 0) + (%s >= bool %s))' % (r, r, d)
+    rt = lambda r, d: 'clamp_max((%s) / clamp_min(%s, 1), 1)' % (r, d)
+    # One row per service (the table): a PD service's replicas are its roles' sum, its state the
+    # worst role's, and per_role(role) gives that role's own ready count for the P / D / R columns.
+    total = lambda svc_expr, role_expr: '%s\n  or sum by(service)(%s)' % (plain(svc_expr), role_expr)
+    def per_role(role):
+        if role == "router":
+            r, d = router(R), router(D)
+        else:
+            r = pd_role('kube_statefulset_status_replicas_ready', f, role)
+            d = pd_role('kube_statefulset_replicas', f, role, hashes="max")
+        r, d = 'sum by(service)(%s)' % wrap(r), 'sum by(service)(%s)' % wrap(d)
+        # Short of desired but not zero -> 0.1 below the count: shown with 0 decimals the number reads
+        # the same, and a range mapping colours it orange (PD_SHORT_MAPPINGS); 0 is red, the rest green.
+        return '%s - 0.1 * ((%s < bool %s) * (%s > bool 0))' % (r, r, d, r)
+    return {
+        "ready": split(R, rr), "desired": split(D, rd),
+        "ratio": split(rt(R, D), rt(rr, rd), worst=True),
+        "ready_total": total(R, rr), "desired_total": total(D, rd), "actual_total": total(T, ra),
+        "state_total": '%s\n  or min by(service)(%s)' % (plain(st(R, D)), st(rr, rd)),
+        "per_role": per_role,
+    }
+
+# Cell colours for the P / D / R columns (see per_role): 0 red, "n - 0.1" (short of desired) orange,
+# anything else green. Grafana colours a cell by its own value only, so the shortfall rides in the value.
+PD_SHORT_MAPPINGS = [{"type": "value", "options": {"0": {"color": "red", "index": 0}}}] + [
+    {"type": "range", "options": {"from": n - 0.15, "to": n - 0.05, "result": {"color": "orange", "index": n}}}
+    for n in range(1, 33)]   # a role with more than 32 replicas just stays green when short
+
 def up_panel():
     # 值 = 就绪比例 ready/【期望】(0~1,percentunit 显示成 50%),这样 tooltip 能看出【降级程度】
     # (三态 0/1/2 只能显示 UP/降级/DOWN 文字,看不出降到什么程度)。
@@ -428,8 +527,8 @@ def up_panel():
     # 颜色仍是三色:0=红 / (0,1)=橙 / 1=绿,靠 thresholds 分段;0 和 1 另配文案。
     # min(...,1):扩容中实际就绪短暂超过期望时(缩容窗口内旧副本仍就绪)比值会 >1,
     # 不夹住会掉出 mapping 的 [0,1] 区间 → 既不绿也不橙,染成 thresholds 的兜底色。
-    R = repl_ready()
-    ratio = 'clamp_max((%s) / clamp_min(%s, 1), 1)' % (R, repl_desired())
+    # PD services: one timeline per role plus the service's own (its worst role), see repl_rows.
+    ratio = repl_rows()["ratio"]
     statetimeline("历史服务状态(绿=全就绪 / 橙=部分就绪 / 红=无就绪)", ratio, "{{service}}", w=24, x=0,
                   unit="percentunit",
                   # 颜色用 range/value mapping 显式指定,不靠 thresholds:
@@ -462,10 +561,18 @@ def replicas_panel():
     # 「ready 有没有掉到 desired 之下」淹掉。实际数在表格里仍有一列,要对 surge 去那儿看。
     # 每个 service 现拼一次 filter 再取两口径。不用「先建带 %s 的模板、后 % 代入」——
     # repl_desired 里有 `or` 回退,模板会含两个 %s,单参数代入直接报错。
+    # PD services draw one desired/ready pair per role ("<service> · prefill desired" ...), see
+    # repl_rows; live() is applied before the role rename, while the label is still the service's.
+    # desired and ready go out as ONE query told apart by a z_kind label: Prometheus sorts a range
+    # result by label set, service before z_kind, so each series' desired and ready come back next to
+    # each other and the tooltip lists them as adjacent rows. Two queries would list every desired
+    # first and every ready after (Grafana keeps query order), which split each pair far apart.
     def pair(sel):
         f = 'service=~"$service",service!="unknown",' + sel
-        return [(live(repl_desired(f)), '{{service}} desired'),
-                (live(repl_ready(f)), '{{service}} ready')]
+        rows = repl_rows(f, wrap=live)
+        both = ('label_replace(%s, "z_kind", "desired", "", "")\n  or label_replace(%s, "z_kind", "ready", "", "")'
+                % (rows["desired"], rows["ready"]))
+        return [(both, '{{service}} {{z_kind}}')]
     tg = []
     for svc in SERVICES:
         tg += pair('service="%s"' % svc)
@@ -1139,11 +1246,13 @@ def build_gpu():
 def health_table():
     # 每 service 一行:就绪/总数、QPS、错误率、TTFT p95、出词 tok/s(全按 bodylog service 口径,-leader 已并)。
     # 全部剔除 unknown(非真实服务=归因不到 ModelRoute 的请求),三面板同集合
-    R, T, D = repl_ready(), repl_actual(), repl_desired()
     # 2=就绪>=期望 / 1=有就绪但不足期望 / 0=无就绪。
     # 分母用【期望】而非【实际】:实际含 maxSurge surge 出来的新副本,拿它当分母会让
     # 每次滚动更新都把满员的服务染成「降级」(2026-08-27 kimi 的误报就是这么来的)。
-    state = '(%s > bool 0) + (%s >= bool %s)' % (R, R, D)
+    # PD services stay one row: replicas are the sum over router / prefill / decode, the state is the
+    # worst role's, and the P / D / R columns show each role's ready count (empty for other services).
+    rows = repl_rows()
+    R, T, D, state = rows["ready_total"], rows["actual_total"], rows["desired_total"], rows["state_total"]
     # 行门控:只保留近 24h 内副本数 >0 过的 service。ModelRoute/namespace 删除后,openresty 落的
     # bodylog 请求计数器仍冻结在 exporter 内存里持续上报(不随对象删除消失,累计跨天也不重置,
     # 滚天清不掉),会让早已下线的 service 永远以红 DOWN 幽灵行赖在表里。用 max_over_time(...[24h])>0
@@ -1175,6 +1284,9 @@ def health_table():
          "TTFT_p95"),
         ('sum by(service)(%s)' % mrg('rate(bodylog_completion_tokens_total{service=~"$service",service!="unknown"}[1m])') + GATE, "出词tok/s"),
         (state, "状态"),
+        (rows["per_role"]("prefill"), "P"),
+        (rows["per_role"]("decode"), "D"),
+        (rows["per_role"]("router"), "R"),
         # 当前并发 = 引擎侧正在处理的请求数之和。openresty 的 adaptive_cc_conc 也能反映在途并发,
         # 但它缺 auto-scaling-test/kimi-sglang 那条 route(实测只有 2/3 个服务有),引擎侧三个全覆盖。
         # 本 dashboard 没有 $service 变量,所以不能用 flt(),直接 and on(service) 交 bodylog 活服务白名单(GATE)。
@@ -1194,12 +1306,12 @@ def health_table():
     ref = {lbl: "Value #" + chr(65 + i) for i, (_, lbl) in enumerate(qs)}
     rename = dict({v: k for k, v in ref.items()}, service="service")
     # 列顺序(indexByName 要原始字段名,所以过 ref 翻译一次)
-    cols = ["状态", "就绪", "期望", "实际", "重启24h", "QPS", "并发", "错误率", "TTFT_p95", "出词tok/s"]
+    cols = ["状态", "就绪", "期望", "实际", "P", "D", "R", "重启24h", "QPS", "并发", "错误率", "TTFT_p95", "出词tok/s"]
     order = dict({"service": 0}, **{ref[c]: i + 1 for i, c in enumerate(cols)})
     # 列宽:全部列(含 service)定宽。只给数字列定宽的话,service 会自动吃掉所有剩余空间
     # 变得过宽(最长的名字也就 ~34 字符);全定宽后右侧留白,总比第一列拉到半屏强。
     ov = [{"matcher": {"id": "byName", "options": n}, "properties": [{"id": "custom.width", "value": w}]}
-          for n, w in [("service", 300), ("状态", 84), ("就绪", 64), ("期望", 64), ("实际", 64), ("QPS", 104),
+          for n, w in [("service", 300), ("状态", 84), ("就绪", 64), ("期望", 64), ("实际", 64), ("P", 48), ("D", 48), ("R", 48), ("QPS", 104),
                        ("重启24h", 80), ("并发", 72), ("错误率", 88), ("TTFT_p95", 96), ("出词tok/s", 96)]]
     ov += [
         {"matcher": {"id": "byName", "options": "状态"}, "properties": [
@@ -1211,6 +1323,11 @@ def health_table():
             {"id": "custom.cellOptions", "value": {"type": "color-background"}},
             {"id": "thresholds", "value": {"steps": [{"color": "green", "value": None}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.05}]}}]},
         {"matcher": {"id": "byName", "options": "TTFT_p95"}, "properties": [{"id": "unit", "value": "s"}]},
+        {"matcher": {"id": "byRegexp", "options": "^(P|D|R)$"}, "properties": [
+            {"id": "decimals", "value": 0},
+            {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}},
+            {"id": "mappings", "value": PD_SHORT_MAPPINGS}]},
         {"matcher": {"id": "byName", "options": "重启24h"}, "properties": [
             {"id": "custom.cellOptions", "value": {"type": "color-background"}},
             {"id": "thresholds", "value": {"mode": "absolute", "steps": [
@@ -1218,7 +1335,7 @@ def health_table():
         {"matcher": {"id": "byName", "options": "QPS"}, "properties": [{"id": "unit", "value": "reqps"}]},
     ]
     panels.append({"type": "table", "id": nid(), "title": "当前服务健康", "datasource": DS,
-                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
+                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。PD 分离服务仍是一行:副本三列 = router+prefill+decode 之和,状态取最差的角色,P/D/R 三列 = 各角色就绪数(绿=满 / 橙=不足期望 / 红=0;prefill/decode 取 kube-state-metrics 的 StatefulSet 副本)。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
                    "gridPos": {"h": 9, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
                    "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": ov},
                    "transformations": [{"id": "merge", "options": {}},
