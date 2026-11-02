@@ -67,6 +67,16 @@ The model is served through the routing layer, at `http://openresty.llm-route.sv
 
 Alternatively, you can use the GUI console to deploy a model ([read more](https://github.com/modelsphere/console)).
 
+Once the stack is installed, print the console address:
+
+```bash
+NODE_PORT=$(kubectl -n console get svc console-console -o jsonpath='{.spec.ports[0].nodePort}')
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+echo "http://$NODE_IP:$NODE_PORT/"
+```
+
+Behind a firewall, run `kubectl -n console port-forward svc/console-console 8080:8080` and open `http://localhost:8080/` instead. See [`docs/console.md`](docs/console.md) for the first login and the rest.
+
 ![image-20261008152111862](docs/model_catalog.png)
 
 ### **Step 3: test the service**
