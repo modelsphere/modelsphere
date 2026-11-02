@@ -112,16 +112,19 @@ versions:
   sriovMetricsExporter: "v1.2.0"
   lws: "v0.9.0"                   # == nvidia/lws/install.sh
 
-  openresty: "0.1.20"             # 0.1.18 only ever existed on the internal
-                                  # ChartMuseum; 0.1.20 is on both repos, so
-                                  # this value now resolves either way.
-  bodylog: "0.1.13"
+  # openresty 0.1.28, bodylog 0.1.16 (app 0.1.15), bodylog-exporter 0.3.5 (app
+  # 0.2.12), autoconfig 0.4.3 and swiss 0.7.2 publish linux/arm64 images as well
+  # as amd64; earlier ones are amd64 only. openresty 0.1.28 / autoconfig 0.4.3 are
+  # also the first that start on arm64 hosts with 64 KiB pages.
+  openresty: "0.1.28"
+  bodylog: "0.1.16"
   # The charts below moved their Kubernetes API groups to modelsphere.dev
   # (routing / autoscaling / inference.modelsphere.dev). A group rename is a
   # migration, not an upgrade: a cluster already running the previous versions
   # stays on them until it migrates, pinning the old versions in its own file.
-  bodylogExporter: "0.3.1"       # appVersion 0.2.7: the finish_reason="none"
-                                 # bucket the LLMSilentTruncation alert needs
+  bodylogExporter: "0.3.5"       # appVersion 0.2.12; 0.2.7 added the
+                                 # finish_reason="none" bucket the
+                                 # LLMSilentTruncation alert needs
   bodylogVictorialogs: "0.1.0"
   # The Grafana plugin for the datasource bodylog-victorialogs provisions,
   # carried as an image so the offline bundle picks it up with every other one.
@@ -129,7 +132,7 @@ versions:
   # observability/grafana-victorialogs-plugin/ -- no release workflow, because
   # it holds nothing of ours.
   grafanaVictorialogsPlugin: "0.32.0"
-  autoconfig: "0.4.0"
+  autoconfig: "0.4.3"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
   # governs that the way it does for everything else. The bundle pulls both, in
@@ -141,13 +144,15 @@ versions:
   llmOperator: "0.5.0"
   llmslo: "0.3.1"               # 0.3.0 widened both roles to allow either API
                                 # group; 0.3.1 defaults slo-api to a 0.2.0 image
-  sloApi: "0.2.0"               # asks the API server which group it serves
+  sloApi: "0.2.1"               # 0.2.0 asks the API server which group it
+                                # serves; 0.2.1 becomes ready on a cluster with
+                                # no LLMSLORequirement (0.2.0 crash-looped)
   llmCanaryOperator: "0.2.6"
   # The ModelSphere portal. Published to chartRepo by modelsphere/helm-charts;
   # keep this in step with the chart release there.
   console: "0.2.1"
   # swissd, the model deployment backend behind the portal. Same deal.
-  swiss: "0.7.1"
+  swiss: "0.7.2"
 
   volcano: "1.15.1"
   mindCluster: "26.1.0"           # == ascend/mindcluster-deploy-tool-26.1.0.tgz

@@ -10,7 +10,7 @@ its chart defaults. The engine needs two extra values, set once per model.
 | --- | --- | --- | --- |
 | Engine (SGLang / vLLM) | `helm upgrade <model> modelsphere/<engine> -n <ns> -f values.yaml` | No | Nothing, with the chart defaults (sglang ≥ 0.8.2, vllm ≥ 0.6.2) |
 | CART | Same command as the engine (it is part of the model release) | No | `rollout restart` after changing CART settings |
-| openresty | `make helm-apply SELECTOR=name=openresty` | No | Bump tags in `llmgateway/openresty.yaml.gotmpl` |
+| openresty | `make helm-apply SELECTOR=name=openresty` | No | Bump `versions.openresty` (the sidecars follow `versions.autoconfig`) |
 | autoconfig | `make helm-apply SELECTOR=name=autoconfig` | No | Apply CRDs first; don't roll it together with a model |
 | bodylog, bodylog-exporter | `make helm-apply SELECTOR=name=bodylog` (or `bodylog-exporter`) | No (records can be lost, not requests) | Nothing |
 | llmscaleoperator, llm-slo | `make helm-apply SELECTOR=name=<release>` | Not on the request path | Apply llm-slo CRDs first; avoid traffic peaks |
@@ -97,8 +97,9 @@ make helm-apply SELECTOR=name=openresty
 kubectl -n llm-route rollout status deploy/openresty
 ```
 
-Image tags are pinned in `llmgateway/openresty.yaml.gotmpl` (`image.tag`,
-`reload.image`, `ha.image`); bump them there. Route config and API keys reload
+The image follows `versions.openresty` and the `reload` / `ha` sidecars follow
+`versions.autoconfig` (see `llmgateway/openresty.yaml.gotmpl`); bump the version
+in the environment file. Route config and API keys reload
 on their own; changing `bodylog.host` needs a rollout. Test through the Gateway,
 not `kubectl port-forward` (it pins you to one pod).
 
