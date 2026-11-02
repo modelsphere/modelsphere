@@ -412,7 +412,9 @@ llmGateway:
   node: ""             # a `kubectl get nodes` name on this cluster
   hostPath: ""
   memoryLimit: 64Gi
-  serviceMonitor: true            # the exporter's; needs monitoring.coreos.com/v1
+  # The exporter's; needs monitoring.coreos.com/v1. Empty follows
+  # enabled.kubePrometheusStack, true/false decides, like autoconfig above.
+  serviceMonitor: ""
 
   # enabled.bodylogVictorialogs only.
   #
