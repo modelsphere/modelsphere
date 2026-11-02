@@ -37,8 +37,15 @@ spec:
     - name: llm-serving.rules
       interval: 30s
       rules:
+        # role:exporter 0.2.13 起这三条 metric 都带这个标签 —— 普通服务是 ""、PD 分离服务拆成
+        # router/prefill/decode。不选 role 的话,一个 PD 服务会从「一条 series」变成「三条」,
+        # 于是任何一个角色为 0 都打 critical 电话 —— 而 PD 自动扩缩(decision-gen)本来就会
+        # 把某个角色有意缩到 0,那会变成次次误告。
+        # `|router` 同时匹配 "" 和 "router":前者是旧 exporter(那时 PD 服务这条本来就只数
+        # router),后者是新的 —— 升级前后告的是同一个量,不用卡上线顺序。
+        # 逐角色告警是另一件事,要加就单独加、单独定阈值和文案,不应该是加标签的副作用。
         - alert: LLMServiceNoReadyReplica
-          expr: bodylog_service_replicas_ready{service!="unknown"} == 0
+          expr: bodylog_service_replicas_ready{service!="unknown",role=~"|router"} == 0
           for: 2m
           labels:
             severity: critical
@@ -48,9 +55,10 @@ spec:
             description: "{{ $labels.service }} 的就绪副本数为 0,该服务已不可用。"
 
         - alert: LLMServiceDegraded
+          # role 同上。两侧都要选,否则二元运算按完整标签集匹配、左右对不上 → 整条静默失效。
           expr: |
-            bodylog_service_replicas_ready{service!="unknown"}
-              < bodylog_service_replicas{service!="unknown"}
+            bodylog_service_replicas_ready{service!="unknown",role=~"|router"}
+              < bodylog_service_replicas{service!="unknown",role=~"|router"}
           for: 15m
           labels:
             severity: warning
