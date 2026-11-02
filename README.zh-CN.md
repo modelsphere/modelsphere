@@ -68,6 +68,16 @@ helm upgrade --install qwen modelsphere/sglang -n llm-demo --create-namespace \
 
 你也可以通过图形化控制平台来部署模型（[了解更多](https://github.com/modelsphere/console)）。
 
+安装完成后，用以下命令获取控制台地址：
+
+```bash
+NODE_PORT=$(kubectl -n console get svc console-console -o jsonpath='{.spec.ports[0].nodePort}')
+NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+echo "http://$NODE_IP:$NODE_PORT/"
+```
+
+如果在防火墙后面，可以改用 `kubectl -n console port-forward svc/console-console 8080:8080`，然后打开 `http://localhost:8080/`。首次登录等细节见 [`docs/console.md`](docs/console.md)。
+
 ![image-20261008152111862](docs/model_catalog.png)
 
 ### **第 3 步：测试服务**
