@@ -496,12 +496,12 @@ def repl_rows(filt=None, wrap=lambda e: e):
     # exporter labels them, a PD service's "router" count would be the mean of
     # router, prefill and decode (measured: 0, 2, 1 -> 1 where the answer is 0).
     # R/D/T stay unfiltered -- they are the non-PD branch, where role is always "".
-    Rr, Dr = repl_ready(filt, ROUTER_ONLY), repl_desired(filt, ROUTER_ONLY)
+    Rr, Dr, Tr = repl_ready(filt, ROUTER_ONLY), repl_desired(filt, ROUTER_ONLY), repl_actual(filt, ROUTER_ONLY)
     pds = pd_set(f)
     router = lambda e: 'label_replace((%s) and on(service) %s, "role", "router", "", "")' % (e, pds)
     rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(Rr)))
     rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(Dr)))
-    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(repl_actual(filt, ROUTER_ONLY))))
+    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(Tr)))
     plain = lambda e: wrap('(%s unless on(service) %s)' % (e, pds))
     def split(svc_expr, role_expr, worst=False):
         out = '%s\n  or %s' % (plain(svc_expr), child_rows(role_expr))
