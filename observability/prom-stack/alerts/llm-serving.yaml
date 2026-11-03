@@ -37,8 +37,25 @@ spec:
     - name: llm-serving.rules
       interval: 30s
       rules:
+        # The exporter labels these three metrics by role from 0.2.13 on: empty for an
+        # ordinary service, and router / prefill / decode for a disaggregated one.
+        # Without a role matcher a disaggregated service goes from one series to
+        # three, so any single role at zero pages someone -- and the autoscaler
+        # scales an individual role down to zero on purpose, which would make that
+        # a routine false alarm.
+        #
+        # `|router` matches both the empty label and "router": the former is what
+        # the older exporter emits, where this series counted the routers anyway,
+        # and the latter is the new one. Both report the same quantity, so this
+        # rule change and the exporter upgrade need no ordering between them.
+        # Measured: with the matcher, each service keeps exactly one alertable
+        # series and the firing set is the one from before the upgrade; without it,
+        # a disaggregated service matches once per role.
+        #
+        # Alerting per role is a separate feature: it needs its own thresholds and
+        # its own wording, and should not arrive as a side effect of a new label.
         - alert: LLMServiceNoReadyReplica
-          expr: bodylog_service_replicas_ready{service!="unknown"} == 0
+          expr: bodylog_service_replicas_ready{service!="unknown",role=~"|router"} == 0
           for: 2m
           labels:
             severity: critical
@@ -48,9 +65,12 @@ spec:
             description: "{{ $labels.service }} 的就绪副本数为 0,该服务已不可用。"
 
         - alert: LLMServiceDegraded
+          # Role as above, and it has to be on both sides: a binary operator matches
+          # its operands on the full label set, so filtering only one side leaves
+          # nothing to match and the rule silently stops firing altogether.
           expr: |
-            bodylog_service_replicas_ready{service!="unknown"}
-              < bodylog_service_replicas{service!="unknown"}
+            bodylog_service_replicas_ready{service!="unknown",role=~"|router"}
+              < bodylog_service_replicas{service!="unknown",role=~"|router"}
           for: 15m
           labels:
             severity: warning
