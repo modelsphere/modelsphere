@@ -407,19 +407,35 @@ def hgram(title, base, unit, w, x, desc="", transformations=None, minus=None, in
 # modelforge 17→34、kimi 2→4),表格里则是三口径集体翻倍。
 # avg 而非 max:两个 exporter 读同一份 bodylog,同一个 (service,route) 的值本就相同,
 # avg 取回它自己;真要跑分片双活(各读一部分节点)得先解决数据分片,那时这里也要重新想。
-def _repl(metric, filt='service=~"$service",service!="unknown"'):
-    per_route = 'avg by(service, route)(%s)' % mrg('%s{%s}' % (metric, filt))
+# The exporter labels these three metrics by role from 0.2.13 on: empty for an ordinary
+# service, and router / prefill / decode for a prefill/decode-disaggregated one.
+# avg by(service, route) was a de-duplication device back when a (service, route) had
+# exactly one series, and the role label turns it into a real mean over the roles, so a
+# disaggregated service reads as the average of its roles rather than as a whole.
+# Measured against the deployed board: desired 6 where it should be 4, and an actual
+# replica count of 5.333. So wherever only one kind is meant to be counted, the role has
+# to be selected in the query rather than attached after aggregating.
+# ROUTER_ONLY matches both the empty label and "router": the former is what the older
+# exporter emits, where this series counted the routers anyway, and the latter is the new
+# one. The empty branch does select a series carrying no role label at all, so this reads
+# the same before and after the upgrade and may be deployed first -- which is also the
+# only safe order, the reverse giving the mean above until this lands.
+ROUTER_ONLY = '|router'
+
+def _repl(metric, filt='service=~"$service",service!="unknown"', role=None):
+    sel = '%s{%s}' % (metric, filt) if role is None else '%s{%s,role=~"%s"}' % (metric, filt, role)
+    per_route = 'avg by(service, route)(%s)' % mrg(sel)
     return 'sum by(service)(%s)' % per_route
 
-def repl_ready(filt=None):
-    return _repl('bodylog_service_replicas_ready', filt) if filt else _repl('bodylog_service_replicas_ready')
+def repl_ready(filt=None, role=None):
+    return _repl('bodylog_service_replicas_ready', filt or 'service=~"$service",service!="unknown"', role)
 
-def repl_actual(filt=None):
-    return _repl('bodylog_service_replicas', filt) if filt else _repl('bodylog_service_replicas')
+def repl_actual(filt=None, role=None):
+    return _repl('bodylog_service_replicas', filt or 'service=~"$service",service!="unknown"', role)
 
-def repl_desired(filt=None):
-    d = _repl('bodylog_service_replicas_desired', filt) if filt else _repl('bodylog_service_replicas_desired')
-    return '(%s\n  or %s)' % (d, repl_actual(filt))
+def repl_desired(filt=None, role=None):
+    d = _repl('bodylog_service_replicas_desired', filt or 'service=~"$service",service!="unknown"', role)
+    return '(%s\n  or %s)' % (d, repl_actual(filt, role))
 
 # Prefill/decode-disaggregated releases. Their ModelRoute points at the router, so the three replica
 # series above count the router and nothing else: a PD service whose prefill engines are all down
@@ -482,11 +498,17 @@ def repl_rows(filt=None, wrap=lambda e: e):
     """
     f = filt or SVC_FILT
     R, D, T = repl_ready(filt), repl_desired(filt), repl_actual(filt)
+    # The router's own counts, for the PD branches below. Role-filtered rather than
+    # taken from R/D: those aggregate every role the service has, so once the
+    # exporter labels them, a PD service's "router" count would be the mean of
+    # router, prefill and decode (measured: 0, 2, 1 -> 1 where the answer is 0).
+    # R/D/T stay unfiltered -- they are the non-PD branch, where role is always "".
+    Rr, Dr, Tr = repl_ready(filt, ROUTER_ONLY), repl_desired(filt, ROUTER_ONLY), repl_actual(filt, ROUTER_ONLY)
     pds = pd_set(f)
     router = lambda e: 'label_replace((%s) and on(service) %s, "role", "router", "", "")' % (e, pds)
-    rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(R)))
-    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(D)))
-    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(T)))
+    rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(Rr)))
+    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(Dr)))
+    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(Tr)))
     plain = lambda e: wrap('(%s unless on(service) %s)' % (e, pds))
     def split(svc_expr, role_expr, worst=False):
         out = '%s\n  or %s' % (plain(svc_expr), child_rows(role_expr))
@@ -498,7 +520,7 @@ def repl_rows(filt=None, wrap=lambda e: e):
     total = lambda svc_expr, role_expr: '%s\n  or sum by(service)(%s)' % (plain(svc_expr), role_expr)
     def per_role(role):
         if role == "router":
-            r, d = router(R), router(D)
+            r, d = router(Rr), router(Dr)
         else:
             r = pd_role('kube_statefulset_status_replicas_ready', f, role)
             d = pd_role('kube_statefulset_replicas', f, role, hashes="max")
