@@ -37,13 +37,23 @@ spec:
     - name: llm-serving.rules
       interval: 30s
       rules:
-        # role:exporter 0.2.13 起这三条 metric 都带这个标签 —— 普通服务是 ""、PD 分离服务拆成
-        # router/prefill/decode。不选 role 的话,一个 PD 服务会从「一条 series」变成「三条」,
-        # 于是任何一个角色为 0 都打 critical 电话 —— 而 PD 自动扩缩(decision-gen)本来就会
-        # 把某个角色有意缩到 0,那会变成次次误告。
-        # `|router` 同时匹配 "" 和 "router":前者是旧 exporter(那时 PD 服务这条本来就只数
-        # router),后者是新的 —— 升级前后告的是同一个量,不用卡上线顺序。
-        # 逐角色告警是另一件事,要加就单独加、单独定阈值和文案,不应该是加标签的副作用。
+        # The exporter labels these three metrics by role from 0.2.13 on: empty for an
+        # ordinary service, and router / prefill / decode for a disaggregated one.
+        # Without a role matcher a disaggregated service goes from one series to
+        # three, so any single role at zero pages someone -- and the autoscaler
+        # scales an individual role down to zero on purpose, which would make that
+        # a routine false alarm.
+        #
+        # `|router` matches both the empty label and "router": the former is what
+        # the older exporter emits, where this series counted the routers anyway,
+        # and the latter is the new one. Both report the same quantity, so this
+        # rule change and the exporter upgrade need no ordering between them.
+        # Measured: with the matcher, each service keeps exactly one alertable
+        # series and the firing set is the one from before the upgrade; without it,
+        # a disaggregated service matches once per role.
+        #
+        # Alerting per role is a separate feature: it needs its own thresholds and
+        # its own wording, and should not arrive as a side effect of a new label.
         - alert: LLMServiceNoReadyReplica
           expr: bodylog_service_replicas_ready{service!="unknown",role=~"|router"} == 0
           for: 2m
@@ -55,7 +65,9 @@ spec:
             description: "{{ $labels.service }} 的就绪副本数为 0,该服务已不可用。"
 
         - alert: LLMServiceDegraded
-          # role 同上。两侧都要选,否则二元运算按完整标签集匹配、左右对不上 → 整条静默失效。
+          # Role as above, and it has to be on both sides: a binary operator matches
+          # its operands on the full label set, so filtering only one side leaves
+          # nothing to match and the rule silently stops firing altogether.
           expr: |
             bodylog_service_replicas_ready{service!="unknown",role=~"|router"}
               < bodylog_service_replicas{service!="unknown",role=~"|router"}
