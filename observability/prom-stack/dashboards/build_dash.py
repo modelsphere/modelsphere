@@ -407,12 +407,19 @@ def hgram(title, base, unit, w, x, desc="", transformations=None, minus=None, in
 # modelforge 17→34、kimi 2→4),表格里则是三口径集体翻倍。
 # avg 而非 max:两个 exporter 读同一份 bodylog,同一个 (service,route) 的值本就相同,
 # avg 取回它自己;真要跑分片双活(各读一部分节点)得先解决数据分片,那时这里也要重新想。
-# role: exporter 0.2.13 起,这三条 metric 都带这个标签 —— 普通服务是 ""、PD 分离服务拆成
-# router/prefill/decode。`avg by(service, route)` 会把它一起吃掉,于是一个 PD 服务的
-# "整体" 变成各角色的【平均数】(实拍 fixture:router 0 / prefill 2 / decode 1 → 1)。
-# 所以凡是要「只数某一类」的地方都得把 role 选出来,而不是聚合完再贴标签。
-# ROUTER_ONLY 同时匹配 "" 和 "router":前者是旧 exporter(那时 PD 服务的这条本来就只数
-# router),后者是新的,于是升级前后读到的是同一个量,不用卡上线顺序。
+# The exporter labels these three metrics by role from 0.2.13 on: empty for an ordinary
+# service, and router / prefill / decode for a prefill/decode-disaggregated one.
+# avg by(service, route) was a de-duplication device back when a (service, route) had
+# exactly one series, and the role label turns it into a real mean over the roles, so a
+# disaggregated service reads as the average of its roles rather than as a whole.
+# Measured against the deployed board: desired 6 where it should be 4, and an actual
+# replica count of 5.333. So wherever only one kind is meant to be counted, the role has
+# to be selected in the query rather than attached after aggregating.
+# ROUTER_ONLY matches both the empty label and "router": the former is what the older
+# exporter emits, where this series counted the routers anyway, and the latter is the new
+# one. The empty branch does select a series carrying no role label at all, so this reads
+# the same before and after the upgrade and may be deployed first -- which is also the
+# only safe order, the reverse giving the mean above until this lands.
 ROUTER_ONLY = '|router'
 
 def _repl(metric, filt='service=~"$service",service!="unknown"', role=None):
