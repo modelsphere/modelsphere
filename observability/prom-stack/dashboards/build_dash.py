@@ -32,8 +32,15 @@ PALETTE = ["#7EB26D", "#EAB839", "#6ED0E0", "#EF843C", "#E24D42", "#705DA0",
 #  · VAR_SERVICE_ALL —— 带 All 且默认 All。用于【健康总览】和【GPU】,那两个的用途就是一眼看全集群,
 #    默认只剩一个服务的话整张表就废了。
 VAR_SERVICE_TOP = {"name": "service", "type": "query", "datasource": DS,
+                   # and on(service) live: bodylog keeps exporting the counter of a removed
+                   # service, whose rate is 0 but still a series topk returns -- without
+                   # this every service ever deployed stays in the list. 10m = LIVE_WINDOW,
+                   # which is defined further down.
                    "query": {"query": 'query_result(topk(50, sum by(service)('
-                                      'rate(bodylog_requests_total{service!="unknown"}[1h]))))', "refId": "sv"},
+                                      'rate(bodylog_requests_total{service!="unknown"}[1h]))'
+                                      ' and on(service) count by(service)(last_over_time('
+                                      'bodylog_service_replicas{service!="unknown"}[10m]))))',
+                             "refId": "sv"},
                    "regex": '/service="([^"]+)"/', "refresh": 2, "includeAll": False, "multi": True,
                    "sort": 0, "label": "service"}
 VAR_SERVICE_ALL = {"name": "service", "type": "query", "datasource": DS,
