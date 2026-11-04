@@ -126,7 +126,7 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 ## Community
 
 - WeChat (Chinese)
-  <img src="https://modelsphere.tech/community/wechat-group-qr.png" width="200" alt="WeChat Group QR Code" />
+<img src="https://modelsphere.tech/community/wechat-group-qr.png" width="150" alt="WeChat Group QR Code" />
 
 - Slack: [invitation link](https://join.slack.com/t/modelsphere/shared_invite/zt-4fk6ym9fl-NXjo8zGOKmSLMGrqF5xF7A)
 
