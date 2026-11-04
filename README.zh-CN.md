@@ -124,6 +124,13 @@ curl http://127.0.0.1:8080/qwen/v1/chat/completions \
 | [`docs/configuration.md`](docs/configuration.md) | 运行起来之后需要修改什么、在哪里修改：集群环境文件与模型 values 文件的区别，以及模型、路由与限流、CART、自动伸缩和滚动更新等指南的入口 |
 | [`docs/console.md`](docs/console.md) | 首次打开门户：访问地址、首次登录，以及 Model Serving 页面所需的前提条件 |
 
+## 社区
+
+- 微信群
+<img src="https://modelsphere.tech/community/wechat-group-qr.png" width="150" alt="WeChat Group QR Code" />
+
+- Slack: [invitation link](https://join.slack.com/t/modelsphere/shared_invite/zt-4fk6ym9fl-NXjo8zGOKmSLMGrqF5xF7A)
+
 ## 参与贡献
 
 请阅读[贡献指南](CONTRIBUTING.md)，了解某项改动应提交到哪里（ModelSphere 的大部分代码位于各组件仓库，而非本仓库），以及在提交 Pull Request 之前需要运行哪些检查。
