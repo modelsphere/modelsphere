@@ -142,11 +142,13 @@ versions:
   vllm: "0.6.2"
 
   llmOperator: "0.5.0"
-  llmslo: "0.3.1"               # 0.3.0 widened both roles to allow either API
-                                # group; 0.3.1 defaults slo-api to a 0.2.0 image
-  sloApi: "0.2.1"               # 0.2.0 asks the API server which group it
+  llmslo: "0.3.9"               # decision-gen 0.8.1. Apply its CRDs first, see
+                                # docs/rolling-updates.md. Older charts own the
+                                # namespace; the presync hook keeps it on upgrade
+  sloApi: "0.3.0"               # 0.2.0 asks the API server which group it
                                 # serves; 0.2.1 becomes ready on a cluster with
-                                # no LLMSLORequirement (0.2.0 crash-looped)
+                                # no LLMSLORequirement (0.2.0 crash-looped); 0.3.0
+                                # serves job routes and pdengine bounds
   llmCanaryOperator: "0.2.6"
   # The ModelSphere portal. Published to chartRepo by modelsphere/helm-charts;
   # keep this in step with the chart release there.

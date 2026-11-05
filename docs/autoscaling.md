@@ -99,7 +99,7 @@ set as `decisionGen.env` in the values of the `llm-slo` release
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `DEFAULT_GPU_POOL` | `NVIDIA-H100-80GB-HBM3` | GPU type assumed for a model that does not pin one through node affinity. **Set it to your nodes' `nvidia.com/gpu.product` value** if they are not H100s |
+| `DEFAULT_GPU_POOL` | unset | GPU type assumed for a model that does not pin one through node affinity or `nodeSelector`. Unset means the cluster's largest GPU type with a schedulable GPU. **On a cluster with several GPU types, set it to one `nvidia.com/gpu.product` value** if unpinned models should stay on that type |
 | `PROM_URL` | `http://kube-prometheus-stack-prometheus.monitoring:9090` | The Prometheus to read signals from |
 | `SCALE_UP_COOLDOWN_S` | `900` | Minimum seconds between a change and a scale-up for missed targets |
 | `SCALE_DOWN_COOLDOWN_S` | `1800` | Minimum seconds between a change and a scale-down |
