@@ -4,7 +4,7 @@ namespace: llm-demo
 chartRepo: https://modelsphere.github.io/helm-charts
 catalogs:
   - name: public
-    url: https://modelsphere.github.io/model-catalog/
+    url: https://modelsphere.github.io/mock-llmd/
     schemaVersion: v2
     default: true
 model:
