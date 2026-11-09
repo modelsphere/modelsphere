@@ -52,6 +52,8 @@ must be `deployed` and its workloads ready; beyond that:
 | cilium | tested (`cilium` profile) / off (`default`) | release deployed, agent DaemonSet rolled out, no kube-proxy DaemonSet, `cilium-dbg status` reports `KubeProxyReplacement: True`; in-cluster Service traffic (e.g. swissd and the operators reaching the apiserver's ClusterIP, every DNS lookup through the kube-dns Service) goes through it. Hubble relay is installed; Hubble and network policy are not checked |
 | lws, volcano, descheduler, node-problem-detector, condition2taint, llm-canary-operator | off | |
 
+The site profile `testdata/profile.yaml` points swissd at mock-llmd's catalog (https://modelsphere.github.io/mock-llmd/), which publishes `mock-llm`; it is no longer in model-catalog.
+
 Not covered either: real GPUs and real engines (the model is `mock-llm`, no
 weights), autoscaling, CART, and the helmfile `models:` path.
 
