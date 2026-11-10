@@ -1,0 +1,5 @@
+# The GPU e2e runner's extra label. `self-hosted` is built in. The workflows
+# still say the label is to be confirmed; change it here when it is.
+self-hosted-runner:
+  labels:
+    - gpu

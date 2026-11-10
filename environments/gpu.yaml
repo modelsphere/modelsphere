@@ -1,0 +1,66 @@
+# A real cluster with Cilium as the CNI and NVIDIA GPUs: what test/e2e/gpu
+# targets (make test-e2e-gpu). Layered over default.yaml.
+#
+# Two install sets, by the `part` label in helmfile.yaml.gotmpl:
+#   part=infra    the cluster base. Installed once
+#                 (`make helm-apply-infra ENV=gpu`) and never by the per-run
+#                 suite. Uninstalling it takes the CNI, the drivers or the
+#                 volcano webhook with it. There is no destroy target for it.
+#   part=others   openresty, bodylog, autoconfig, the operators, swissd and
+#                 console. The suite installs and uninstalls only these
+#                 (`make helm-apply-others` / `make helm-destroy-others`).
+#
+# Every REPLACE_ME below is a value this file cannot know. `helmfile -e gpu
+# template` accepts them; an apply against the real cluster will not work
+# until they are filled in. Search for REPLACE_ME.
+#
+# A full `helmfile -e gpu apply` (no selector) installs both sets. Prefer the
+# two make targets: the suite's promise is that a test run never selects
+# part=infra. Rook stays off, so that full apply would also uninstall a
+# rook-ceph this helmfile had previously installed.
+enabled:
+  cilium: true
+  # Rook stays off (the default): the cluster is expected to already have a
+  # StorageClass, named in storage.className. The rook releases are
+  # part=infra, so turning them on does not put Ceph in the per-run install,
+  # and it requires ceph.nodes, which this file deliberately does not invent.
+  #
+  # network-operator stays at the default (on) and nicClusterPolicy at the
+  # default (off). The operator is harmless without a fabric; the policy is
+  # per-HCA and applying the repo's copy blind is worse. Set
+  # enabled.networkOperator: false on a cluster that has no RDMA devices.
+  #
+  # ascend-device-plugin stays off unless the cluster has Ascend nodes
+  # (docs/add-ascend-node.md).
+
+cilium:
+  clusterName: REPLACE_ME
+  # The kubeadm controlPlaneEndpoint, or the control-plane node's address.
+  # cni/overrides.yaml.gotmpl refuses an empty value. Replace both; do not
+  # leave REPLACE_ME in a cluster this helmfile's cilium will join.
+  k8sServiceHost: REPLACE_ME
+  k8sServicePort: 6443
+  # default.yaml's podCIDR is 192.168.0.0/16. Set the cluster's own podSubnet
+  # here if it differs -- changing it after cilium is up renumbers every pod.
+  # podCIDR: 192.168.0.0/16
+  # false until kube-prometheus-stack's CRDs exist. The chart will not render
+  # a ServiceMonitor unless monitoring.coreos.com/v1 is already in the API,
+  # and cilium is installed before that release (it needs the CNI, not the
+  # other way around). After the first `make helm-apply-infra ENV=gpu`, set
+  # this true and apply infra once more.
+  serviceMonitors: false
+
+storage:
+  # An existing StorageClass. bodylog-victorialogs asks for a claim of this
+  # class; emptyDir is not a mode that chart has. prometheus-operator also
+  # looks the class up when storage.persistence is turned on (it is off
+  # here, so the monitoring stack uses emptyDir until you want the data kept).
+  className: REPLACE_ME
+
+llmGateway:
+  # A node that keeps bodylog's sinks. bodylog, bodylog-exporter and
+  # bodylog-victorialogs all refuse an empty node or hostPath.
+  node: REPLACE_ME
+  # The directory on that node. kubelet creates it. Change it if the site
+  # keeps the sinks somewhere else; the three releases must agree.
+  hostPath: /mnt/disk0/bodylog-sinks
