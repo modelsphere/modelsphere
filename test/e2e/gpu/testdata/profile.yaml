@@ -1,0 +1,37 @@
+# swissd site profile for the GPU cluster, PUT by test/e2e/gpu before the deploy.
+# swiss 0.7.2 (versions.swiss). A newer swiss requires nodes.gpus and treats
+# gpuProductAliases as deprecated; this file will not load there unchanged.
+name: gpu-e2e
+namespace: llm-demo
+chartRepo: https://modelsphere.github.io/helm-charts
+catalogs:
+  - name: public
+    # The suite replaces this token with E2E_CATALOG.
+    url: "@CATALOG@"
+    schemaVersion: v2
+    default: true
+model:
+  # Weights on each GPU node. {{org}}/{{name}} is the catalog source.hf
+  # (Qwen/Qwen3-8B for the default model). hostPath, not a PVC. Change the
+  # prefix if the site stores weights somewhere else.
+  pathTemplate: /mnt/disk0/models/{{org}}/{{name}}
+defaults:
+  features:
+    cart: false
+    serviceMonitor: false
+    sloRequirement: false
+    scaler: false
+# Every deploy publishes a ModelRoute, so openresty serves it at /<release>/.
+route:
+  enabled: true
+  nginxConfigMap: llm-route/openresty-conf
+  nginxService: llm-route/openresty
+  nginxPort: 8080
+nodes:
+  # Applied only when the plan sends gpuProducts (E2E_GPU_PRODUCTS). The
+  # gpu-operator labels a node nvidia.com/gpu.product=<product>. Confirm the
+  # value on the cluster (`kubectl get nodes -L nvidia.com/gpu.product`)
+  # before relying on the pin; a mismatch schedules nowhere.
+  gpuProductAliases:
+    NVIDIA-A100-SXM4-80GB:
+      - nvidia.com/gpu.product=NVIDIA-A100-SXM4-80GB

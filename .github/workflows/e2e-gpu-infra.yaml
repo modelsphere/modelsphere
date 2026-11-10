@@ -1,0 +1,88 @@
+name: e2e-gpu-infra
+
+# Apply part=infra on the GPU cluster (CNI, monitoring, GPU operators, lws,
+# volcano). Apply only: uninstalling that set takes the cluster down, so
+# this workflow never destroys. workflow_dispatch only, no schedule.
+#
+# Same runner and the same concurrency group as e2e-gpu, so the two never
+# overlap on the one cluster. Labels to be confirmed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-gpu
+  cancel-in-progress: false
+
+jobs:
+  infra:
+    name: helm-apply-infra
+    if: github.repository == 'modelsphere/modelsphere'
+    # Labels to be confirmed with the runner that can reach the GPU cluster.
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v4.3.1
+      - name: Install helmfile and helm-diff
+        # Same pins as e2e-kind. linux/amd64; another architecture needs its
+        # own helmfile checksum. helm-diff is required: an apply of releases
+        # that are already installed still renders a diff.
+        env:
+          HELMFILE_VERSION: "1.8.2"
+          # helmfile_1.8.2_checksums.txt, linux_amd64
+          HELMFILE_SHA256: f179485c5bb9f8e20fbd8ea16d8807915988aba4d60131ee864fb3232452716e
+          HELM_DIFF_VERSION: v3.15.15
+        run: |
+          set -euo pipefail
+          bindir="${RUNNER_TEMP}/bin"
+          mkdir -p "$bindir"
+          tgz="helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$tgz" "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/$tgz"
+          echo "${HELMFILE_SHA256}  $tgz" | sha256sum -c
+          tar -xzf "$tgz" helmfile
+          install -m 0755 helmfile "$bindir/helmfile"
+          rm -f "$tgz" helmfile
+          echo "$bindir" >> "$GITHUB_PATH"
+          # A self-hosted runner keeps plugins between jobs. Reinstall so the
+          # pin above is the one this run actually uses.
+          if helm plugin list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx diff; then
+            helm plugin uninstall diff
+          fi
+          helm plugin install https://github.com/databus23/helm-diff --version "${HELM_DIFF_VERSION}" --verify=false
+          "$bindir/helmfile" version
+      - name: Prepare kubeconfig
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG }}
+        run: |
+          set -euo pipefail
+          # Do not set -x: the secret would land in the log.
+          if [ -n "${KUBECONFIG:-}" ] && [ -f "${KUBECONFIG}" ]; then
+            echo "Using the KUBECONFIG file from the runner environment"
+            exit 0
+          fi
+          if [ -z "${KUBECONFIG_CONTENT}" ]; then
+            echo "No kubeconfig: set KUBECONFIG to a file on the runner, or add a KUBECONFIG secret" >&2
+            exit 1
+          fi
+          umask 077
+          dir=$(mktemp -d)
+          printf '%s' "$KUBECONFIG_CONTENT" > "$dir/kubeconfig"
+          chmod 0600 "$dir/kubeconfig"
+          echo "KUBECONFIG=$dir/kubeconfig" >> "$GITHUB_ENV"
+          echo "E2E_KUBECONFIG_DIR=$dir" >> "$GITHUB_ENV"
+      - name: Apply infra
+        run: make helm-apply-infra ENV=gpu INTERACTIVE=false
+      - name: Remove kubeconfig
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${E2E_KUBECONFIG_DIR:-}" ]; then
+            rm -rf "$E2E_KUBECONFIG_DIR"
+          fi
