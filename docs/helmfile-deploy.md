@@ -114,13 +114,23 @@ kubectl -n rook-ceph get cephcluster -w
 make helm-diff                              # everything
 make helm-diff  SELECTOR=tier=gpu           # one tier
 make helm-apply SELECTOR=name=descheduler   # one release
+make helm-apply-infra ENV=<env>             # part=infra, the cluster base
+make helm-apply-others ENV=<env>            # part=others, the product
+make helm-destroy-others ENV=<env>          # uninstall part=others only
 make helm-list                              # what this repo declares (file only)
 make helm-status                            # declared vs what is really in the cluster
 make helm-template                          # render locally, no cluster
 ```
 
 Labels available to `SELECTOR`: `tier` (`cni`, `storage`, `observability`, `gpu`,
-`llmgate`, `scheduler`) and `name`.
+`llmgate`, `scheduler`), `name`, and `part` (`infra`, `others`). `tier=model`
+has no `part`.
+
+The three `part` targets ignore `SELECTOR`. helmfile ORs separate `-l` groups,
+so a caller selector cannot be appended without widening the set, and
+`helm-destroy-others` must not be pointable at the CNI. There is no target
+that uninstalls `part=infra`. What goes in which set, and why, is in
+[`test/e2e/gpu`](../test/e2e/gpu/README.md).
 
 Changing a component is a two-file job at most: edit its `overrides.yaml`, bump
 its version in `environments/default.yaml`, `make helm-diff`, `make helm-apply`.

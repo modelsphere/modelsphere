@@ -1,6 +1,8 @@
 .PHONY: help setup-k8s-online setup-k8s-offline setup-disk setup-mirror setup-offline-node audit-gpu gpu-prep setup-all \
         helm-deps helm-bootstrap helm-diff helm-apply helm-template helm-list helm-status \
-        offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind
+        helm-apply-infra helm-apply-others helm-destroy-others \
+        offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind \
+        test-e2e-gpu
 
 INVENTORY ?= inventory.ini
 LIMIT ?= all
@@ -40,6 +42,11 @@ INTERACTIVE ?= true
 SETUP_DISK ?=
 SETUP_MIRROR ?=
 HELMFILE_ARGS = -f helmfile.yaml.gotmpl -e $(ENV) $(if $(filter true 1 yes,$(INTERACTIVE)),--interactive,) $(if $(SELECTOR),-l $(SELECTOR),) $(if $(SKIP_REFRESH),--skip-refresh,) $(if $(SKIP_DEPS),--skip-deps,) $(foreach f,$(MODELS),--state-values-file $(f))
+# Same as HELMFILE_ARGS with no SELECTOR. The part targets below hardcode
+# their label: helmfile ORs separate -l groups, so appending -l part=others
+# to a caller's -l part=infra would select both, and a destroy must not be
+# widenable that way.
+HELMFILE_PART_ARGS = -f helmfile.yaml.gotmpl -e $(ENV) $(if $(filter true 1 yes,$(INTERACTIVE)),--interactive,) $(if $(SKIP_REFRESH),--skip-refresh,) $(if $(SKIP_DEPS),--skip-deps,) $(foreach f,$(MODELS),--state-values-file $(f))
 
 help:
 	@echo "Available commands:"
@@ -59,6 +66,9 @@ help:
 	@echo "  make helm-template      - Render every chart locally, no cluster needed"
 	@echo "  make helm-list          - List the releases this repo declares (file only, no cluster)"
 	@echo "  make helm-status        - Compare that list with the releases helm has in the cluster"
+	@echo "  make helm-apply-infra ENV=<env>    - Apply part=infra only (the cluster base)"
+	@echo "  make helm-apply-others ENV=<env>   - Apply part=others only (the product)"
+	@echo "  make helm-destroy-others ENV=<env> - Uninstall part=others only; ignores SELECTOR"
 	@echo ""
 	@echo "Air-gapped install (see docs/offline-install.md), in order:"
 	@echo "  make offline-tools      - Fetch the binaries and the registry image (where the internet is)"
@@ -72,10 +82,14 @@ help:
 	@echo "  make test-e2e-kind      - Kind cluster, helmfile -e kind apply, run test/e2e/kind (KEEP_CLUSTER=1 keeps it)"
 	@echo "  make cleanup-test-e2e-kind - Delete the kind cluster"
 	@echo ""
+	@echo "End-to-end test on an existing GPU cluster (see test/e2e/gpu/README.md):"
+	@echo "  make test-e2e-gpu       - helmfile -e gpu -l part=others, then test/e2e/gpu"
+	@echo "                            Does not create or delete a cluster. Needs KUBECONFIG."
+	@echo ""
 	@echo "Options:"
 	@echo "  LIMIT=node1,node2       - Limit execution to specific hosts (default: all)"
 	@echo "  ENV=<name>              - helmfile environment (default: default)"
-	@echo "  SELECTOR=tier=gpu       - Limit helm-* to matching releases (labels: tier, name)"
+	@echo "  SELECTOR=tier=gpu       - Limit helm-* to matching releases (labels: tier, name, part)"
 	@echo "  SKIP_REFRESH=1          - Skip 'helm repo update' (it runs by default)"
 	@echo "  SKIP_DEPS=1             - Skip 'helm repo add' entirely; required with no outbound network"
 	@echo "  MODELS=<file>           - Model services to deploy, e.g. models/examples/sglang-qwen.yaml"
@@ -188,6 +202,19 @@ helm-diff:
 helm-apply:
 	helmfile $(HELMFILE_ARGS) apply --skip-diff-on-install
 
+# part=infra is the cluster base (CNI, storage, monitoring, GPU operators,
+# lws, volcano). part=others is the product. tier=model is in neither.
+# SELECTOR is ignored here on purpose; see HELMFILE_PART_ARGS. There is no
+# helm-destroy-infra: uninstalling that set takes the cluster down.
+helm-apply-infra:
+	helmfile $(HELMFILE_PART_ARGS) -l part=infra apply --skip-diff-on-install
+
+helm-apply-others:
+	helmfile $(HELMFILE_PART_ARGS) -l part=others apply --skip-diff-on-install
+
+helm-destroy-others:
+	helmfile $(HELMFILE_PART_ARGS) -l part=others destroy
+
 helm-template:
 	helmfile $(HELMFILE_ARGS) template --skip-tests
 
@@ -298,3 +325,13 @@ endif
 
 cleanup-test-e2e-kind:
 	$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+# test/e2e/gpu. The cluster already exists and already has part=infra; this
+# target never creates or deletes one. E2E_TIMEOUT stays 45m for the kind
+# suite above. A weight download does not fit in that, so an E2E_TIMEOUT that
+# was not set on the command line or in the environment is 210m here only.
+E2E_GPU_TIMEOUT := $(if $(filter command line environment,$(origin E2E_TIMEOUT)),$(E2E_TIMEOUT),210m)
+
+test-e2e-gpu:
+	cd test/e2e/gpu && E2E_VERBOSE=$(E2E_VERBOSE) \
+	  go test -tags=e2e . -v -ginkgo.v -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)
