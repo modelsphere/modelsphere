@@ -1,0 +1,32 @@
+####################################################################################
+# The machines that run the engine. One address per line; # comments, blanks ignored.
+#
+# Copy it to `hosts` (which is gitignored -- it holds your real addresses) and put
+# your machines in. Everything else about them is in .env: they all run the same
+# model, with the same engine and the same accelerators.
+#
+# NODES_PER_INSTANCE in .env decides what these machines add up to. Four machines of
+# eight cards is 32 cards either way:
+#   NODES_PER_INSTANCE=1  ->  four instances of 8 cards (the default)
+#   NODES_PER_INSTANCE=4  ->  one instance of 32 cards
+# They are taken in the order they appear here, so with NODES_PER_INSTANCE=2 the
+# first two lines are one instance and the next two are another. The first machine
+# of each instance is rank 0: it is the one that serves the API and the only one the
+# routers are told about -- the rest hold shards and answer nothing.
+#
+# A second column is only needed when SSH and the data network are different
+# addresses -- then it is the address the routers and the other machines of the
+# instance use, and the first column is just how you log in:
+#
+#   node-a   10.0.0.11
+####################################################################################
+
+# With NODES_PER_INSTANCE=1, each of these machines is its own instance and both
+# serve the same route:
+10.0.0.21
+10.0.0.22
+
+# The same two machines where SSH does not go to their data network -- the second
+# column is the address the routers and the other machines of an instance use:
+# node-a   10.0.0.21
+# node-b   10.0.0.22

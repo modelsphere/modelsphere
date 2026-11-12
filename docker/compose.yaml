@@ -1,0 +1,89 @@
+# The routing layer: the router clients talk to, and the model's cache-aware router.
+# Brought up by ./up.sh, which renders their configuration first.
+#
+# The engines are not here. They run on the machines in `hosts`, with host
+# networking and accelerator devices, one container each -- ./up.sh starts them from
+# the per-machine scripts in generated/.
+#
+# No healthchecks: these images carry the component and nothing else -- no curl, no
+# wget -- so a HEALTHCHECK here would report the shell's failure rather than the
+# service's. Check them from outside instead, with the endpoints in
+# docs/docker-compose.md.
+
+name: modelsphere
+
+networks:
+  llm:
+    ipam:
+      config:
+        - subnet: ${NET_SUBNET:?set NET_SUBNET in .env}
+
+services:
+  openresty:
+    image: ${OPENRESTY_IMAGE:?set OPENRESTY_IMAGE in .env}
+    container_name: ms-openresty
+    restart: unless-stopped
+    ports:
+      # 8080 is the dispatcher and the only port clients need. 8090 (admin/health)
+      # is deliberately not published: the /_* endpoints have no authentication and
+      # list the engines' addresses.
+      - "${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      # The image ships the framework with zero routes; this is where the model's
+      # route comes from. render.sh writes it. Mounted as a directory, and render.sh
+      # overwrites the file inside it in place -- a single-file mount follows the
+      # inode, so a rewritten file would leave this container reading the old one.
+      - ./generated/routes:/usr/local/openresty/nginx/conf/conf.d/routes:ro
+      # API keys, off unless API_KEYS_DIR names a directory holding a `keys` file.
+      # Mounted as a whole directory, never a single file: the engine re-reads the
+      # file on reload, and a file-level bind mount pins the inode so rotation
+      # silently stops working. An absent or unreadable file means NO
+      # authentication -- every request is let through and /_health_status reports
+      # api_keys_configured=false.
+      - ${API_KEYS_DIR:-./.no-api-keys}:/etc/openresty/api-keys:ro
+    environment:
+      # Empty means body logging is off: nothing is captured and nothing is sent,
+      # with no fallback address. Set it to `bodylog` to use the service below, and
+      # bring the stack up with --profile bodylog.
+      BODYLOG_LISTENER_HOST: ${BODYLOG_LISTENER_HOST-}
+      BODYLOG_LISTENER_PORT: "9999"
+    # nginx's SIGTERM is the fast shutdown that cuts requests mid-stream; the image
+    # declares STOPSIGNAL SIGQUIT so stopping drains instead. This is the hard
+    # cutoff after it -- size it to the longest response you serve.
+    stop_grace_period: 1h
+    networks:
+      llm:
+        ipv4_address: ${OPENRESTY_IP:-172.31.9.10}
+
+  cart:
+    image: ${CART_IMAGE:?set CART_IMAGE in .env}
+    container_name: ms-cart
+    restart: unless-stopped
+    volumes:
+      - ./generated/cart.yaml:/workspace/configs/config.yaml:ro
+    # Its launcher refuses to start below 65535 open files, and the daemon default
+    # is lower on some hosts: without this the container exits at once with
+    # "ulimit -n ... is too low".
+    ulimits:
+      nofile: 65535
+    stop_grace_period: 10m
+    networks:
+      llm:
+        # Pinned: the generated route names CART by address.
+        ipv4_address: ${CART_IP:?set CART_IP in .env}
+
+  bodylog:
+    image: ${BODYLOG_IMAGE:?set BODYLOG_IMAGE in .env}
+    container_name: ms-bodylog
+    profiles: ["bodylog"]
+    restart: unless-stopped
+    volumes:
+      - ./data/bodylog:/data/bodylog
+    ports:
+      # /summary and /metrics, on the loopback only: the records hold whole request
+      # and response bodies.
+      - "127.0.0.1:9998:9998"
+    environment:
+      BODYLOG_DIR: /data/bodylog
+    networks:
+      - llm

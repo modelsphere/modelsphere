@@ -1,0 +1,7 @@
+# Your deployment's own files: real addresses, keys, and rendered output.
+.env
+hosts
+keys/
+generated/
+data/
+*.swp

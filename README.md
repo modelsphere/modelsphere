@@ -101,6 +101,7 @@ API objects for it.
 | Document | What is in it |
 |---|---|
 | [`docs/install.md`](docs/install.md) | the complete install: preparing the machines, creating the Kubernetes cluster, and installing the stack on it -- with the air-gapped path and the detail on each step linked from there |
+| [`docs/docker-compose.md`](docs/docker-compose.md) | the same stack without Kubernetes: the routing layer as containers and one engine container per host, including multi-host instances and mixed NVIDIA/Ascend hardware |
 
 ## Contributing
 
