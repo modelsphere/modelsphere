@@ -40,7 +40,7 @@ machines.
 | Docker with the compose plugin | `docker compose version` |
 | **Passwordless SSH to every engine machine** as `SSH_USER` (default `root`) | `ssh -o BatchMode=yes root@<machine> true` — must succeed without a prompt for every line in `hosts`. `up.sh` visits the machines one at a time and cannot answer a password |
 | Network reach to each engine machine's `ENGINE_PORT` | `curl -m 5 http://<machine>:8050/v1/models`, once an engine is running |
-| `GATEWAY_PORT` free, and `NET_SUBNET` not already in use | `ss -ltn \| grep :8080`, `ip -4 route \| grep 172.31.`, and `docker network inspect` on the existing networks. A compose network that overlaps a real range silently breaks whatever was using it |
+| **Ports 8080, 8090 and `CART_PORT` free.** The routing containers use host networking, so those are fixed -- 8080 is the gateway, 8090 its admin port, and one routing layer per machine | `ss -ltn \| grep -E ':(8080\|8090\|8071) '` |
 | Able to pull the routing images | `docker pull $OPENRESTY_IMAGE` |
 
 ### Engine machines
@@ -94,7 +94,11 @@ curl http://127.0.0.1:8080/<route>/v1/chat/completions \
   -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
 ```
 
-The first path segment is `ROUTE`, not the model name.
+The first path segment is `ROUTE`, not the model name. The gateway is on port 8080
+of this machine's own address and answers any machine that can route to it, so put
+authentication (`API_KEYS_DIR`) or your own proxy in front of it on a shared network
+-- and note that the `/<route>/_*` status endpoints have no authentication in any
+case, and name the engines.
 
 ## Configuration
 
@@ -110,7 +114,7 @@ addresses; `.env` keeps that name because docker compose reads it directly.
 | the engine | engine, image, flags. Comes with the hardware and the model; the example has it |
 | the accelerators | `DOCKER_FLAGS` — devices, environment, a vendor runtime — and `PRE_START` |
 | limits and access | rate limits, authentication, request records. Tune after measuring |
-| plumbing | ports, registries, the compose network. Rarely touched |
+| plumbing | CART's port, registries, the container CLI, SSH. Rarely touched |
 
 Applying a change is not the same cost everywhere:
 

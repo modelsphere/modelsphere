@@ -41,8 +41,10 @@ has the same list as a checklist with the command for each line.
 - **docker with the compose plugin.**
 - **Passwordless SSH to every engine machine** as `SSH_USER`, for every line in
   `hosts`: `up.sh` visits them one at a time and cannot answer a password prompt.
-- **A free `GATEWAY_PORT`, and a `NET_SUBNET` that is not already routed.** A compose
-  network overlapping a real range breaks whatever was using it.
+- **Ports 8080, 8090 and `CART_PORT` free.** The routing containers run with host
+  networking -- no compose network, no subnet to pick, no address to pin -- which
+  also means those ports are fixed and there is one routing layer per machine. The
+  gateway answers every machine that can route here; CART is bound to the loopback.
 - It must be able to pull the routing images. They are published for amd64 and arm64,
   so this may be an aarch64 box.
 

@@ -84,7 +84,7 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx openrest
 fi
 
 echo
-echo "ready: curl http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/v1/chat/completions \\"
+echo "ready: curl http://127.0.0.1:8080/$ROUTE/v1/chat/completions \\"
 echo "         -H 'Content-Type: application/json' \\"
 echo "         -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
-echo "state: curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/_health_status"
+echo "state: curl -s http://127.0.0.1:8080/$ROUTE/_health_status"
