@@ -36,5 +36,7 @@ fi
 
 if [ "${KEEP_ROUTER:-0}" != "1" ]; then
     echo "---- routing layer"
-    docker compose down
+    # --profile so the listener is removed too when it was started; `down` on its own
+    # leaves a profile's container behind and then calls it an orphan.
+    docker compose --profile bodylog down
 fi

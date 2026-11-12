@@ -88,14 +88,22 @@ if [ -n "$busy" ]; then
     echo "   the routing layer on another machine (the engines are unaffected)." >&2
     exit 1
 fi
-docker compose up -d
+# One switch, not two. Setting BODYLOG_LISTENER_HOST makes openresty build and send
+# request records; the listener that receives them is a compose profile. Set the
+# address without enabling the profile and openresty sends into nothing: the frames
+# buffer in each worker and are then dropped, counted in drop_count and otherwise
+# silent. So the address decides both.
+PROFILE=""
+[ -n "${BODYLOG_LISTENER_HOST:-}" ] && PROFILE="--profile bodylog"
+# shellcheck disable=SC2086
+docker compose $PROFILE up -d
 
 # A route change is a reload, not a restart: a restart cuts responses that are still
 # streaming, and `up -d` leaves an already-running openresty alone -- so without
 # this it would keep serving the previous route.
-if docker compose ps --status running --services 2>/dev/null | grep -qx openresty; then
+if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx openresty; then
     echo "--- reload openresty onto the rendered route (graceful: in-flight streams kept)"
-    docker compose exec -T openresty openresty -s reload \
+    docker compose $PROFILE exec -T openresty openresty -s reload \
         && echo "    reloaded" \
         || echo "    reload failed -- docker compose logs openresty"
 fi
