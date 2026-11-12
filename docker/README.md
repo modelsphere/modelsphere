@@ -76,46 +76,27 @@ measured and both presenting as a hang rather than an error:
 
 `examples/nvidia-qwen.env` carries the detail and the commands for both.
 
-## Configuration
+## Quick start
 
 ```bash
 cp examples/ascend-glm53-flash.env .env   # ls examples/ for the others
-cp hosts.example hosts
+cp hosts.example hosts                    # your machines, one address per line
 ```
 
 `examples/` holds complete starting points, one per hardware and model that has been
-run — copy the closest one rather than filling in a blank template. `.env` keeps that
-name because docker compose reads it directly; both it and `hosts` are gitignored,
-since they hold your addresses.
+run — copy the closest one rather than filling in a blank template.
 
-Edit `.env` from the top. Its sections are ordered by how likely you are to change
-them:
-
-| Section | Holds |
-|---|---|
-| 1. the model | what you are serving, and where its weights are — **always needs editing** |
-| 2. the shape | how the machines in `hosts` add up to instances (`NODES_PER_INSTANCE`, `TP`, `PP`) |
-| 3. the engine | engine, image, flags. Comes with the hardware and the model; the example has it |
-| 4. the accelerators | `DOCKER_FLAGS` — devices, environment, a vendor runtime — and `PRE_START` |
-| 5. limits and access | rate limits, authentication, request records. Tune after measuring |
-| 6. plumbing | ports, registries, the compose network. Rarely touched |
-
-`hosts` is one address per line. A second column is only needed where SSH and the
-data network are different addresses.
-
-## Deployment
+In `.env`, the minimum to change is at the top: `MODEL_PATH` (where the weights are
+on each machine), `MODEL_NAME` (what clients send) and `ROUTE` (the first segment of
+the URL). If the engine is not to take a whole machine, change `TP` and
+`DEVICES_PER_NODE` together, and name the cards in `DOCKER_FLAGS`.
 
 ```bash
-./render.sh        # optional: render into generated/ and apply nothing
 ./up.sh            # render, start the engine on every machine, start the routing layer
 ```
 
-`up.sh` renders first, every time, so there is no separate step to forget. Running
-`render.sh` on its own is how you read the exact route configuration and the exact
-per-machine `docker run` before anything starts — worth doing on a first deployment,
-since an engine container takes its accelerators for minutes.
-
-Then:
+The engine is started before the routing layer and `up.sh` waits for it to serve
+`/v1/models`, because a container starts in seconds while weights load for minutes.
 
 ```bash
 curl -s http://127.0.0.1:8080/<route>/_health_status
@@ -126,17 +107,33 @@ curl http://127.0.0.1:8080/<route>/v1/chat/completions \
 
 The first path segment is `ROUTE`, not the model name.
 
-## Operations
+## Configuration
 
-| Task | Command | In-flight requests |
+Everything is in `.env`, whose sections are ordered by how likely you are to change
+them, and `hosts`, which is one machine per line (a second column only where SSH and
+the data network are different addresses). Both are gitignored, since they hold your
+addresses; `.env` keeps that name because docker compose reads it directly.
+
+| Section of `.env` | Holds |
+|---|---|
+| the model | what you are serving, and where its weights are — always needs editing |
+| the shape | how the machines in `hosts` add up to instances (`NODES_PER_INSTANCE`, `TP`, `PP`) |
+| the engine | engine, image, flags. Comes with the hardware and the model; the example has it |
+| the accelerators | `DOCKER_FLAGS` — devices, environment, a vendor runtime — and `PRE_START` |
+| limits and access | rate limits, authentication, request records. Tune after measuring |
+| plumbing | ports, registries, the compose network. Rarely touched |
+
+Applying a change is not the same cost everywhere:
+
+| Change | Apply with | In-flight requests |
 |---|---|---|
-| Change limits, the machine list, the route name | `SKIP_ENGINES=1 ./up.sh` | kept — openresty reloads gracefully |
-| Change engine flags, `TP`/`PP`, the image | `./down.sh && ./up.sh` | cut — the engine restarts |
+| Limits, the machine list, the route name | `SKIP_ENGINES=1 ./up.sh` | kept — openresty reloads gracefully |
+| Engine flags, `TP`/`PP`, the image | `./down.sh && ./up.sh` | cut — the engine restarts |
 | Stop everything | `./down.sh` | — |
 | Stop the engines, keep the gateway up | `KEEP_ROUTER=1 ./down.sh` | the route answers 503 until they return |
 
-`generated/` is output, never input: it is rewritten on every render, and the files
-openresty and the router read are overwritten in place rather than replaced, because
-a container holds the file it was started with. Do not delete that directory while
-the stack is running — the host would show the new configuration while the container
-served the old, or nothing at all.
+`generated/` is output, never input: it is rewritten from `.env` and `hosts` on every
+run, and the files openresty and the router read are overwritten in place rather than
+replaced, because a container holds the file it was started with. Do not delete that
+directory while the stack is running — the host would then show the new configuration
+while the container served the old, or nothing at all.
