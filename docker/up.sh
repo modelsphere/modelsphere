@@ -71,6 +71,23 @@ fi
 
 echo
 echo "=== routing layer"
+# Check the three ports first. The routing containers use host networking, so the
+# image's own listeners -- 8080 for the gateway, 8090 for admin -- bind here and
+# cannot be remapped; if one is taken, nginx fails to bind and the container exits,
+# which otherwise shows up as a container that will not stay up and nothing saying
+# why. CART's port is configurable (CART_PORT), the other two are not.
+busy=""
+for p in 8080 8090 "${CART_PORT:-8071}"; do
+    ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
+done
+if [ -n "$busy" ]; then
+    echo "!! port(s) in use on this machine:$busy" >&2
+    for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
+    echo "   8080 (gateway) and 8090 (admin) are fixed by the image and cannot be remapped" >&2
+    echo "   under host networking; CART_PORT can be changed in $ENV_FILE. Free them, or run" >&2
+    echo "   the routing layer on another machine (the engines are unaffected)." >&2
+    exit 1
+fi
 docker compose up -d
 
 # A route change is a reload, not a restart: a restart cuts responses that are still
