@@ -86,6 +86,11 @@ for pair in "8080:${GATEWAY_PORT:-8080}" "8090:${ADMIN_PORT:-8090}"; do
     from=${pair%%:*} to=${pair#*:}
     n=$(grep -cE "^[[:space:]]*listen ${from};" generated/session_base.conf)
     [ "$n" = 1 ] || { echo "!! expected one 'listen ${from};' in the image's config, found $n" >&2; exit 1; }
+    # ADMIN_PORT=off opens no TCP port at all: the server is pointed at a unix socket
+    # nothing connects to. Done this way rather than by deleting the server block --
+    # a one-line substitution with the same single-match assertion cannot go subtly
+    # wrong, whereas cutting a block out of someone else's config can.
+    [ "$to" = off ] && to="unix:/usr/local/openresty/nginx/sock/admin.sock"
     [ "$from" = "$to" ] && continue
     sed -i -E "s|^([[:space:]]*)listen ${from};|\\1listen ${to};|" generated/session_base.conf
     echo "    listen ${from} -> ${to}"
@@ -99,6 +104,7 @@ busy=""
 # the check wants the port part.
 for p in "${GATEWAY_PORT:-8080}" "${ADMIN_PORT:-8090}" "${CART_PORT:-8071}"; do
     p=${p##*:}
+    case "$p" in ''|*[!0-9]*) continue ;; esac   # `off`, or an address with no port
     ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
 done
 if [ -n "$busy" ]; then
