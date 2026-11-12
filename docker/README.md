@@ -1,72 +1,142 @@
-# ModelSphere without Kubernetes
+# Serving a model with containers, without Kubernetes
 
-One model, served on a set of machines, with containers.
+One model, on a set of machines, with nothing but a container runtime and SSH. The
+routing layer runs as `docker compose` on a control machine; each accelerator machine
+runs one engine container.
 
-## 0. The machines have to be ready first
+```
+                      control machine (no accelerator needed)
+                      ┌───────────────────────────────────────┐
+  client ── :8080 ──► │ openresty   one port, limits, records │
+                      │     │                                 │
+                      │     ▼                                 │
+                      │ cart        cache-aware routing       │
+                      └─────┬─────────────────────────────────┘
+          ┌─────────────────┼──────────────────┐
+          ▼                 ▼                  ▼
+       machine           machine            machine      ← one engine container each
+```
 
-None of this is installed for you, and most of it fails in a way that looks like a
+Two files are the whole input: `.env` (the model, the engine, the hardware, the
+limits) and `hosts` (the machines). `render.sh` turns them into the route openresty
+serves, the cache-aware router's worker list, and one launch script per machine, so
+the route's backends and the engines' own addresses cannot drift apart.
+
+The full guide is [docs/docker-compose.md](../docs/docker-compose.md). This page is
+the prerequisites and the commands.
+
+## Prerequisites
+
+Nothing here installs any of this, and most of it fails in a way that looks like a
 hung engine rather than a missing dependency. Check it before the first run.
 
-**The control machine** -- where you run `./up.sh`; it needs no accelerator, and it
-may be one of the engine machines:
+### Control machine
 
-| | Check |
+Where you run `./up.sh`. It needs no accelerator, and it may be one of the engine
+machines.
+
+| Requirement | How to check |
 |---|---|
-| docker with the compose plugin | `docker compose version` |
-| **passwordless SSH to every engine machine** as `SSH_USER` (default root) | `ssh -o BatchMode=yes root@<machine> true` -- must succeed with no prompt, for every line in `hosts`. `up.sh` runs them one at a time and cannot answer a password |
-| can reach each engine machine's `ENGINE_PORT` | `curl -m 5 http://<machine>:8050/v1/models` once an engine is up |
-| `GATEWAY_PORT` free, and `NET_SUBNET` not already routed | `ss -ltn \| grep :8080` / `ip -4 route \| grep 172.31.` and `docker network inspect` the existing ones. A compose network that overlaps a real one breaks whatever used that range |
-| can pull the routing images | `docker pull $OPENRESTY_IMAGE` |
+| Docker with the compose plugin | `docker compose version` |
+| **Passwordless SSH to every engine machine** as `SSH_USER` (default `root`) | `ssh -o BatchMode=yes root@<machine> true` — must succeed without a prompt for every line in `hosts`. `up.sh` visits the machines one at a time and cannot answer a password |
+| Network reach to each engine machine's `ENGINE_PORT` | `curl -m 5 http://<machine>:8050/v1/models`, once an engine is running |
+| `GATEWAY_PORT` free, and `NET_SUBNET` not already in use | `ss -ltn \| grep :8080`, `ip -4 route \| grep 172.31.`, and `docker network inspect` on the existing networks. A compose network that overlaps a real range silently breaks whatever was using it |
+| Able to pull the routing images | `docker pull $OPENRESTY_IMAGE` |
 
-**Every engine machine:**
+### Engine machines
 
-| | Check |
+| Requirement | How to check |
 |---|---|
-| a container CLI -- docker, or nerdctl where there is no Docker daemon (`CTR_CLI`) | `docker version` / `nerdctl version` |
-| **the accelerator driver, installed and healthy on the host** | NVIDIA: `nvidia-smi`. Ascend: `npu-smi info`. The container does not carry a driver |
-| **the container runtime hook for that accelerator** | NVIDIA: `nvidia-container-toolkit`, so `--gpus` works. Ascend: the vendor OCI runtime, or the device mounts the example lists instead. Without it the container starts with no accelerator in it and the engine fails on its first allocation |
-| the engine image, pullable or already present | `docker image inspect $ENGINE_IMAGE` |
-| **the weights on local disk, one copy per machine** | `ls $MODEL_PATH` -- there is no shared-storage path here |
+| A container CLI: Docker, or nerdctl where there is no Docker daemon (`CTR_CLI`) | `docker version` / `nerdctl version` |
+| **The accelerator driver, installed and healthy on the host** | NVIDIA: `nvidia-smi`. Ascend: `npu-smi info`. The container image does not carry a driver |
+| **The container runtime integration for that accelerator** | NVIDIA: `nvidia-container-toolkit`, so `--gpus` works. Ascend: the vendor OCI runtime, or the device mounts the example lists in its place. Without it the container starts with no accelerator inside and the engine fails on its first allocation |
+| The engine image, pullable or already present | `docker image inspect $ENGINE_IMAGE` |
+| **The weights on local disk, one copy per machine** | `ls $MODEL_PATH` — there is no shared-storage path here |
 | `ENGINE_PORT` free | `ss -ltn \| grep :8050` |
 
-**Only for a multi-machine instance** (`NODES_PER_INSTANCE` > 1) -- all three of these
-fail silently, with the model loading and then hanging at its first collective:
+### Additionally, for an instance that spans machines
 
-| | Check |
+Only when `NODES_PER_INSTANCE` is greater than 1. Every item here fails silently: the
+model loads, and then the engine hangs at its first collective operation.
+
+| Requirement | How to check |
 |---|---|
-| **RDMA/InfiniBand ready**, if you want it: ports up and the devices present | `ibstat` (every port `Active`), `ls /dev/infiniband` |
-| the collective interface **named** in `DOCKER_FLAGS` | `-e NCCL_SOCKET_IFNAME=<nic>` / `-e HCCL_SOCKET_IFNAME=<nic>`. Left unset on a machine with several interfaces, the engine picks one that cannot reach its peer |
-| `DIST_PORT` free on every machine of the instance, and reachable between them | `ss -ltn \| grep :29500` |
+| **RDMA/InfiniBand ready**, if you intend to use it: ports up, devices present | `ibstat` (every port `Active`), `ls /dev/infiniband`, and the device named in `DOCKER_FLAGS` |
+| **The collective interface named explicitly** | `-e NCCL_SOCKET_IFNAME=<nic>` or `-e HCCL_SOCKET_IFNAME=<nic>` in `DOCKER_FLAGS`. Left unset on a machine with several interfaces, the engine picks one that cannot reach its peer |
+| **`DIST_PORT` free on every machine of the instance, and reachable between them** | `ss -ltn \| grep :29500` |
 
-On NVIDIA there are two further host-level prerequisites that only bite across
-machines, both measured, both looking like a hang rather than an error: **PCIe ACS
-must be off** on every bridge (otherwise NCCL deadlocks during initialisation
-whenever GDR is on, and it comes back after each reboot), and **nvidia-peermem must
-stay loaded** (it unloads itself on a long-running machine, and then any container
-restart hangs). `examples/nvidia-qwen.env` has the detail and the commands.
+On NVIDIA there are two host-level settings that only bite across machines, both
+measured and both presenting as a hang rather than an error:
 
-## 1. Two files
+- **PCIe ACS must be disabled** on every bridge. With it enabled, NCCL deadlocks
+  during initialisation whenever GPUDirect RDMA is in use — and it returns to enabled
+  after each reboot, because the firmware re-enables it.
+- **`nvidia-peermem` must stay loaded.** It unloads itself on a long-running machine,
+  after which any container restart hangs in NCCL initialisation.
+
+`examples/nvidia-qwen.env` carries the detail and the commands for both.
+
+## Configuration
 
 ```bash
 cp examples/ascend-glm53-flash.env .env   # ls examples/ for the others
-cp hosts.example hosts                    # your machines, one address per line
+cp hosts.example hosts
 ```
 
-`.env` keeps that name because docker compose loads it by itself; the examples are
-visible files so you can see what there is to copy. Edit `.env` from the top -- its
-sections run from "you have to set this" (the model, the weights path) down to
-"leave it alone" (registries, the compose network).
+`examples/` holds complete starting points, one per hardware and model that has been
+run — copy the closest one rather than filling in a blank template. `.env` keeps that
+name because docker compose reads it directly; both it and `hosts` are gitignored,
+since they hold your addresses.
 
-## 2. Start it
+Edit `.env` from the top. Its sections are ordered by how likely you are to change
+them:
+
+| Section | Holds |
+|---|---|
+| 1. the model | what you are serving, and where its weights are — **always needs editing** |
+| 2. the shape | how the machines in `hosts` add up to instances (`NODES_PER_INSTANCE`, `TP`, `PP`) |
+| 3. the engine | engine, image, flags. Comes with the hardware and the model; the example has it |
+| 4. the accelerators | `DOCKER_FLAGS` — devices, environment, a vendor runtime — and `PRE_START` |
+| 5. limits and access | rate limits, authentication, request records. Tune after measuring |
+| 6. plumbing | ports, registries, the compose network. Rarely touched |
+
+`hosts` is one address per line. A second column is only needed where SSH and the
+data network are different addresses.
+
+## Deployment
 
 ```bash
-./up.sh            # renders, starts the engine on every machine, starts the router
+./render.sh        # optional: render into generated/ and apply nothing
+./up.sh            # render, start the engine on every machine, start the routing layer
 ```
 
-`./render.sh` alone renders into `generated/` and applies nothing -- that is how you
-read the exact route config and the exact per-machine container command before
-anything runs. `./down.sh` stops everything.
+`up.sh` renders first, every time, so there is no separate step to forget. Running
+`render.sh` on its own is how you read the exact route configuration and the exact
+per-machine `docker run` before anything starts — worth doing on a first deployment,
+since an engine container takes its accelerators for minutes.
 
-The guide is [docs/docker-compose.md](../docs/docker-compose.md): how many instances
-the machines add up to, NVIDIA and Ascend, rate limiting, authentication, and what
-this path does not do that Kubernetes does.
+Then:
+
+```bash
+curl -s http://127.0.0.1:8080/<route>/_health_status
+curl http://127.0.0.1:8080/<route>/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+```
+
+The first path segment is `ROUTE`, not the model name.
+
+## Operations
+
+| Task | Command | In-flight requests |
+|---|---|---|
+| Change limits, the machine list, the route name | `SKIP_ENGINES=1 ./up.sh` | kept — openresty reloads gracefully |
+| Change engine flags, `TP`/`PP`, the image | `./down.sh && ./up.sh` | cut — the engine restarts |
+| Stop everything | `./down.sh` | — |
+| Stop the engines, keep the gateway up | `KEEP_ROUTER=1 ./down.sh` | the route answers 503 until they return |
+
+`generated/` is output, never input: it is rewritten on every render, and the files
+openresty and the router read are overwritten in place rather than replaced, because
+a container holds the file it was started with. Do not delete that directory while
+the stack is running — the host would show the new configuration while the container
+served the old, or nothing at all.
