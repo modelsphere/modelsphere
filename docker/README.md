@@ -65,17 +65,6 @@ model loads, and then the engine hangs at its first collective operation.
 | **The collective interface named explicitly** | `-e NCCL_SOCKET_IFNAME=<nic>` or `-e HCCL_SOCKET_IFNAME=<nic>` in `DOCKER_FLAGS`. Left unset on a machine with several interfaces, the engine picks one that cannot reach its peer |
 | **`DIST_PORT` free on every machine of the instance, and reachable between them** | `ss -ltn \| grep :29500` |
 
-On NVIDIA there are two host-level settings that only bite across machines, both
-measured and both presenting as a hang rather than an error:
-
-- **PCIe ACS must be disabled** on every bridge. With it enabled, NCCL deadlocks
-  during initialisation whenever GPUDirect RDMA is in use — and it returns to enabled
-  after each reboot, because the firmware re-enables it.
-- **`nvidia-peermem` must stay loaded.** It unloads itself on a long-running machine,
-  after which any container restart hangs in NCCL initialisation.
-
-`examples/nvidia-qwen.env` carries the detail and the commands for both.
-
 ## Quick start
 
 ```bash

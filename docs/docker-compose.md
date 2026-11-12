@@ -70,11 +70,6 @@ fail silently -- the model loads and then hangs at its first collective:
   `/dev/infiniband` present, with the device named in `DOCKER_FLAGS`.
 - **The collective interface named** (`NCCL_SOCKET_IFNAME` / `HCCL_SOCKET_IFNAME`).
 - **`DIST_PORT` free on every machine of the instance and reachable between them.**
-- On NVIDIA, two host-level ones as well: **PCIe ACS off** on every bridge (with it
-  on, NCCL deadlocks during initialisation whenever GDR is enabled, and it returns
-  after each reboot) and **nvidia-peermem loaded** (it unloads itself on a
-  long-running machine, after which any container restart hangs). Both measured;
-  `examples/nvidia-qwen.env` carries the detail.
 
 ## Configure: two files
 
