@@ -78,19 +78,20 @@ echo "=== routing layer"
 # would quietly become a stale version of the framework the first time the image
 # moved on. Each substitution asserts it matched exactly once, so an image that
 # writes the directive differently fails here rather than serving the wrong thing.
-echo "--- framework config: gateway ${GATEWAY_PORT:-8080}, admin ${ADMIN_PORT:-8090}"
+echo "--- framework config: gateway on ${GATEWAY_PORT:-8080}, admin server off"
 SB=/usr/local/openresty/nginx/conf/conf.d/session_base.conf
 docker run --rm --entrypoint cat "${OPENRESTY_IMAGE:?}" "$SB" > generated/session_base.conf \
     || { echo "!! could not read $SB out of ${OPENRESTY_IMAGE}" >&2; exit 1; }
-for pair in "8080:${GATEWAY_PORT:-8080}" "8090:${ADMIN_PORT:-8090}"; do
+# The admin server (8090) serves /healthz, unauthenticated, and nothing here asks
+# for it -- up.sh waits on the engine's /v1/models and the route's own status
+# endpoints -- so it is always pointed at a unix socket: no TCP listener at all.
+# A substitution rather than cutting the server block out of someone else's config:
+# it keeps the single-match assertion, and there is no brace matching to get subtly
+# wrong.
+for pair in "8080:${GATEWAY_PORT:-8080}" "8090:unix:/usr/local/openresty/nginx/sock/admin.sock"; do
     from=${pair%%:*} to=${pair#*:}
     n=$(grep -cE "^[[:space:]]*listen ${from};" generated/session_base.conf)
     [ "$n" = 1 ] || { echo "!! expected one 'listen ${from};' in the image's config, found $n" >&2; exit 1; }
-    # ADMIN_PORT=off opens no TCP port at all: the server is pointed at a unix socket
-    # nothing connects to. Done this way rather than by deleting the server block --
-    # a one-line substitution with the same single-match assertion cannot go subtly
-    # wrong, whereas cutting a block out of someone else's config can.
-    [ "$to" = off ] && to="unix:/usr/local/openresty/nginx/sock/admin.sock"
     [ "$from" = "$to" ] && continue
     sed -i -E "s|^([[:space:]]*)listen ${from};|\\1listen ${to};|" generated/session_base.conf
     echo "    listen ${from} -> ${to}"
@@ -102,15 +103,15 @@ done
 busy=""
 # An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
 # the check wants the port part.
-for p in "${GATEWAY_PORT:-8080}" "${ADMIN_PORT:-8090}" "${CART_PORT:-8071}"; do
+for p in "${GATEWAY_PORT:-8080}" "${CART_PORT:-8071}"; do
     p=${p##*:}
-    case "$p" in ''|*[!0-9]*) continue ;; esac   # `off`, or an address with no port
+    case "$p" in ''|*[!0-9]*) continue ;; esac   # an address with no port
     ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
 done
 if [ -n "$busy" ]; then
     echo "!! port(s) in use on this machine:$busy" >&2
     for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
-    echo "   GATEWAY_PORT, ADMIN_PORT and CART_PORT in $ENV_FILE all move; free the port" >&2
+    echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
     echo "   or change it there. The engines are unaffected either way." >&2
     exit 1
 fi

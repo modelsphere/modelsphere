@@ -41,12 +41,12 @@ has the same list as a checklist with the command for each line.
 - **docker with the compose plugin.**
 - **Passwordless SSH to every engine machine** as `SSH_USER`, for every line in
   `hosts`: `up.sh` visits them one at a time and cannot answer a password prompt.
-- **`GATEWAY_PORT`, `ADMIN_PORT` and `CART_PORT` free.** The routing containers run
-  with host networking -- no compose network, no subnet to pick, no address to pin.
-  The ports still move: `up.sh` substitutes them into the framework config it takes
-  out of the image, since host networking leaves no mapping to do it with. The
-  gateway answers every machine that can route here; CART is bound to the loopback,
-  and `ADMIN_PORT` (`/healthz`, unauthenticated, unused here) can be too.
+- **`GATEWAY_PORT` and `CART_PORT` free.** The routing containers run with host
+  networking -- no compose network, no subnet to pick, no address to pin. The ports
+  still move: `up.sh` substitutes them into the framework config it takes out of the
+  image, since host networking leaves no mapping to do it with. The gateway answers
+  every machine that can route here; CART is bound to the loopback; and the image's
+  unauthenticated `/healthz` admin server is turned off, since nothing here uses it.
 - It must be able to pull the routing images. They are published for amd64 and arm64,
   so this may be an aarch64 box.
 

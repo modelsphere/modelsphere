@@ -5,14 +5,14 @@
 # and no address to pin: the gateway is on this machine's own address, and the two
 # talk to each other over the loopback. The ports come from .env -- up.sh substitutes
 # them into the framework config it extracts from the image, since host networking
-# leaves no mapping to do it with -- and all three must be free on this machine.
+# leaves no mapping to do it with -- and both must be free on this machine. The
+# image's other listener, its unauthenticated /healthz admin server, is turned off
+# there as well: nothing in this deployment uses it.
 #
 #   GATEWAY_PORT  the gateway: http://<this machine>:8080/<route>/v1/...
 #                 Reachable from anywhere that can route here. Authentication is off
 #                 unless API_KEYS_DIR names a key file, and the /<route>/_* status
 #                 endpoints have none in any case and name the engines.
-#   ADMIN_PORT    /healthz, and nothing else. Unauthenticated, and nothing in this
-#                 deployment uses it: set it to 127.0.0.1:8090 to keep it local.
 #   CART_PORT     bound to 127.0.0.1 by the generated config, so other machines
 #                 cannot reach it at all.
 #

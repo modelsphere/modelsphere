@@ -40,7 +40,7 @@ machines.
 | Docker with the compose plugin | `docker compose version` |
 | **Passwordless SSH to every engine machine** as `SSH_USER` (default `root`) | `ssh -o BatchMode=yes root@<machine> true` — must succeed without a prompt for every line in `hosts`. `up.sh` visits the machines one at a time and cannot answer a password |
 | Network reach to each engine machine's `ENGINE_PORT` | `curl -m 5 http://<machine>:8050/v1/models`, once an engine is running |
-| **`GATEWAY_PORT`, `ADMIN_PORT` and `CART_PORT` free.** The routing containers use host networking, so they bind here directly; `up.sh` checks these before starting and names whatever holds one | `ss -ltn \| grep -E ':(8080\|8090\|8071) '` |
+| **`GATEWAY_PORT` and `CART_PORT` free.** The routing containers use host networking, so they bind here directly; `up.sh` checks both before starting and names whatever holds one | `ss -ltn \| grep -E ':(8080\|8071) '` |
 | Able to pull the routing images | `docker pull $OPENRESTY_IMAGE` |
 
 ### Engine machines
