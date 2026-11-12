@@ -32,19 +32,49 @@ engines' rendezvous addresses cannot drift apart.
 
 ## Before you start
 
-- **Containers on the machines**: Docker, or **nerdctl** where there is no Docker
-  daemon -- `CTR_CLI` in `.env`. On a machine that is also a Kubernetes node nerdctl
-  is the better choice: it drives the containerd already there instead of adding a
-  second image store. (Keep `CTR_NAMESPACE` off `k8s.io`, which is kubelet's.)
-- **Whatever gives a container its accelerators** -- `nvidia-container-toolkit`, a
-  vendor OCI runtime, or just device nodes. See
-  [different hardware](#different-hardware); the stack itself has no opinion.
-- **The weights on each machine's local disk.** Every machine needs its own copy;
-  there is no shared-storage path here.
-- **Reachability**: the control machine reaches each machine's address and engine
-  port, and the machines of one instance reach each other on `DIST_PORT`.
-- The routing images are published for amd64 and arm64, so the control machine may be
-  an aarch64 box -- including one of the engine machines.
+Nothing here installs any of this, and most of it fails looking like a hung engine
+rather than a missing dependency. [`docker/README.md`](../docker/README.md#0-the-machines-have-to-be-ready-first)
+has the same list as a checklist with the command for each line.
+
+**Control machine** (no accelerator; may be one of the engine machines):
+
+- **docker with the compose plugin.**
+- **Passwordless SSH to every engine machine** as `SSH_USER`, for every line in
+  `hosts`: `up.sh` visits them one at a time and cannot answer a password prompt.
+- **A free `GATEWAY_PORT`, and a `NET_SUBNET` that is not already routed.** A compose
+  network overlapping a real range breaks whatever was using it.
+- It must be able to pull the routing images. They are published for amd64 and arm64,
+  so this may be an aarch64 box.
+
+**Every engine machine:**
+
+- **A container CLI**: Docker, or **nerdctl** where there is no Docker daemon
+  (`CTR_CLI`). On a machine that is also a Kubernetes node nerdctl is the better
+  choice -- it drives the containerd already there instead of adding a second image
+  store. (Keep `CTR_NAMESPACE` off `k8s.io`, which is kubelet's.)
+- **The accelerator's driver, on the host and healthy** -- `nvidia-smi` or
+  `npu-smi info` must work. The container does not carry a driver.
+- **The container runtime hook for that accelerator**: `nvidia-container-toolkit` so
+  `--gpus` works, or a vendor OCI runtime, or the device mounts in its place. Without
+  it the container starts with no accelerator in it. See
+  [different hardware](#different-hardware); the stack itself has no opinion about
+  which.
+- **The weights on local disk, one copy per machine.** There is no shared-storage
+  path here.
+- A free `ENGINE_PORT`, reachable from the control machine.
+
+**Only for a multi-machine instance** (`NODES_PER_INSTANCE` > 1), and all of these
+fail silently -- the model loads and then hangs at its first collective:
+
+- **RDMA/InfiniBand ready** if you want it: `ibstat` ports `Active` and
+  `/dev/infiniband` present, with the device named in `DOCKER_FLAGS`.
+- **The collective interface named** (`NCCL_SOCKET_IFNAME` / `HCCL_SOCKET_IFNAME`).
+- **`DIST_PORT` free on every machine of the instance and reachable between them.**
+- On NVIDIA, two host-level ones as well: **PCIe ACS off** on every bridge (with it
+  on, NCCL deadlocks during initialisation whenever GDR is enabled, and it returns
+  after each reboot) and **nvidia-peermem loaded** (it unloads itself on a
+  long-running machine, after which any container restart hangs). Both measured;
+  `examples/nvidia-qwen.env` carries the detail.
 
 ## Configure: two files
 
@@ -133,7 +163,7 @@ was benchmarked with. The values below are the shape of each:
 ```bash
 # NVIDIA
 ENGINE_IMAGE=lmsysorg/sglang:v0.5.15-cu129
-DOCKER_FLAGS="--gpus all --device /dev/infiniband -e NCCL_SOCKET_IFNAME=bond0 -e GLOO_SOCKET_IFNAME=bond0 -e NCCL_IB_HCA=mlx5_0"
+DOCKER_FLAGS="--gpus '\"device=0,1,2,3\"' --device /dev/infiniband -e NCCL_SOCKET_IFNAME=bond0 -e GLOO_SOCKET_IFNAME=bond0 -e NCCL_IB_HCA=mlx5_0"
 
 # Ascend NPUs (aarch64; ENGINE=vllm, since SGLang has no NPU build)
 ENGINE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0
