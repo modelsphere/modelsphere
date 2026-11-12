@@ -40,7 +40,7 @@ machines.
 | Docker with the compose plugin | `docker compose version` |
 | **Passwordless SSH to every engine machine** as `SSH_USER` (default `root`) | `ssh -o BatchMode=yes root@<machine> true` — must succeed without a prompt for every line in `hosts`. `up.sh` visits the machines one at a time and cannot answer a password |
 | Network reach to each engine machine's `ENGINE_PORT` | `curl -m 5 http://<machine>:8050/v1/models`, once an engine is running |
-| **Ports 8080, 8090 and `CART_PORT` free.** The routing containers use host networking, so those are fixed -- 8080 is the gateway, 8090 its admin port, and one routing layer per machine | `ss -ltn \| grep -E ':(8080\|8090\|8071) '` |
+| **`GATEWAY_PORT`, `ADMIN_PORT` and `CART_PORT` free.** The routing containers use host networking, so they bind here directly; `up.sh` checks these before starting and names whatever holds one | `ss -ltn \| grep -E ':(8080\|8090\|8071) '` |
 | Able to pull the routing images | `docker pull $OPENRESTY_IMAGE` |
 
 ### Engine machines
@@ -94,8 +94,9 @@ curl http://127.0.0.1:8080/<route>/v1/chat/completions \
   -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
 ```
 
-The first path segment is `ROUTE`, not the model name. The gateway is on port 8080
-of this machine's own address and answers any machine that can route to it, so put
+The first path segment is `ROUTE`, not the model name. The gateway is on
+`GATEWAY_PORT` of this machine's own address and answers any machine that can route
+to it, so put
 authentication (`API_KEYS_DIR`) or your own proxy in front of it on a shared network
 -- and note that the `/<route>/_*` status endpoints have no authentication in any
 case, and name the engines.

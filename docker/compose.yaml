@@ -3,20 +3,18 @@
 #
 # Both run with host networking, so there is no compose network, no subnet to pick
 # and no address to pin: the gateway is on this machine's own address, and the two
-# talk to each other over the loopback. That also fixes the ports -- the image's
-# dispatcher listens on 8080 and its admin server on 8090, and with host networking
-# there is nothing to remap them to, so both must be free here.
+# talk to each other over the loopback. The ports come from .env -- up.sh substitutes
+# them into the framework config it extracts from the image, since host networking
+# leaves no mapping to do it with -- and all three must be free on this machine.
 #
-#   8080  the gateway: http://<this machine>:8080/<route>/v1/...
-#         Reachable from anywhere that can route here. Authentication is off unless
-#         API_KEYS_DIR names a key file, and the /<route>/_* status endpoints have
-#         none in any case and list the engines' addresses.
-#   8090  admin, /healthz only.
-#   8071  CART (CART_PORT), bound to 127.0.0.1 by the generated config, so it is not
-#         reachable from other machines.
-#
-# One consequence of host networking: one routing layer per machine. A second model
-# means a second machine.
+#   GATEWAY_PORT  the gateway: http://<this machine>:8080/<route>/v1/...
+#                 Reachable from anywhere that can route here. Authentication is off
+#                 unless API_KEYS_DIR names a key file, and the /<route>/_* status
+#                 endpoints have none in any case and name the engines.
+#   ADMIN_PORT    /healthz, and nothing else. Unauthenticated, and nothing in this
+#                 deployment uses it: set it to 127.0.0.1:8090 to keep it local.
+#   CART_PORT     bound to 127.0.0.1 by the generated config, so other machines
+#                 cannot reach it at all.
 #
 # The engines are not here. They run on the machines in `hosts`, one container each,
 # also with host networking -- ./up.sh starts them from the per-machine scripts in
@@ -41,6 +39,10 @@ services:
       # overwrites the file inside it in place -- a single-file mount follows the
       # inode, so a rewritten file would leave this container reading the old one.
       - ./generated/routes:/usr/local/openresty/nginx/conf/conf.d/routes:ro
+      # The framework config, taken out of this image by up.sh with the listener
+      # ports substituted (host networking leaves nothing to remap them with), and
+      # re-extracted from the image on every run so it cannot drift from it.
+      - ./generated/session_base.conf:/usr/local/openresty/nginx/conf/conf.d/session_base.conf:ro
       # API keys, off unless API_KEYS_DIR names a directory holding a `keys` file.
       # Mounted as a whole directory, never a single file: the engine re-reads the
       # file on reload, and a file-level bind mount pins the inode so rotation

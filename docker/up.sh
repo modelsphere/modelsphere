@@ -71,21 +71,41 @@ fi
 
 echo
 echo "=== routing layer"
-# Check the three ports first. The routing containers use host networking, so the
-# image's own listeners -- 8080 for the gateway, 8090 for admin -- bind here and
-# cannot be remapped; if one is taken, nginx fails to bind and the container exits,
-# which otherwise shows up as a container that will not stay up and nothing saying
-# why. CART's port is configurable (CART_PORT), the other two are not.
+# The image's framework config carries the two listener ports as literals, and host
+# networking leaves no port mapping to change them with. So take that file out of the
+# image being deployed, substitute the ports, and mount the result back over it.
+# Extracted every run from THAT image, never a copy kept in this repo: a stored copy
+# would quietly become a stale version of the framework the first time the image
+# moved on. Each substitution asserts it matched exactly once, so an image that
+# writes the directive differently fails here rather than serving the wrong thing.
+echo "--- framework config: gateway ${GATEWAY_PORT:-8080}, admin ${ADMIN_PORT:-8090}"
+SB=/usr/local/openresty/nginx/conf/conf.d/session_base.conf
+docker run --rm --entrypoint cat "${OPENRESTY_IMAGE:?}" "$SB" > generated/session_base.conf \
+    || { echo "!! could not read $SB out of ${OPENRESTY_IMAGE}" >&2; exit 1; }
+for pair in "8080:${GATEWAY_PORT:-8080}" "8090:${ADMIN_PORT:-8090}"; do
+    from=${pair%%:*} to=${pair#*:}
+    n=$(grep -cE "^[[:space:]]*listen ${from};" generated/session_base.conf)
+    [ "$n" = 1 ] || { echo "!! expected one 'listen ${from};' in the image's config, found $n" >&2; exit 1; }
+    [ "$from" = "$to" ] && continue
+    sed -i -E "s|^([[:space:]]*)listen ${from};|\\1listen ${to};|" generated/session_base.conf
+    echo "    listen ${from} -> ${to}"
+done
+
+# The ports, before starting: with host networking these bind here directly, and a
+# port already taken means nginx fails to bind and the container exits -- visible
+# otherwise only as a container that will not stay up.
 busy=""
-for p in 8080 8090 "${CART_PORT:-8071}"; do
+# An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
+# the check wants the port part.
+for p in "${GATEWAY_PORT:-8080}" "${ADMIN_PORT:-8090}" "${CART_PORT:-8071}"; do
+    p=${p##*:}
     ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
 done
 if [ -n "$busy" ]; then
     echo "!! port(s) in use on this machine:$busy" >&2
     for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
-    echo "   8080 (gateway) and 8090 (admin) are fixed by the image and cannot be remapped" >&2
-    echo "   under host networking; CART_PORT can be changed in $ENV_FILE. Free them, or run" >&2
-    echo "   the routing layer on another machine (the engines are unaffected)." >&2
+    echo "   GATEWAY_PORT, ADMIN_PORT and CART_PORT in $ENV_FILE all move; free the port" >&2
+    echo "   or change it there. The engines are unaffected either way." >&2
     exit 1
 fi
 # One switch, not two. Setting BODYLOG_LISTENER_HOST makes openresty build and send
@@ -109,7 +129,7 @@ if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx
 fi
 
 echo
-echo "ready: curl http://127.0.0.1:8080/$ROUTE/v1/chat/completions \\"
+echo "ready: curl http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/v1/chat/completions \\"
 echo "         -H 'Content-Type: application/json' \\"
 echo "         -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
-echo "state: curl -s http://127.0.0.1:8080/$ROUTE/_health_status"
+echo "state: curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/_health_status"
