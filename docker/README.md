@@ -182,20 +182,21 @@ Over a limit is an immediate `429` with `Retry-After: 1`; nothing is queued.
 ### Applying changes
 
 Re-run `./up.sh`. It keeps every engine whose configuration is unchanged and still
-running, reloads openresty gracefully, and signals CART to re-read its worker list.
+running, reloads openresty gracefully, and has CART pick up its new configuration.
 
 | Change | In-flight requests |
 |---|---|
-| Limits, route name, adding or removing GPU servers | kept — only new GPU servers start, removed ones need `docker rm -f engine-<route>` on that GPU server |
+| Limits, adding GPU servers | kept — only the new GPU servers start |
+| Removing GPU servers from `hosts` | kept on the others; the removed servers' engines are stopped once the route no longer sends them traffic |
+| Model name or route name | cut — the previous engines are removed first, since the new ones need the same ports |
 | Engine flags, `TP`/`PP`, image | cut on the GPU servers whose engine changed — those are recreated |
-| Any CART field other than its workers | restart CART: `docker compose restart cart` |
+| `MAX_BODY_SIZE` | cut for requests passing through CART — `up.sh` restarts CART, which re-reads only its worker list on a reload |
 | Force every engine to restart | `FORCE_ENGINES=1 ./up.sh` |
 
 ### Authentication
 
 The gateway reads its keys from `keys/keys` (`API_KEYS_DIR`, default `./keys`). While
-that file does not exist, every request is let through and `_health_status` reports
-`api_keys_configured=false`. To turn authentication on:
+that file does not exist, every request is let through. To turn authentication on:
 
 ```bash
 echo 'sk-one:team-a,sk-two:team-b' > keys/keys
@@ -208,24 +209,58 @@ is removed. The `/<route>/_*` status endpoints are never authenticated.
 
 ## Troubleshooting
 
-Start with `./status.sh`. The gateway's own status endpoints, on the control machine:
+Start with `./status.sh`; an engine's own log is `docker logs engine-<route>` on its GPU
+server.
 
-```bash
-curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_health_status   # each peer: active or banned
-curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_tps_status      # decode rate, adaptive limit
-curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_429_status      # rejections by reason
-```
+**`./up.sh` exits with an error**
 
-| Symptom | Check |
-|---|---|
-| `502` on the route | the first path segment is not the route `up.sh` printed, or no engine is reachable yet (`./status.sh`) |
-| `503` | every peer failed its health check: `_health_status`, then `docker logs engine-<route>` on the GPU server |
-| `429` at low load | adaptive concurrency at its floor: `_tps_status`, and whether `TPS_LIMIT_TPS` is reachable on this hardware |
-| An instance never becomes ready | `docker logs engine-<route>` on rank 0, and on every rank of a multi-server instance |
-| Which instance served a request | set `EXPOSE_ROUTED_PEER=true` and re-run `./up.sh`: responses then carry `X-Routed-Peer` |
+| What you see | Likely cause | Fix |
+|---|---|---|
+| `TP(…) x PP(…) = … but an instance is …` | `TP × PP` ≠ `DEVICES_PER_NODE × NODES_PER_INSTANCE` | Make them match in `.env` |
+| `… machine(s) do not divide into instances of …` | Server count in `hosts` not a multiple of `NODES_PER_INSTANCE` | Fix `hosts` or `NODES_PER_INSTANCE` |
+| `Permission denied (publickey)` / `… did not start` | No passwordless SSH from the control machine to that server | Add the control machine's key to the server's `authorized_keys` |
+| `weights not found: …` | `MODEL_PATH` missing on that server | Copy the weights there, same path on every server |
+| `unknown or invalid runtime name` | Ascend runtime given as a path, or not registered with docker | `--runtime ascend`, registered in `/etc/docker/daemon.json` (see Different hardware) |
+| `port(s) in use on this machine` | `GATEWAY_PORT` or `CART_PORT` taken by something else | Free the port or change it in `.env` |
 
-## Not provided
+**An instance never becomes ready** (`./status.sh` shows `loading` or `stopped`)
 
-Nothing restarts a failed instance, and there is no autoscaling, no backend discovery
-(`hosts` is the truth), no rolling update, and one model per deployment — a second
-model is a second copy of `docker/` with its own model name, ports and GPU servers.
+| What you see in the engine log | Likely cause | Fix |
+|---|---|---|
+| No GPU / NPU found, fails on first allocation | Accelerators not requested in `DOCKER_FLAGS` | `--gpus …` (NVIDIA), or `--runtime ascend` with both `ASCEND_VISIBLE_DEVICES` and `ASCEND_RT_VISIBLE_DEVICES` (Ascend) |
+| `To serve at least one request with the model's max seq len …` | The context length does not fit in GPU memory | Lower `--max-model-len` or raise `--gpu-memory-utilization` in `ENGINE_EXTRA_ARGS` |
+| An argument error naming a JSON flag | A JSON value in `ENGINE_EXTRA_ARGS` without its own single quotes | Write it as `--flag='{"a":1}'` |
+| Loads, then stops progressing (multi-server instance) | The servers connect over an interface they cannot reach each other on, or `DIST_PORT` is blocked | Name the interface in `DOCKER_FLAGS` (see Prerequisites); open `DIST_PORT` |
+
+**Requests fail**
+
+| Response | Likely cause | Fix |
+|---|---|---|
+| `502` | The path is not the route `up.sh` printed, or no engine is serving yet | Use the printed endpoint; check `./status.sh` |
+| `503` | Every instance failed its health check | `./status.sh`, then the engine logs |
+| `401` | `keys/keys` exists and the request has no valid key | Send `Authorization: Bearer <key>` |
+| `413` | Request body larger than `MAX_BODY_SIZE` | Raise `MAX_BODY_SIZE` and re-run `./up.sh` |
+| `429` at low load | `TPS_LIMIT_TPS` higher than this hardware decodes, so adaptive concurrency sits at its floor; or `MAX_CONCURRENCY` too low | Lower `TPS_LIMIT_TPS`, or raise `MAX_CONCURRENCY` |
+| `404` / model does not exist | The request's `model` is not `MODEL_NAME` | Send the model name `up.sh` printed |
+
+## Limitations
+
+Not included:
+
+- **Automatic recovery.** A failed engine is not restarted; run `./up.sh` again.
+- **Autoscaling.** The number of instances is fixed by `hosts`.
+- **Service discovery.** Backends come only from `hosts`; a change there takes effect
+  on the next `./up.sh`.
+- **Rolling updates.** Changing an engine's configuration recreates it, and requests in
+  flight on it are dropped.
+- **High availability for the routing layer.** openresty and CART run on a single
+  control machine.
+- **Monitoring and alerting.** No metrics collection or dashboards are deployed.
+
+Constraints:
+
+- **One model per deployment.** Serve another model from a separate copy of `docker/`,
+  with its own ports.
+- **One engine container per GPU server.**
+- **One hardware type per deployment**, since the route's latency limits are judged
+  across all instances.

@@ -28,6 +28,12 @@ done
 # for the same reason.
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-5400}
 
+# What the previous run deployed, before rendering overwrites it: servers dropped from
+# `hosts` (or a changed route name) leave engines behind that this run has to stop.
+PREV_MANIFEST=""; PREV_ROUTE=""
+[ -f generated/manifest ] && PREV_MANIFEST=$(cat generated/manifest)
+[ -f generated/route ] && PREV_ROUTE=$(cat generated/route)
+
 echo "=== render"
 ./render.sh
 # Sourcing needs care: a bare name would be looked up in PATH, and "./$name" breaks
@@ -57,6 +63,38 @@ run_remote() {   # run_remote <ssh target> <local script>
     ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \
         "echo $b64 | base64 -d > /tmp/.ms_engine_launch.sh; FORCE_ENGINES=${FORCE_ENGINES:-0} bash /tmp/.ms_engine_launch.sh" < /dev/null
 }
+
+
+# Engines this deployment no longer has. A server can be listed under another address
+# (127.0.0.1 vs its own IP, a name vs an address), so before stopping anything its
+# machine-id is compared with the servers still listed, and the same machine is kept.
+machine_id() {   # machine_id <target>
+    if is_this_machine "$1"; then cat /etc/machine-id 2>/dev/null
+    # shellcheck disable=SC2086
+    else ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$1" 'cat /etc/machine-id' < /dev/null 2>/dev/null; fi
+}
+stop_engines() {   # stop_engines <route> <keep-machine-ids> <target>...
+    local route=$1 keep=$2 target id stop; shift 2
+    for target in "$@"; do
+        id=$(machine_id "$target")
+        if [ -z "$id" ]; then echo "    $target: unreachable -- stop engine-$route there yourself"; continue; fi
+        case " $keep " in *" $id "*) echo "    $target: still in hosts under another address -- kept"; continue ;; esac
+        stop="CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \$CLI \$NS stop -t 60 engine-$route >/dev/null 2>&1; \$CLI \$NS rm -f engine-$route >/dev/null 2>&1"
+        if is_this_machine "$target"; then bash -c "$stop"
+        # shellcheck disable=SC2086
+        else ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" "$stop" < /dev/null; fi
+        echo "    $target: engine-$route stopped and removed"
+    done
+}
+prev_targets=$(printf '%s\n' "$PREV_MANIFEST" | awk 'NF {print $1}')
+
+# A changed route name means a different engine container on the same ports: the old
+# one has to go before the new one can bind, on every server it ran on.
+if [ "${SKIP_ENGINES:-0}" != "1" ] && [ -n "$PREV_ROUTE" ] && [ "$PREV_ROUTE" != "$ROUTE" ]; then
+    echo "=== route changed ($PREV_ROUTE -> $ROUTE): removing the previous engines first"
+    # shellcheck disable=SC2086
+    stop_engines "$PREV_ROUTE" "" $prev_targets
+fi
 
 if [ "${SKIP_ENGINES:-0}" != "1" ]; then
     echo
@@ -176,13 +214,39 @@ if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx
         && echo "    reloaded" \
         || echo "    reload failed -- docker compose logs openresty"
 fi
+#   - CART's other fields (body limit, cache, timeouts) are rejected by that SIGHUP
+#     handler, so a change there restarts CART instead.
+no_workers() { awk '/^[[:space:]]*#/ {next} /^workers:/ {skip=1; next} skip && /^[^[:space:]-]/ {skip=0} !skip' "$1"; }
 if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx cart && \
    [ -f generated/.applied-cart.yaml ] && ! cmp -s generated/.applied-cart.yaml generated/cart.yaml; then
-    echo "--- CART's config changed: SIGHUP so it re-reads its worker list"
-    docker compose $PROFILE kill -s HUP cart >/dev/null && echo "    signalled" \
-        || echo "    signal failed -- docker compose logs cart"
+    if [ "$(no_workers generated/.applied-cart.yaml)" != "$(no_workers generated/cart.yaml)" ]; then
+        echo "--- CART's settings changed: restart CART (its SIGHUP accepts only the worker list)"
+        docker compose $PROFILE restart cart >/dev/null && echo "    restarted" \
+            || echo "    restart failed -- docker compose logs cart"
+    else
+        echo "--- CART's workers changed: SIGHUP so it re-reads them"
+        docker compose $PROFILE kill -s HUP cart >/dev/null && echo "    signalled" \
+            || echo "    signal failed -- docker compose logs cart"
+    fi
 fi
 cp generated/cart.yaml generated/.applied-cart.yaml
+
+# Servers dropped from `hosts`: stopped only now, after the route above stopped sending
+# them traffic.
+if [ "${SKIP_ENGINES:-0}" != "1" ] && [ -n "$PREV_ROUTE" ] && [ "$PREV_ROUTE" = "$ROUTE" ]; then
+    gone=""
+    for t in $prev_targets; do
+        awk '{print $1}' generated/manifest | grep -qxF "$t" || gone="$gone $t"
+    done
+    if [ -n "$gone" ]; then
+        keep=""
+        for t in $(awk 'NF {print $1}' generated/manifest); do keep="$keep $(machine_id "$t")"; done
+        echo "--- servers no longer in hosts"
+        # shellcheck disable=SC2086
+        stop_engines "$ROUTE" "$keep" $gone
+    fi
+fi
+
 
 # The address clients use. GATEWAY_PORT may be a bare port (every interface: show the
 # address of the interface this machine's default route leaves by) or address:port.
