@@ -86,8 +86,10 @@ routing configuration and the launch commands from `.env` and `hosts`, then star
 engine on every GPU server, waits until each serves `/v1/models` (a container
 starts in seconds, the weights load for minutes), then starts the routing layer.
 
-`up.sh` returns once every instance serves (up to 90 minutes) and prints the service,
-for example:
+`up.sh` returns once every instance serves (up to 90 minutes) and has answered one
+warm-up request -- the first request on a fresh engine compiles kernels and can take a
+minute or more, so `up.sh` pays that instead of your first user. It then prints the
+service, for example:
 
 ```
 === model service
@@ -95,7 +97,7 @@ for example:
   model      glm-5.3-flash
   instances  1 of 1 ready
   try        curl http://10.0.0.21:8080/glm-5.3-flash/v1/chat/completions -H 'Content-Type: application/json' \
-               -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hello"}]}'
+               -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hello"}],"max_tokens":256}'
 ```
 
 | Command | What it does |

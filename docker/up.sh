@@ -123,7 +123,7 @@ if [ "${SKIP_ENGINES:-0}" != "1" ]; then
         # /v1/models answering is readiness, not the container being up: the
         # container starts in seconds and the weights load for minutes.
         deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
-        n_total=0; n_ready=0
+        n_total=0; n_ready=0; ready_addrs=""
         while read -r target script instance role; do
             case "$role" in rank0-serves:*) ;; *) continue ;; esac
             addr=${script#engine-}; addr=${addr%.sh}; port=${role#rank0-serves:}
@@ -134,9 +134,28 @@ if [ "${SKIP_ENGINES:-0}" != "1" ]; then
                 printf '.'; sleep 20
             done
             n_total=$(( n_total + 1 ))
-            if [ "$ok" = 1 ]; then echo " ready"; n_ready=$(( n_ready + 1 ))
+            if [ "$ok" = 1 ]; then echo " ready"; n_ready=$(( n_ready + 1 )); ready_addrs="$ready_addrs $instance=$addr:$port"
             else echo " NOT READY -- on the machine: ${CTR_CLI:-docker} logs engine-$ROUTE"; fi
         done < generated/manifest
+
+        # The first request on a fresh engine compiles kernels and can take a minute or
+        # more -- measured: ~75s on Ascend 910B4, where /v1/models had long been answering.
+        # Send each ready instance one tiny request now, in parallel, so a user's first
+        # request does not pay for it.
+        if [ -n "$ready_addrs" ]; then
+            echo
+            echo "=== warming up each instance (first request compiles kernels)"
+            for e in $ready_addrs; do
+                (
+                    t0=$(date +%s)
+                    code=$(curl -s -m 900 -o /dev/null -w '%{http_code}' "http://${e#*=}/v1/completions" \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"model\":\"$MODEL_NAME\",\"prompt\":\"hello\",\"max_tokens\":1}" < /dev/null)
+                    printf '  %-10s %s  warm-up -> %s in %ss\n' "${e%%=*}" "${e#*=}" "$code" "$(( $(date +%s) - t0 ))"
+                ) &
+            done
+            wait
+        fi
     fi
 fi
 
@@ -178,24 +197,23 @@ cat "$SB_TMP" > generated/session_base.conf && rm -f "$SB_TMP"
 # The ports, before starting: with host networking these bind here directly, and a
 # port already taken means nginx fails to bind and the container exits -- visible
 # otherwise only as a container that will not stay up.
-# Skipped while this deployment's own openresty is running: a re-apply (change .env,
-# run ./up.sh again) finds the ports held by its own openresty and CART.
-if ! $COMPOSE ps --status running --services 2>/dev/null | grep -qx openresty; then
-    busy=""
-    # An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
-    # the check wants the port part.
-    for p in "${GATEWAY_PORT:-8080}" "${CART_PORT:-8071}"; do
-        p=${p##*:}
-        case "$p" in ''|*[!0-9]*) continue ;; esac   # an address with no port
-        ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
-    done
-    if [ -n "$busy" ]; then
-        echo "!! port(s) in use on this machine:$busy" >&2
-        for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
-        echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
-        echo "   or change it there. The engines are unaffected either way." >&2
-        exit 1
-    fi
+# Each port is skipped only while this deployment's own service on it is running: a
+# re-apply (change .env, run ./up.sh again) finds them held by its own openresty and
+# CART -- and with one of the two stopped, the other must not count as a stranger.
+running=$($COMPOSE ps --status running --services 2>/dev/null)
+busy=""
+for pair in "openresty:${GATEWAY_PORT:-8080}" "cart:${CART_PORT:-8071}"; do
+    svc=${pair%%:*} p=${pair##*:}   # an address:port value: the check wants the port
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$running" | grep -qx "$svc" && continue
+    ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
+done
+if [ -n "$busy" ]; then
+    echo "!! port(s) in use on this machine:$busy" >&2
+    for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
+    echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
+    echo "   or change it there. The engines are unaffected either way." >&2
+    exit 1
 fi
 # The key directory is mounted whether or not it holds a key file (no file = no
 # authentication). Create it here rather than let docker create it as root.
@@ -273,7 +291,7 @@ else
     echo "  instances  ${n_ready:-0} of ${n_total:-0} ready"
 fi
 echo "  try        curl http://$GW/$ROUTE/v1/chat/completions -H 'Content-Type: application/json' \\"
-echo "               -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
+echo "               -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":256}'"
 if [ "$WAIT" = "1" ] && [ "${SKIP_ENGINES:-0}" != "1" ] && [ "${n_ready:-0}" -lt "${n_total:-0}" ]; then
     echo "!! not every instance is ready; the route serves only the ready ones" >&2
     exit 1
