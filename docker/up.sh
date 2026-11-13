@@ -76,10 +76,14 @@ run_remote() {   # run_remote <ssh target> <local script>
 # Engines this deployment no longer has. A server can be listed under another address
 # (127.0.0.1 vs its own IP, a name vs an address), so before stopping anything its
 # machine-id is compared with the servers still listed, and the same machine is kept.
+# Never fails: an unreachable server (or one without /etc/machine-id) prints nothing,
+# and callers read an empty id as unreachable. Under set -e a failing ssh here would
+# end up.sh silently, after the route was already reloaded and before this run was
+# recorded, so every later run would stop at the same server.
 machine_id() {   # machine_id <target>
-    if is_this_machine "$1"; then cat /etc/machine-id 2>/dev/null
+    if is_this_machine "$1"; then cat /etc/machine-id 2>/dev/null || true
     # shellcheck disable=SC2086
-    else ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$1" 'cat /etc/machine-id' < /dev/null 2>/dev/null; fi
+    else ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$1" 'cat /etc/machine-id' < /dev/null 2>/dev/null || true; fi
 }
 stop_engines() {   # stop_engines <route> <keep-machine-ids> <target>...
     local route=$1 keep=$2 target id stop; shift 2
@@ -87,10 +91,12 @@ stop_engines() {   # stop_engines <route> <keep-machine-ids> <target>...
         id=$(machine_id "$target")
         if [ -z "$id" ]; then echo "    $target: unreachable -- stop engine-$route there yourself"; continue; fi
         case " $keep " in *" $id "*) echo "    $target: still in hosts under another address -- kept"; continue ;; esac
-        stop="CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \$CLI \$NS stop -t 60 engine-$route >/dev/null 2>&1; \$CLI \$NS rm -f engine-$route >/dev/null 2>&1"
+        stop="CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \$CLI \$NS stop -t 60 engine-$route >/dev/null 2>&1; \$CLI \$NS rm -f engine-$route >/dev/null 2>&1; true"
         if is_this_machine "$target"; then bash -c "$stop"
         # shellcheck disable=SC2086
-        else ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" "$stop" < /dev/null; fi
+        elif ! ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" "$stop" < /dev/null; then
+            echo "    $target: could not stop engine-$route -- stop it there yourself"; continue
+        fi
         echo "    $target: engine-$route stopped and removed"
     done
 }

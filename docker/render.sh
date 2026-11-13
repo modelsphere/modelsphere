@@ -49,7 +49,7 @@ MAX_BODY=${MAX_BODY_SIZE:-${CART_MAX_BODY_SIZE:-209715200}}
 RATE_LIMIT=${RATE_LIMIT:-false}
 case "$RATE_LIMIT" in
     true|false) ;;
-    *) echo "render.sh: RATE_LIMIT must be true or false, got '$RATE_LIMIT'" >&2; exit 1 ;;
+    *) die "RATE_LIMIT must be true or false, got '$RATE_LIMIT'" ;;
 esac
 case "$MAX_BODY" in ''|*[!0-9]*) die "MAX_BODY_SIZE must be a number of bytes, got '$MAX_BODY'" ;; esac
 # The same name as an nginx variable, which allows only [A-Za-z0-9_].
@@ -72,6 +72,10 @@ NODES_PER_INSTANCE=${NODES_PER_INSTANCE:-1}
 hosts=$(awk '/^[[:space:]]*#/ {next} {sub(/#.*/,"")} NF >= 1 {print $1, ($2 == "" ? $1 : $2)}' "$HOSTS_FILE")
 nhosts=$(echo "$hosts" | grep -c . || true)
 [ "$nhosts" -gt 0 ] || die "$HOSTS_FILE has no machines in it"
+# Each address gets its own generated engine-<address>.sh, so a repeated one would
+# silently overwrite the first and leave one server without an engine.
+dup=$(echo "$hosts" | awk '{print $2}' | sort | uniq -d | tr '\n' ' ')
+[ -z "$dup" ] || die "$HOSTS_FILE lists the same address more than once: $dup"
 
 # Two arithmetic checks. Both failures otherwise surface as something else entirely:
 # a leftover machine silently serves nothing, and a wrong TP x PP makes the engine
