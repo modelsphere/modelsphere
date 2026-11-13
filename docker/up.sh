@@ -47,7 +47,8 @@ ROUTE=$(cat generated/route)
 # The compose project is named after it, so deployments of different models on one
 # control machine keep separate routing containers. Project names allow no dots.
 project_of() { printf 'ms-%s' "$1" | tr '.' '-'; }
-COMPOSE="docker compose -p $(project_of "$ROUTE")"
+# --env-file: compose reads ./.env on its own otherwise, whatever ENV_FILE says.
+COMPOSE="docker compose --env-file $ENV_PATH -p $(project_of "$ROUTE")"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac
@@ -58,20 +59,30 @@ is_this_machine() {   # is_this_machine <address>: loopback or one of our own IP
 # TTY in ssh_config (without which non-interactive commands hang), and a forced TTY
 # breaks scp and eats stdin -- `ssh host bash -s < file` then delivers nothing and
 # still exits 0. Inlining avoids the whole class.
-run_remote() {   # run_remote <ssh target> <local script>
-    local target=$1 file=$2 b64
+run_remote() {   # run_remote <ssh target> <local script> [force 0|1]
+    local target=$1 file=$2 force=${3:-${FORCE_ENGINES:-0}} b64
     # A target that is this machine -- loopback, or one of its own addresses -- runs
     # here rather than over ssh to ourselves, which would need root's own key in its
     # authorized_keys for nothing.
-    if is_this_machine "$target"; then bash "$file"; return; fi
+    if is_this_machine "$target"; then FORCE_ENGINES=$force bash "$file"; return; fi
     b64=$(base64 < "$file" | tr -d '\n') || return 1
     # A private temp file on the far side: a fixed /tmp name left behind by another
     # user (root, say) is not writable for this one, and the launch would fail.
     # shellcheck disable=SC2086
     ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \
-        "f=\$(mktemp); echo $b64 | base64 -d > \$f; FORCE_ENGINES=${FORCE_ENGINES:-0} bash \$f; rc=\$?; rm -f \$f; exit \$rc" < /dev/null
+        "f=\$(mktemp); echo $b64 | base64 -d > \$f; FORCE_ENGINES=$force bash \$f; rc=\$?; rm -f \$f; exit \$rc" < /dev/null
 }
 
+# rank_matches <target> <spec>: the engine there is running with that spec label.
+# Never fails under set -e; an unreachable server simply does not match.
+rank_matches() {
+    local cmd got
+    cmd="CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \$CLI \$NS inspect -f '{{.State.Running}} {{index .Config.Labels \"modelsphere.engine-spec\"}}' engine-$ROUTE 2>/dev/null; true"
+    if is_this_machine "$1"; then got=$(bash -c "$cmd")
+    # shellcheck disable=SC2086
+    else got=$(ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$1" "$cmd" < /dev/null 2>/dev/null || true); fi
+    [ "$got" = "true $2" ]
+}
 
 # Engines this deployment no longer has. A server can be listed under another address
 # (127.0.0.1 vs its own IP, a name vs an address), so before stopping anything its
@@ -115,11 +126,26 @@ fi
 
 if [ "${SKIP_ENGINES:-0}" != "1" ]; then
     echo
+    # An instance spanning machines is kept only as a whole: when every rank is running
+    # with the instance's current spec. Otherwise all its ranks are recreated together
+    # -- one rank restarted alone would wait at the rendezvous for the others forever.
+    # (A single-machine instance's own script makes that call for itself.)
+    recreate=""
+    if [ "${NODES_PER_INSTANCE:-1}" -gt 1 ] && [ "${FORCE_ENGINES:-0}" != 1 ]; then
+        while read -r target script instance role; do
+            [ -n "${target:-}" ] || continue
+            case " $recreate " in *" $instance "*) continue ;; esac
+            want=$(sed -n 's/^SPEC=//p' "generated/$script")
+            rank_matches "$target" "$want" || recreate="$recreate $instance"
+        done < generated/manifest
+    fi
     echo "=== engines (one machine at a time)"
     while read -r target script instance role; do
         [ -n "${target:-}" ] || continue
         echo "---- $instance / $target ($role)"
-        if ! run_remote "$target" "generated/$script"; then
+        force=${FORCE_ENGINES:-0}
+        case " $recreate " in *" $instance "*) force=1 ;; esac
+        if ! run_remote "$target" "generated/$script" "$force"; then
             echo "!! $target did not start. The rest of $instance is pointless without it -- fix this first." >&2
             exit 1
         fi

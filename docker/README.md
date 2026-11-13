@@ -205,9 +205,15 @@ new configuration.
 | Limits, or adding GPU servers | They continue. Only the new GPU servers start |
 | Removing GPU servers from `hosts` | They continue on the other servers. The removed servers' engines are stopped once the route no longer sends them traffic |
 | The model name or the route name | They are cut. The previous engines are removed first, because the new ones need the same ports |
-| Engine flags, `TP`/`PP` or the image | They are cut on the GPU servers whose engine changed, because those engines are recreated |
+| Engine flags, `TP`/`PP` or the image | They are cut on the instances whose engine changed, because those engines are recreated |
 | `MAX_BODY_SIZE` | They are cut for requests that pass through CART, because `up.sh` restarts CART: a reload only re-reads its worker list |
+| `GATEWAY_PORT` or `CART_PORT` | Make sure the new port is free first. `up.sh` does not check ports that this deployment already holds, so a port taken by something else shows up only as a failed reload |
 | Restarting every engine | Run `FORCE_ENGINES=1 ./up.sh` |
+
+An instance that spans GPU servers is kept or recreated as a whole. `up.sh` keeps it
+only when the engine on every one of its servers is running with an unchanged
+configuration. Otherwise it recreates all of them, because one server restarted alone
+cannot rejoin the others.
 
 ### Authentication
 
@@ -223,6 +229,11 @@ echo 'sk-one:team-a,sk-two:team-b' > keys/keys
 After that, every request must send `Authorization: Bearer <key>`. Running `./up.sh`
 again reloads the keys without a restart, so you can add a new key next to the old one
 before you remove the old one. The `/<route>/_*` status endpoints never require a key.
+
+The keys protect only the gateway. Each engine also listens on `ENGINE_PORT` on every
+interface of its GPU server, without authentication, so anyone who can reach that port
+can call the engine directly. Keep `ENGINE_PORT` reachable only from the control machine
+and the other GPU servers.
 
 ## Troubleshooting
 

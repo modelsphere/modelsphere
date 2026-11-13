@@ -208,11 +208,14 @@ render_engine() {   # render_engine <ssh target> <data addr> <rank> <leader data
     # A fingerprint of everything that defines this container, carried as a label, so a
     # re-run of ./up.sh leaves an engine that is running with this exact spec alone --
     # adding a machine then starts only the new one instead of reloading every instance.
-    # Not for an instance spanning machines: its ranks share a rendezvous, so restarting
-    # one alone leaves it waiting -- those are always recreated together.
-    local spec keep=1
+    # For an instance spanning machines the label is the INSTANCE's fingerprint, filled
+    # in below once all its ranks are rendered: the ranks share a rendezvous, so they
+    # are kept or recreated together, never one alone. up.sh checks every rank of such
+    # an instance before starting any of it.
+    local spec
     spec=$(printf '%s\n' "$ENGINE_IMAGE" "$MODEL_PATH" "$ROUTE" "$ENGINE" "$docker_flags" "$pre" "$engine_cmd" | cksum | cut -d' ' -f1)
-    [ "$NODES_PER_INSTANCE" -gt 1 ] && keep=0
+    rank_spec=$spec
+    [ "$NODES_PER_INSTANCE" -gt 1 ] && spec=__INSTANCE_SPEC__
 
     cat > "$OUT/engine-$addr.sh" <<SCRIPT
 #!/usr/bin/env bash
@@ -234,7 +237,7 @@ mkdir -p "\$HOME/.cache-$ROUTE-$ENGINE"
 
 # Unchanged and running: keep it (FORCE_ENGINES=1 recreates it anyway).
 SPEC=$spec
-if [ "$keep" = 1 ] && [ "\${FORCE_ENGINES:-0}" != 1 ] && \
+if [ "\${FORCE_ENGINES:-0}" != 1 ] && \
    [ "\$(\$CLI \$NS inspect -f '{{.State.Running}} {{index .Config.Labels "modelsphere.engine-spec"}}' "\$NAME" 2>/dev/null)" = "true \$SPEC" ]; then
     echo "\$NAME unchanged and running -- kept"
     exit 0
@@ -274,6 +277,7 @@ workers=""
 rank=0
 instance=1
 leader=""
+inst_specs=""; inst_files=""
 while read -r target addr; do
     [ -n "${target:-}" ] || continue
     [ -n "$leader" ] || leader=$addr          # first machine of this instance
@@ -291,13 +295,23 @@ while read -r target addr; do
         echo "$target engine-$addr.sh i$instance rank$rank" >> "$OUT/manifest"
     fi
 
+    inst_specs="$inst_specs $rank_spec"; inst_files="$inst_files $OUT/engine-$addr.sh"
     rank=$(( rank + 1 ))
     if [ "$rank" -ge "$NODES_PER_INSTANCE" ]; then
+        if [ "$NODES_PER_INSTANCE" -gt 1 ]; then
+            # One fingerprint for the instance: any rank's change changes all labels.
+            ispec=$(printf '%s\n' $inst_specs | cksum | cut -d' ' -f1)
+            for f in $inst_files; do
+                sed "s/__INSTANCE_SPEC__/$ispec/" "$f" > "$f.tmp" && mv "$f.tmp" "$f" && chmod +x "$f"
+            done
+        fi
+        inst_specs=""; inst_files=""
         rank=0; leader=""; instance=$(( instance + 1 ))
     fi
 done <<< "$hosts"
 
 #################################### the route ####################################
+cart_cap=$(( ${MAX_CONCURRENCY:-100} * (instance - 1) ))
 # Peers carry a priority and the router uses the highest tier that still has healthy
 # members: CART at 1, the engines at 0. A CART that is down or still starting
 # therefore costs cache affinity, not the model.
@@ -333,7 +347,8 @@ server {
                     -- the default probe would keep this peer "healthy" and the route
                     -- would never fall through to the engines below it. The engines
                     -- keep the default probe (/v1/models).
-                    {"127.0.0.1", ${CART_PORT:-8071}, "cart", 1, ${MAX_CONCURRENCY:-100}, probe = "/health"},
+                    -- CART's cap is every instance's worth: it fans out to all of them.
+                    {"127.0.0.1", ${CART_PORT:-8071}, "cart", 1, $cart_cap, probe = "/health"},
 $peers                },
                 -- The master switch for the three load-based 429s (concurrency, TTFT,
                 -- decode rate). Off, those requests are let through; the measurements

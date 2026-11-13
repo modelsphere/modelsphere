@@ -13,17 +13,22 @@ cd "$(dirname "$0")"
 ENV_FILE=${ENV_FILE:-.env}
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 [ -f "$ENV_PATH" ] || { echo "status: no $ENV_FILE" >&2; exit 2; }
-[ -f generated/manifest ] \
-    || { echo "status: no generated/manifest -- nothing has been deployed from this directory; run ./up.sh" >&2; exit 2; }
 set -a; . "$ENV_PATH"; set +a
-# The route name render.sh settled on. Read, not re-derived: a second copy of the
-# derivation could drift from render.sh's. (down.sh renders when it is missing; this
-# script stays read-only and asks instead.)
-[ -f generated/route ] \
-    || { echo "status: no generated/route -- run ./up.sh (or ./render.sh) once to record it" >&2; exit 2; }
-ROUTE=$(cat generated/route)
+# What is deployed: up.sh's record of its last successful run, else the latest render
+# (a run that has not finished yet). Not the render first: ./render.sh alone rewrites
+# it, and a preview of a changed hosts or MODEL_NAME would then report on engines
+# that do not exist. The route is read, not re-derived, so there is one naming rule.
+if [ -f generated/.applied-manifest ] && [ -f generated/.applied-route ]; then
+    MANIFEST=generated/.applied-manifest
+    ROUTE=$(cat generated/.applied-route)
+elif [ -f generated/manifest ] && [ -f generated/route ]; then
+    MANIFEST=generated/manifest
+    ROUTE=$(cat generated/route)
+else
+    echo "status: nothing has been deployed from this directory; run ./up.sh" >&2; exit 2
+fi
 CLI=${CTR_CLI:-docker}
-COMPOSE="docker compose -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
+COMPOSE="docker compose --env-file $ENV_PATH -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
 NS=""; [ "$CLI" = nerdctl ] && NS="--namespace ${CTR_NAMESPACE:-default}"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
@@ -59,7 +64,7 @@ while read -r target script instance role; do
     fi
     case "$state" in serving) n_ready=$(( n_ready + 1 )) ;; running) ;; *) ok=0 ;; esac
     printf '  %-4s %-21s %-12s %s\n' "$instance" "$where" "$state" "$detail"
-done < generated/manifest
+done < "$MANIFEST"
 
 echo "=== routing layer"
 running=$($COMPOSE ps --status running --services 2>/dev/null)

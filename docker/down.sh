@@ -14,16 +14,24 @@ cd "$(dirname "$0")"
 ENV_FILE=${ENV_FILE:-.env}
 GRACE=${GRACE:-60}
 
-[ -f generated/manifest ] || ./render.sh
 # Sourcing needs care: a bare name would be looked up in PATH, and "./$name" breaks
 # an absolute path. ENV_FILE may be either.
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
-# The route name render.sh settled on (ROUTE, or derived from MODEL_NAME).
-[ -f generated/route ] || ./render.sh
-ROUTE=$(cat generated/route)
+# What is actually deployed: the record up.sh leaves at the end of a successful run.
+# Not generated/manifest and generated/route, which any ./render.sh rewrites -- after
+# previewing a changed hosts or MODEL_NAME they describe what is NOT running. Only
+# without a record (nothing deployed by a recent up.sh) does this fall back to a render.
+if [ -f generated/.applied-manifest ] && [ -f generated/.applied-route ]; then
+    MANIFEST=generated/.applied-manifest
+    ROUTE=$(cat generated/.applied-route)
+else
+    [ -f generated/manifest ] && [ -f generated/route ] || ./render.sh
+    MANIFEST=generated/manifest
+    ROUTE=$(cat generated/route)
+fi
 # The compose project up.sh used for this route (see up.sh).
-COMPOSE="docker compose -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
+COMPOSE="docker compose --env-file $ENV_PATH -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac
@@ -44,7 +52,7 @@ if [ "${SKIP_ENGINES:-0}" != "1" ]; then
             "CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \
              \$CLI \$NS stop -t $GRACE engine-$ROUTE >/dev/null 2>&1; \
              \$CLI \$NS rm -f engine-$ROUTE >/dev/null 2>&1; echo '     removed engine-$ROUTE'" < /dev/null
-    done < generated/manifest
+    done < "$MANIFEST"
 fi
 
 if [ "${KEEP_ROUTER:-0}" != "1" ]; then
