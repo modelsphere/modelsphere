@@ -32,6 +32,8 @@ ModelSphere is an open-source LLM inference platform designed to make production
 
 ## Quick start
 
+The steps below deploy ModelSphere on Kubernetes for production use. To try it out quickly without a Kubernetes cluster, see the [Docker-based deployment guide](docker/README.md).
+
 ### **Prerequisites**
 
 1. a Kubernetes cluster, and `kubectl` pointing at it;
