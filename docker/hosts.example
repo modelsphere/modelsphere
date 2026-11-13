@@ -21,10 +21,14 @@
 #   node-a   10.0.0.11
 ####################################################################################
 
-# With NODES_PER_INSTANCE=1, each of these machines is its own instance and both
-# serve the same route:
-10.0.0.21
-10.0.0.22
+# One machine, the one you run ./up.sh on: 127.0.0.1 makes up.sh/down.sh run the
+# engine here directly, with no ssh to yourself.
+127.0.0.1
+
+# Several machines: replace the line above with one address per machine. With
+# NODES_PER_INSTANCE=1, each is its own instance and all serve the same route:
+# 10.0.0.21
+# 10.0.0.22
 
 # The same two machines where SSH does not go to their data network -- the second
 # column is the address the routers and the other machines of an instance use:

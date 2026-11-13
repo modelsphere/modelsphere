@@ -101,11 +101,39 @@ render_engine() {   # render_engine <ssh target> <data addr> <rank> <leader data
     # DOCKER_FLAGS is the single place extra container arguments come from -- devices,
     # -e, mounts, whatever this hardware needs. There is deliberately no second
     # variable for environment: two places to set -e is two places to look.
-    local docker_flags pre
+    local docker_flags pre bind
     docker_flags=${DOCKER_FLAGS:-}
     docker_flags=${docker_flags//\{HOST\}/$addr}
     pre=${PRE_START:-}
     pre=${pre//\{HOST\}/$addr}
+
+    # What the engine binds its HTTP port to -- an optional override, not in the
+    # examples, which leave it at every interface. The default is every interface, which is
+    # what a private network wants and what makes a multi-machine instance work
+    # without further thought -- but on a machine whose address is reachable from the
+    # internet it publishes an engine that has no authentication of its own, since
+    # authentication lives at the gateway. The engine is not behind the gateway; it is
+    # beside it.
+    #   ENGINE_BIND={HOST}   each engine binds its own data-network address rather
+    #                        than every interface. Do NOT assume this keeps it off
+    #                        the internet: measured on one Ascend 910B4 site, a
+    #                        socket bound to the private data address was reachable
+    #                        from the public IP, because the public address is NATed
+    #                        onto it. Only loopback was unreachable there. Whether a
+    #                        given address is exposed is a property of your network,
+    #                        and the only way to know is to bind a throwaway listener
+    #                        and try to reach it from outside.
+    #   ENGINE_BIND=127.0.0.1  single-machine only, where control and engine are the
+    #                        same box. Peers cannot reach a loopback.
+    bind=${ENGINE_BIND:-0.0.0.0}
+    bind=${bind//\{HOST\}/$addr}
+    # A loopback engine is reachable only from its own machine, so the routers must
+    # address it as 127.0.0.1 and there can be no second machine. Otherwise it loads
+    # for twenty minutes and is then unreachable, with nothing in any log saying why.
+    case "$bind" in 127.*|localhost)
+        [ "$nhosts" = 1 ] && [ "$addr" = 127.0.0.1 ] \
+            || die "ENGINE_BIND=$bind needs exactly one machine, written as 127.0.0.1 in $HOSTS_FILE (as hosts.example has it); got $nhosts machine(s), address $addr" ;;
+    esac
 
     # The engine's own command line. ENGINE_CMD overrides it verbatim, for an image
     # that starts in its own way; the placeholders are the values only render.sh
@@ -123,13 +151,14 @@ render_engine() {   # render_engine <ssh target> <data addr> <rank> <leader data
         engine_cmd=${engine_cmd//\{TP\}/$TP}
         engine_cmd=${engine_cmd//\{PP\}/$PP}
         engine_cmd=${engine_cmd//\{HOST\}/$addr}
+        engine_cmd=${engine_cmd//\{BIND\}/$bind}
     else
 
     case "$ENGINE" in
     sglang)
         engine_cmd="exec python3 -m sglang.launch_server \\
   --model-path /model \\
-  --host 0.0.0.0 --port $ENGINE_PORT \\
+  --host $bind --port $ENGINE_PORT \\
   --served-model-name $MODEL_NAME \\
   --tp $TP${pp_arg:+ $pp_arg}${dist:+ \\
   $dist} \\
@@ -139,7 +168,7 @@ render_engine() {   # render_engine <ssh target> <data addr> <rank> <leader data
   $ENGINE_EXTRA_ARGS}" ;;
     vllm)
         engine_cmd="exec vllm serve /model \\
-  --host 0.0.0.0 --port $ENGINE_PORT \\
+  --host $bind --port $ENGINE_PORT \\
   --served-model-name $MODEL_NAME \\
   --tensor-parallel-size $TP${pp_arg:+ $pp_arg}${dist:+ \\
   $dist}${headless:+ $headless} \\

@@ -80,7 +80,7 @@ fail silently -- the model loads and then hangs at its first collective:
 ```bash
 cd docker
 cp examples/ascend-glm53-flash.env .env  # ls examples/ -- start from the closest one
-cp hosts.example hosts                  # the machines, one address per line
+cp hosts.example hosts                  # this machine; edit it for several
 # edit both, then
 ./up.sh
 ```
@@ -155,17 +155,31 @@ mount and a cache directory are there for every engine already; `DOCKER_FLAGS` i
 what your hardware adds on top. Keep it on one line -- the file is read by the shell
 and by docker compose, and only one of them is relaxed about continuations.
 
+Two consequences of those fixed flags that are easy to miss:
+
+- **`--shm-size` in `DOCKER_FLAGS` does nothing.** `--ipc=host` gives the container the
+  host's own `/dev/shm`, and docker ignores `--shm-size` in that mode -- silently, so a
+  value set there looks applied and is not. The engine's shared memory is whatever the
+  host has, so size it on the host. The tensor-parallel workers talk to each other
+  through it, and too little of it shows up as a hang during startup, not as an error.
+- **There is no CPU or memory limit unless you add one.** The container gets the whole
+  machine. That is usually right for a dedicated engine machine, but it means a figure
+  measured here is not comparable with one measured under a limit: add
+  `--cpus <n> --memory <size>` to `DOCKER_FLAGS` when reproducing a number that was
+  taken that way. A Kubernetes deployment of the same engine normally has both, so this
+  is the difference to check first when the two disagree.
+
 `examples/` holds the worked ones -- `ascend-glm53-flash.env` is a GLM-5.3-Flash
 W8A8 deployment on Ascend 910B4, with the flags, the image and the concurrency cap it
 was benchmarked with. The values below are the shape of each:
 
 ```bash
 # NVIDIA
-ENGINE_IMAGE=lmsysorg/sglang:v0.5.15-cu129
+ENGINE_IMAGE=lmsysorg/sglang:v0.5.23
 DOCKER_FLAGS="--gpus '\"device=0,1,2,3\"' --device /dev/infiniband -e NCCL_SOCKET_IFNAME=bond0 -e GLOO_SOCKET_IFNAME=bond0 -e NCCL_IB_HCA=mlx5_0"
 
-# Ascend NPUs (aarch64; ENGINE=vllm, since SGLang has no NPU build)
-ENGINE_IMAGE=quay.io/ascend/vllm-ascend:v0.23.0
+# Ascend 910B4 / A2 NPUs (aarch64; ENGINE=vllm -- SGLang's NPU images are A3 and 950 only)
+ENGINE_IMAGE=quay.io/ascend/vllm-ascend:v0.30.0rc2
 DOCKER_FLAGS="--runtime /usr/local/Ascend/Ascend-Docker-Runtime/ascend-docker-runtime -e ASCEND_VISIBLE_DEVICES=0-7 -e HCCL_IF_IP={HOST} -e HCCL_SOCKET_IFNAME=bond1 -e TP_SOCKET_IFNAME=bond1"
 PRE_START="printf '%s\n' /usr/local/Ascend/driver/lib64 ... > /etc/ld.so.conf.d/ascend_driver.conf; ldconfig"
 ```

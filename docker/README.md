@@ -69,7 +69,7 @@ model loads, and then the engine hangs at its first collective operation.
 
 ```bash
 cp examples/ascend-glm53-flash.env .env   # ls examples/ for the others
-cp hosts.example hosts                    # your machines, one address per line
+cp hosts.example hosts                    # this machine; edit it for several
 ```
 
 `examples/` holds complete starting points, one per hardware and model that has been

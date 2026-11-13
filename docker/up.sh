@@ -24,12 +24,21 @@ echo "=== render"
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
 
+is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
+    case "$1" in 127.*|localhost) return 0 ;; esac
+    ip -4 -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | grep -qxF "$1"
+}
+
 # One SSH per machine, with the script inlined base64. Not scp: some hosts force a
 # TTY in ssh_config (without which non-interactive commands hang), and a forced TTY
 # breaks scp and eats stdin -- `ssh host bash -s < file` then delivers nothing and
 # still exits 0. Inlining avoids the whole class.
 run_remote() {   # run_remote <ssh target> <local script>
     local target=$1 file=$2 b64
+    # A target that is this machine -- loopback, or one of its own addresses -- runs
+    # here rather than over ssh to ourselves, which would need root's own key in its
+    # authorized_keys for nothing.
+    if is_this_machine "$target"; then bash "$file"; return; fi
     b64=$(base64 < "$file" | tr -d '\n') || return 1
     # shellcheck disable=SC2086
     ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \

@@ -20,14 +20,22 @@ GRACE=${GRACE:-60}
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
 
+is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
+    case "$1" in 127.*|localhost) return 0 ;; esac
+    ip -4 -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | grep -qxF "$1"
+}
+
 if [ "${SKIP_ENGINES:-0}" != "1" ]; then
     while read -r target script instance role; do
         [ -n "${target:-}" ] || continue
         echo "---- stop $instance / $target ($role)"
         # -t: the engine gets that long to finish what it is streaming before it is
         # killed.
+        # A target that is this machine runs here, not over ssh to ourselves (see up.sh).
+        RUN="ssh ${SSH_OPTS:-} ${SSH_USER:-root}@$target"
+        is_this_machine "$target" && RUN="bash -c"
         # shellcheck disable=SC2086
-        ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \
+        $RUN \
             "CLI=${CTR_CLI:-docker}; NS=''; [ \"\$CLI\" = nerdctl ] && NS='--namespace ${CTR_NAMESPACE:-default}'; \
              \$CLI \$NS stop -t $GRACE engine-$ROUTE >/dev/null 2>&1; \
              \$CLI \$NS rm -f engine-$ROUTE >/dev/null 2>&1; echo '     removed engine-$ROUTE'" < /dev/null
