@@ -22,15 +22,15 @@
 #
 # No healthchecks: these images carry the component and nothing else -- no curl, no
 # wget -- so a HEALTHCHECK here would report the shell's failure rather than the
-# service's. Check them from outside instead, with the endpoints in
-# README.md.
-
-name: modelsphere
+# service's. Check them from outside instead, with ./status.sh.
+#
+# No fixed project or container names: up.sh, down.sh and status.sh pass the project
+# name (ms-<route>), so two deployments of different models on one control machine
+# keep separate containers -- each needs its own GATEWAY_PORT and CART_PORT.
 
 services:
   openresty:
     image: ${OPENRESTY_IMAGE:?set OPENRESTY_IMAGE in .env}
-    container_name: ms-openresty
     restart: unless-stopped
     network_mode: host
     volumes:
@@ -50,12 +50,6 @@ services:
       # authentication -- every request is let through and /_health_status reports
       # api_keys_configured=false.
       - ${API_KEYS_DIR:-./keys}:/etc/openresty/api-keys:ro
-    environment:
-      # Empty means body logging is off: nothing is captured and nothing is sent,
-      # with no fallback address. With the bodylog service below, use 127.0.0.1 --
-      # everything here shares the host's network namespace.
-      BODYLOG_LISTENER_HOST: ${BODYLOG_LISTENER_HOST-}
-      BODYLOG_LISTENER_PORT: "9999"
     # nginx's SIGTERM is the fast shutdown that cuts requests mid-stream; the image
     # declares STOPSIGNAL SIGQUIT so stopping drains instead. This is the hard
     # cutoff after it -- size it to the longest response you serve.
@@ -63,7 +57,6 @@ services:
 
   cart:
     image: ${CART_IMAGE:?set CART_IMAGE in .env}
-    container_name: ms-cart
     restart: unless-stopped
     network_mode: host
     volumes:
@@ -75,17 +68,3 @@ services:
       nofile: 65535
     stop_grace_period: 10m
 
-  bodylog:
-    image: ${BODYLOG_IMAGE:?set BODYLOG_IMAGE in .env}
-    container_name: ms-bodylog
-    profiles: ["bodylog"]
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./data/bodylog:/data/bodylog
-    environment:
-      BODYLOG_DIR: /data/bodylog
-      # Loopback only: the records hold whole request and response bodies, and with
-      # host networking the image's 0.0.0.0 default would publish both ports.
-      BODYLOG_HOST: 127.0.0.1
-      BODYLOG_HTTP_HOST: 127.0.0.1

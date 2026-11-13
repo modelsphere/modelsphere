@@ -32,15 +32,8 @@ PALETTE = ["#7EB26D", "#EAB839", "#6ED0E0", "#EF843C", "#E24D42", "#705DA0",
 #  · VAR_SERVICE_ALL —— 带 All 且默认 All。用于【健康总览】和【GPU】,那两个的用途就是一眼看全集群,
 #    默认只剩一个服务的话整张表就废了。
 VAR_SERVICE_TOP = {"name": "service", "type": "query", "datasource": DS,
-                   # and on(service) live: bodylog keeps exporting the counter of a removed
-                   # service, whose rate is 0 but still a series topk returns -- without
-                   # this every service ever deployed stays in the list. 10m = LIVE_WINDOW,
-                   # which is defined further down.
                    "query": {"query": 'query_result(topk(50, sum by(service)('
-                                      'rate(bodylog_requests_total{service!="unknown"}[1h]))'
-                                      ' and on(service) count by(service)(last_over_time('
-                                      'bodylog_service_replicas{service!="unknown"}[10m]))))',
-                             "refId": "sv"},
+                                      'rate(bodylog_requests_total{service!="unknown"}[1h]))))', "refId": "sv"},
                    "regex": '/service="([^"]+)"/', "refresh": 2, "includeAll": False, "multi": True,
                    "sort": 0, "label": "service"}
 VAR_SERVICE_ALL = {"name": "service", "type": "query", "datasource": DS,
@@ -57,19 +50,6 @@ VAR_GPU_SCOPE = {"name": "gpu_scope", "type": "custom", "label": "GPU 范围",
                  "options": [{"text": "按 service", "value": "0", "selected": False},
                              {"text": "全集群", "value": "1", "selected": True}],
                  "current": {"text": "全集群", "value": "1"}, "includeAll": False, "multi": False}
-
-# H3 runs as one release per namespace (a second stack with a replacement text
-# encoder lives alongside the first). Every H3 query below filters on this, and
-# every aggregation keeps the namespace label -- without it `max by (capability,
-# status)` silently merges the stacks and label_replace stamps the result with
-# whichever deployment name is hardcoded.
-H3_NS = 'namespace=~"$namespace"'
-
-VAR_H3_NS = {"name": "namespace", "type": "query", "datasource": DS,
-             "query": {"query": 'label_values(kube_deployment_status_replicas'
-                                '{deployment=~".*minimax-h3-server-.*"}, namespace)', "refId": "ns"},
-             "refresh": 2, "includeAll": True, "allValue": ".*", "multi": True,
-             "current": {"text": "All", "value": "$__all"}, "sort": 1, "label": "namespace"}
 
 panels, _id, _y = [], [1], [0]
 
@@ -196,16 +176,7 @@ def eng(sel):
     # 引擎(sglang/vllm)指标的 service label 是 k8s Service 名(kimi-k25-leader),
     # 跟 bodylog/openresty 的 "<ns>/<name>" 口径不是一套 → 归一:剥 -leader 再拼 namespace/
     #   kimi + kimi-k25-leader  ->  kimi/kimi-k25
-    # Suffixes stripped: -leader on a single-instance release, and
-    # -prefill-hl-s<N> / -decode-hl-s<N> on a prefill/decode-disaggregated one,
-    # whose engines are published through one Service per role. Without the
-    # second form such a release normalises to <ns>/<rel>-prefill-hl-s0, which
-    # no bodylog series matches, so flt()/live()'s `and on(service)` drops it
-    # and every engine panel is blank with nothing logged anywhere. Handled here
-    # rather than by relabeling at scrape time so that one rule covers every
-    # cluster, including those on a chart that predates the fix.
-    strip = ('label_replace(%s, "service", "$1", "service", '
-             '"(.*?)(?:-leader|-(?:prefill|decode)-hl-s[0-9]+)?")') % sel
+    strip = 'label_replace(%s, "service", "$1", "service", "(.*?)(?:-leader)?")' % sel
     return 'label_join(%s, "service", "/", "namespace", "service")' % strip
 
 def flt(expr):
@@ -234,13 +205,7 @@ def live(expr):
 #      (kimi-k25-0-1 --owner--> StatefulSet kimi-k25-0 == leader pod),
 #      拿 kube_pod_owner 搭桥 join 回 ① 拿到 service
 _ENGSEL = '{__name__=~"sglang:num_running_reqs|vllm:num_requests_running"}'
-# Normalise the service label first, then aggregate -- not the other way round. A
-# prefill/decode colocated pod is scraped through two Services (<rel>-prefill-hl-s0 and
-# <rel>-decode-hl-s0) that eng() maps to the same name: aggregated first, the pod's two
-# (namespace,pod,service) series become identical inside label_replace and Prometheus
-# rejects the whole query ("vector cannot contain metrics with the same labelset"),
-# blanking every panel built on POD2SVC. The raw series still differ by instance.
-LEADER2SVC = '(0 * max by(namespace,pod,service)(%s) + 1)' % eng(_ENGSEL)
+LEADER2SVC = '(0 * %s + 1)' % eng('max by(namespace,pod,service)(%s)' % _ENGSEL)
 WORKER2SVC = ('max by(namespace,pod,service)(\n'
               '  label_replace(kube_pod_owner{owner_kind="StatefulSet"}, "leader_pod", "$1", "owner_name", "(.+)")\n'
               '  * on(namespace,leader_pod) group_left(service)\n'
@@ -308,7 +273,7 @@ TOTAL_OV = [{"matcher": {"id": "byRegexp", "options": ".* 汇总$"},
 
 def eng_panel(agg, metrics):
     # 每个 metric(sglang / vllm 两套名字)出两个 target:
-    #   ① 该 service 的汇总(sum 面板求和 / max 面板取最热实例)—— 常驻
+    #   ① 该 service 的汇总(sum 面板求和 / avg 面板求均值)—— 常驻
     #   ② 每实例(pod)明细 —— 默认【不显示】,顶部「实例明细」下拉切到「显示」才画
     # 明细默认关是因为 modelforge 有 34 个副本,一上来 34 条细线会把汇总线埋掉。
     # 开关同 $gpu_scope 手法:`and on() (vector($eng_pods) == 1)`,为 0 时右侧空 vector,整条 target 消失。
@@ -414,140 +379,19 @@ def hgram(title, base, unit, w, x, desc="", transformations=None, minus=None, in
 # modelforge 17→34、kimi 2→4),表格里则是三口径集体翻倍。
 # avg 而非 max:两个 exporter 读同一份 bodylog,同一个 (service,route) 的值本就相同,
 # avg 取回它自己;真要跑分片双活(各读一部分节点)得先解决数据分片,那时这里也要重新想。
-# The exporter labels these three metrics by role from 0.2.13 on: empty for an ordinary
-# service, and router / prefill / decode for a prefill/decode-disaggregated one.
-# avg by(service, route) was a de-duplication device back when a (service, route) had
-# exactly one series, and the role label turns it into a real mean over the roles, so a
-# disaggregated service reads as the average of its roles rather than as a whole.
-# Measured against the deployed board: desired 6 where it should be 4, and an actual
-# replica count of 5.333. So wherever only one kind is meant to be counted, the role has
-# to be selected in the query rather than attached after aggregating.
-# ROUTER_ONLY matches both the empty label and "router": the former is what the older
-# exporter emits, where this series counted the routers anyway, and the latter is the new
-# one. The empty branch does select a series carrying no role label at all, so this reads
-# the same before and after the upgrade and may be deployed first -- which is also the
-# only safe order, the reverse giving the mean above until this lands.
-ROUTER_ONLY = '|router'
-
-def _repl(metric, filt='service=~"$service",service!="unknown"', role=None):
-    sel = '%s{%s}' % (metric, filt) if role is None else '%s{%s,role=~"%s"}' % (metric, filt, role)
-    per_route = 'avg by(service, route)(%s)' % mrg(sel)
+def _repl(metric, filt='service=~"$service",service!="unknown"'):
+    per_route = 'avg by(service, route)(%s)' % mrg('%s{%s}' % (metric, filt))
     return 'sum by(service)(%s)' % per_route
 
-def repl_ready(filt=None, role=None):
-    return _repl('bodylog_service_replicas_ready', filt or 'service=~"$service",service!="unknown"', role)
+def repl_ready(filt=None):
+    return _repl('bodylog_service_replicas_ready', filt) if filt else _repl('bodylog_service_replicas_ready')
 
-def repl_actual(filt=None, role=None):
-    return _repl('bodylog_service_replicas', filt or 'service=~"$service",service!="unknown"', role)
+def repl_actual(filt=None):
+    return _repl('bodylog_service_replicas', filt) if filt else _repl('bodylog_service_replicas')
 
-def repl_desired(filt=None, role=None):
-    d = _repl('bodylog_service_replicas_desired', filt or 'service=~"$service",service!="unknown"', role)
-    return '(%s\n  or %s)' % (d, repl_actual(filt, role))
-
-# Prefill/decode-disaggregated releases. Their ModelRoute points at the router, so the three replica
-# series above count the router and nothing else: a PD service whose prefill engines are all down
-# still reads 1/1/1 UP. The engines run in one StatefulSet per role, named
-# <release>-<slice>-<hash>-<prefill|decode> (LWS leader sets; multi-node workers end in -<n> and are
-# left out, a group counts once). kube-state-metrics has their spec / ready / current replicas, so
-# the table reads them per role from there, no exporter change. A rollout briefly runs two hashes
-# side by side. Their ready / current replicas are summed, as the router's maxSurge pod is; their
-# desired is not: both StatefulSets' spec.replicas added up would put desired above the role's real
-# target while the new hash comes up, and the service would read degraded on every rollout -- the
-# false alarm health_table divides by desired to avoid. So desired takes the larger of the hashes'
-# per slice (pd_role's hashes="max"), the way the router's desired is its Deployment's spec alone.
-# Two naming assumptions tie a StatefulSet to its service: the release name it starts with is the
-# ModelRoute's name (the chart derives both from one fullname), and the service label is
-# "<namespace>/<that name>". A route renamed through modelRoute.nginx.route breaks the match; the
-# service then falls back to the router-only numbers above (as before this split), never to wrong
-# per-role ones.
-# A role is counted only while its StatefulSet exists. If the DisaggregatedSet never created one
-# (e.g. the LWS controller is down), that role is simply missing here -- the router's own readiness
-# still catches it, since the chart's router does not go ready without an upstream for every role.
-PD_STS = '.+-[0-9]+-[0-9a-f]+-(prefill|decode)'
-SVC_FILT = 'service=~"$service",service!="unknown"'
-
-def pd_role(metric, filt=SVC_FILT, roles="prefill|decode", hashes="sum"):
-    """A kube-state-metrics StatefulSet gauge per (service="<ns>/<release>", role), PD releases only.
-
-    hashes: how one slice's StatefulSets of different hashes (a rollout) combine before slices are
-    summed -- "sum" for ready / current replicas, "max" for spec.replicas.
-    """
-    sts_re = PD_STS.replace("(prefill|decode)", "(%s)" % roles)
-    sts = 'max by(namespace, statefulset)(%s{statefulset=~"%s"})' % (metric, sts_re)  # max: dedupe KSM replicas
-    tagged = ('label_join(label_replace(label_replace(label_replace(%s,\n'
-              '    "rel", "$1", "statefulset", "(.+)-[0-9]+-[0-9a-f]+-(?:prefill|decode)"),\n'
-              '    "role", "$1", "statefulset", ".+-(prefill|decode)"),\n'
-              '    "slice", "$1", "statefulset", ".+-([0-9]+)-[0-9a-f]+-(?:prefill|decode)"),\n'
-              '    "service", "/", "namespace", "rel")') % sts
-    return ('(sum by(service, role)(%s by(service, role, slice)(%s))\n'
-            '  and on(service) count by(service)(bodylog_service_replicas{%s}))'
-            % (hashes, tagged, filt))
-
-def pd_set(filt=SVC_FILT):
-    return 'count by(service)(%s)' % pd_role('kube_statefulset_replicas', filt)
-
-def child_rows(expr):
-    """(service, role) -> one series per role, named "<service> · <role>" (sorts right under its service)."""
-    return 'sum by(service)(label_join(%s, "service", " · ", "service", "role"))' % expr
-
-def repl_rows(filt=None, wrap=lambda e: e):
-    """Replica series with PD services handled, for the health table and the two history panels.
-
-    A non-PD service always keeps its one series. For a PD service:
-      ready / desired   replica history: one series per role, "<service> · <role>"
-      ratio             status timeline: ready / desired (capped at 1) per role, plus one under
-                        the service's own name for its worst role
-      *_total           table: one row, the sum over roles (state_total: the worst role's state,
-                        0 DOWN / 1 degraded / 2 UP)
-      per_role(role)    table's P / D / R columns: that role's ready count, see PD_SHORT_MAPPINGS
-    wrap() is applied while the service label is still the service's own name (live() matches
-    on it), before roles are renamed.
-    """
-    f = filt or SVC_FILT
-    R, D, T = repl_ready(filt), repl_desired(filt), repl_actual(filt)
-    # The router's own counts, for the PD branches below. Role-filtered rather than
-    # taken from R/D: those aggregate every role the service has, so once the
-    # exporter labels them, a PD service's "router" count would be the mean of
-    # router, prefill and decode (measured: 0, 2, 1 -> 1 where the answer is 0).
-    # R/D/T stay unfiltered -- they are the non-PD branch, where role is always "".
-    Rr, Dr, Tr = repl_ready(filt, ROUTER_ONLY), repl_desired(filt, ROUTER_ONLY), repl_actual(filt, ROUTER_ONLY)
-    pds = pd_set(f)
-    router = lambda e: 'label_replace((%s) and on(service) %s, "role", "router", "", "")' % (e, pds)
-    rr = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas_ready', f), router(Rr)))
-    rd = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_replicas', f, hashes="max"), router(Dr)))
-    ra = wrap('(%s\n  or %s)' % (pd_role('kube_statefulset_status_replicas', f), router(Tr)))
-    plain = lambda e: wrap('(%s unless on(service) %s)' % (e, pds))
-    def split(svc_expr, role_expr, worst=False):
-        out = '%s\n  or %s' % (plain(svc_expr), child_rows(role_expr))
-        return out + ('\n  or min by(service)(%s)' % role_expr if worst else '')
-    st = lambda r, d: '((%s > bool 0) + (%s >= bool %s))' % (r, r, d)
-    rt = lambda r, d: 'clamp_max((%s) / clamp_min(%s, 1), 1)' % (r, d)
-    # One row per service (the table): a PD service's replicas are its roles' sum, its state the
-    # worst role's, and per_role(role) gives that role's own ready count for the P / D / R columns.
-    total = lambda svc_expr, role_expr: '%s\n  or sum by(service)(%s)' % (plain(svc_expr), role_expr)
-    def per_role(role):
-        if role == "router":
-            r, d = router(Rr), router(Dr)
-        else:
-            r = pd_role('kube_statefulset_status_replicas_ready', f, role)
-            d = pd_role('kube_statefulset_replicas', f, role, hashes="max")
-        r, d = 'sum by(service)(%s)' % wrap(r), 'sum by(service)(%s)' % wrap(d)
-        # Short of desired but not zero -> 0.1 below the count: shown with 0 decimals the number reads
-        # the same, and a range mapping colours it orange (PD_SHORT_MAPPINGS); 0 is red, the rest green.
-        return '%s - 0.1 * ((%s < bool %s) * (%s > bool 0))' % (r, r, d, r)
-    return {
-        "ready": split(R, rr), "desired": split(D, rd),
-        "ratio": split(rt(R, D), rt(rr, rd), worst=True),
-        "ready_total": total(R, rr), "desired_total": total(D, rd), "actual_total": total(T, ra),
-        "state_total": '%s\n  or min by(service)(%s)' % (plain(st(R, D)), st(rr, rd)),
-        "per_role": per_role,
-    }
-
-# Cell colours for the P / D / R columns (see per_role): 0 red, "n - 0.1" (short of desired) orange,
-# anything else green. Grafana colours a cell by its own value only, so the shortfall rides in the value.
-PD_SHORT_MAPPINGS = [{"type": "value", "options": {"0": {"color": "red", "index": 0}}}] + [
-    {"type": "range", "options": {"from": n - 0.15, "to": n - 0.05, "result": {"color": "orange", "index": n}}}
-    for n in range(1, 33)]   # a role with more than 32 replicas just stays green when short
+def repl_desired(filt=None):
+    d = _repl('bodylog_service_replicas_desired', filt) if filt else _repl('bodylog_service_replicas_desired')
+    return '(%s\n  or %s)' % (d, repl_actual(filt))
 
 def up_panel():
     # 值 = 就绪比例 ready/【期望】(0~1,percentunit 显示成 50%),这样 tooltip 能看出【降级程度】
@@ -556,8 +400,8 @@ def up_panel():
     # 颜色仍是三色:0=红 / (0,1)=橙 / 1=绿,靠 thresholds 分段;0 和 1 另配文案。
     # min(...,1):扩容中实际就绪短暂超过期望时(缩容窗口内旧副本仍就绪)比值会 >1,
     # 不夹住会掉出 mapping 的 [0,1] 区间 → 既不绿也不橙,染成 thresholds 的兜底色。
-    # PD services: one timeline per role plus the service's own (its worst role), see repl_rows.
-    ratio = repl_rows()["ratio"]
+    R = repl_ready()
+    ratio = 'clamp_max((%s) / clamp_min(%s, 1), 1)' % (R, repl_desired())
     statetimeline("历史服务状态(绿=全就绪 / 橙=部分就绪 / 红=无就绪)", ratio, "{{service}}", w=24, x=0,
                   unit="percentunit",
                   # 颜色用 range/value mapping 显式指定,不靠 thresholds:
@@ -590,18 +434,10 @@ def replicas_panel():
     # 「ready 有没有掉到 desired 之下」淹掉。实际数在表格里仍有一列,要对 surge 去那儿看。
     # 每个 service 现拼一次 filter 再取两口径。不用「先建带 %s 的模板、后 % 代入」——
     # repl_desired 里有 `or` 回退,模板会含两个 %s,单参数代入直接报错。
-    # PD services draw one desired/ready pair per role ("<service> · prefill desired" ...), see
-    # repl_rows; live() is applied before the role rename, while the label is still the service's.
-    # desired and ready go out as ONE query told apart by a z_kind label: Prometheus sorts a range
-    # result by label set, service before z_kind, so each series' desired and ready come back next to
-    # each other and the tooltip lists them as adjacent rows. Two queries would list every desired
-    # first and every ready after (Grafana keeps query order), which split each pair far apart.
     def pair(sel):
         f = 'service=~"$service",service!="unknown",' + sel
-        rows = repl_rows(f, wrap=live)
-        both = ('label_replace(%s, "z_kind", "desired", "", "")\n  or label_replace(%s, "z_kind", "ready", "", "")'
-                % (rows["desired"], rows["ready"]))
-        return [(both, '{{service}} {{z_kind}}')]
+        return [(live(repl_desired(f)), '{{service}} desired'),
+                (live(repl_ready(f)), '{{service}} ready')]
     tg = []
     for svc in SERVICES:
         tg += pair('service="%s"' % svc)
@@ -745,42 +581,21 @@ def build_main():
     # calib 是 cache-sim 的口径版本,变了就是新序列,用 $calib 锁定当前那批。
     CS = 'service=~"$service",service!="unknown",calib="$calib"'
     CS_DEN = 'clamp_min(sum by(service)(rate(cachesim_prompt_tokens_total{%s}[$__rate_interval])),0.001)' % CS
-    # The two lines come from different sources on purpose. cache-sim is a
-    # separate service and most clusters do not run it; while it is absent BOTH
-    # lines used to vanish, taking the measured number along with the modelled
-    # one and leaving a panel that reads as "no cache hits" rather than "no
-    # simulator". The actual line now comes from bodylog, which exists wherever
-    # the gateway does, so the panel degrades to one line instead of none.
-    #
-    # The cost is that they no longer share a denominator. cache-sim counts only
-    # the requests it can replay -- 200, usage present, not truncated, model
-    # known to it -- while bodylog counts them all; the measured difference is
-    # 0.2-0.4pp, against a gap between the lines that runs to tens of points. A
-    # line that is always there is worth that, but the comparison is no longer
-    # exact arithmetic over one population, and a difference of under half a
-    # point should not be read as signal.
-    _ACT_N = mrg('rate(bodylog_cached_tokens_total{%s}[$__rate_interval])' % SVC)
-    _ACT_D = mrg('rate(bodylog_prompt_tokens_total{%s}[$__rate_interval])' % SVC)
     ts("缓存命中率(cached / prompt tokens)",
        [('sum by(service)(rate(cachesim_theoretical_cached_tokens_total{%s}[$__rate_interval])) / %s' % (CS, CS_DEN),
          "{{service}} 理论最大"),
-        ('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_ACT_N, _ACT_D),
+        ('sum by(service)(rate(cachesim_actual_cached_tokens_total{%s}[$__rate_interval])) / %s' % (CS, CS_DEN),
          "{{service}} 实际")],
        unit="percentunit", w=8, x=16, minv=0, maxv=1, transformations=STRIP_SVC,
        overrides=[{"matcher": {"id": "byRegexp", "options": ".*理论最大"},
                    "properties": [{"id": "custom.lineStyle", "value": {"dash": [10, 10], "fill": "dash"}},
                                   {"id": "custom.fillOpacity", "value": 0}]}],
-       desc="两条线,**分母不同,不要当成同一批请求的精确差**:\n"
-            "· 实际:bodylog 记的 usage.prompt_tokens_details.cached_tokens / prompt_tokens —— "
-            "网关侧全量,没部署 cache-sim 的集群也有这条线;\n"
+       desc="两条线,**共用同一个分母**(后端真实 prompt_tokens),所以可以直接比大小:\n"
+            "· 实际:cache-sim 记录的后端真实 cached_tokens;\n"
             "· 理论最大:同一批请求在「无多实例打散 / 无驱逐」的理想前缀缓存里重放算出的上界。\n"
-            "两者的差 ≈ 路由打散 + 驱逐吃掉的部分;理论低于实际说明口径或渲染有问题,不是好事。\n\n"
-            "**理论那条只统计** 200 + 有 usage + 未截断 + cache-sim 认识的模型(覆盖率见 cachesim_skipped_total),"
-            "实际那条是全量 —— 两者口径差 0.2–0.4pp,所以半个点以内的差别不是信号。"
-            "cache-sim 没部署时只剩实际那条,这是预期行为不是故障。"
-            "calib 是 cache-sim 的口径版本,变了就是新序列,故用 $calib 锁定当前那批。\n\n"
-            "⚠️ 实际那条含**跨实例传输**:vllm 的 cached_tokens 文档定义是 local + external,"
-            "PD 分离下 decode 收到的 KV 会被计入,所以它不等于前缀缓存命中率 —— 那个看「引擎 cache 命中率」。")
+            "两者的差 = 路由打散 + 驱逐吃掉的部分;理论低于实际说明口径或渲染有问题,不是好事。\n\n"
+            "只统计 200 + 有 usage + 未截断 + cache-sim 认识的模型,覆盖率见 cachesim_skipped_total"
+            "(实测与 bodylog 全量口径差 0.2–0.4pp)。calib 是口径版本,变了就是新序列,故用 $calib 锁定当前那批。")
     _y[0] += 8
     # TPM / RPM:速率 × 60 换算成「每分钟」。× 60 与窗口大小无关 —— rate() 返回的就是每秒值,
     # 乘 60 即每分钟;窗口只决定平滑程度。(曾经写死 [1m] 并把理由记成「换算成每分钟」,是误解。)
@@ -819,30 +634,10 @@ def build_main():
                "归一后对不上活服务的历史名(如 kimi-sglang-sglang-svc)自动消失。"
                "默认只画该 service 的汇总(粗实线);顶部「实例明细」切到【显示】后,每个后端 pod 再各画一条细虚线,用来看实例间倾斜/掉队。"
                "图例是表格,列当前值/峰值,可点表头排序。")
-    # vLLM renamed this gauge when the V1 engine landed: gpu_cache_usage_perc ->
-    # kv_cache_usage_perc. Both are queried because a fleet can be mid-upgrade,
-    # and whichever name an engine does not export simply yields no series.
-    # Measured on a cluster running vLLM 0.30: gpu_cache_usage_perc had 0 series
-    # across every vLLM release there while kv_cache_usage_perc had one per
-    # instance -- this panel had been empty for every vLLM service without anyone
-    # noticing, because an empty panel and an idle service look alike.
-    # max, not avg. This gauge has a hard ceiling, so the question it answers is
-    # "how much headroom is left", and the answer is the hottest instance: the
-    # first one to reach 100% is what bounds the service. An average dilutes it
-    # -- 34 replicas with one wedged at 95% average out near idle, and on a
-    # prefill/decode-disaggregated release the two roles differ by more than 2x
-    # (measured: prefill 11-17%, decode 28-30%), so their mean describes neither
-    # while max lands on the decode side that actually binds. Skew in the other
-    # direction is what the per-instance toggle is for.
-    ts("KV / token_usage 占用(最热实例)",
-       eng_panel("max", ["sglang:token_usage",
-                         "vllm:gpu_cache_usage_perc", "vllm:kv_cache_usage_perc"]),
+    ts("KV / token_usage 占用",
+       eng_panel("avg", ["sglang:token_usage", "vllm:gpu_cache_usage_perc"]),
        unit="percentunit", w=8, x=0, minv=0, maxv=1, overrides=TOTAL_OV, legend_calcs=LEGEND_CALCS, linestyle=DASH,
-       desc="sglang token_usage / vllm kv_cache_usage_perc(旧名 gpu_cache_usage_perc,两者都查)(0-1)。"
-            "**汇总线 = 该 service 实例中的最高值**,不是均值 —— 这是个有硬顶的量,要看的是余量,"
-            "而先到 100% 的那个实例才是约束。均值会把它冲淡(34 副本里一个卡在 95%,平均下来接近空闲);"
-            "PD 分离部署下 prefill 与 decode 占用差一倍以上,max 会落在真正受限的 decode 侧。"
-            "反方向的倾斜(某实例特别闲)看「实例明细」。" + ENGDESC)
+       desc="sglang token_usage / vllm gpu_cache_usage_perc(0-1)。汇总线 = 该 service 所有实例均值。" + ENGDESC)
     # 运行中 / 等待中 合成一张:两者是同一队列的两端(在跑 vs 排队),分开看要来回扫视,
     # 而且 num_queue 平时恒 0、单独占一格浪费。合并后「等待中抬头而运行中压顶」= 后端打满。
     _run = ["sglang:num_running_reqs", "vllm:num_requests_running"]
@@ -860,61 +655,16 @@ def build_main():
     # ⚠️ 不能用 avg(sglang:cache_hit_rate):那是【瞬时比率】,空闲 pod 报 0,
     #    实测 modelforge 40 个 pod 里 37 个是 0,一平均把 59% 稀释成 5.96%(差 10 倍)。
     #    正确口径是 token 加权:sum(cached_tokens)/sum(prompt_tokens),分子分母各自先求和再相除。
-    # One (hits, queries) pair per engine, both already counted in TOKENS, so the
-    # ratio is token-weighted without further work. vLLM's pair was missing, which
-    # left this panel blank on any vLLM-only cluster -- and since an empty panel
-    # and an engine with no cache traffic look the same, nobody noticed.
-    #
-    # vLLM's LOCAL pair is the analogue of sglang's: `prefix_cache_hits_total`
-    # counts tokens served from this engine's own radix tree. The separate
-    # `external_prefix_cache_*` pair counts tokens a KV connector brought in from
-    # another instance and is deliberately NOT folded in here: on a
-    # prefill/decode-disaggregated release the decode side receives nearly every
-    # prompt that way, so adding it would read as a ~100% local hit rate and hide
-    # whether prefix reuse is working at all.
-    #
-    # That exclusion is also what separates this panel from the bodylog one next
-    # to it. bodylog records the response's usage.prompt_tokens_details, which
-    # vLLM documents as "local + external" -- the user-visible saving. Engine-side
-    # local reuse and user-visible saving are different questions; keep both.
-    #
-    # The decode half of a disaggregated release is excluded. It is handed KV per
-    # request rather than matching a prompt against its own tree, so its local
-    # hits can never be anything but zero while its queries still land in the
-    # denominator -- the published rate would then move with the prefill:decode
-    # ratio instead of with how well the cache is doing. Measured on a 2P1D
-    # release replaying one prompt: each prefill reported 4224/4307 = 98.1%,
-    # which is the number worth drawing, and the decode side 0/0.
-    #
-    # Matched on the service label BEFORE eng() normalises it away, using the
-    # same `<rel>-<role>-hl-s<N>` naming the suffix strip already relies on, so
-    # it adds no coupling that was not there -- if that naming ever changes, both
-    # break together rather than this one going quietly wrong. PromQL anchors
-    # regex matchers, so a single-instance release whose own name happens to end
-    # that way is still safe: its service carries a -leader suffix, and the
-    # pattern has to match the label in full.
-    NO_DECODE = 'service!~".*-decode-hl-s[0-9]+"'
-    _ENG_CACHE = [('sglang:cached_tokens_total', 'sglang:prompt_tokens_total'),
-                  ('vllm:prefix_cache_hits_total', 'vllm:prefix_cache_queries_total')]
-    _cache_tg = []
-    for _h, _q in _ENG_CACHE:
-        _cn = eng('rate(%s{%s}[$__rate_interval])' % (_h, NO_DECODE))
-        _cd = eng('rate(%s{%s}[$__rate_interval])' % (_q, NO_DECODE))
-        _cache_tg.append((flt('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_cn, _cd)),
-                          "{{service}} 汇总"))
-        _cache_tg.append(('%s\n  and on() (vector($eng_pods) == 1)'
-                          % flt('sum by(service,pod)(%s) / clamp_min(sum by(service,pod)(%s), 0.001)'
-                                % (_cn, _cd)), "{{pod}}"))
-    ts("引擎 cache 命中率(token 加权)", _cache_tg,
+    _cn = eng('rate(sglang:cached_tokens_total[$__rate_interval])')
+    _cd = eng('rate(sglang:prompt_tokens_total[$__rate_interval])')
+    ts("引擎 cache 命中率(token 加权)",
+       [(flt('sum by(service)(%s) / clamp_min(sum by(service)(%s), 0.001)' % (_cn, _cd)), "{{service}} 汇总"),
+        ('%s\n  and on() (vector($eng_pods) == 1)'
+         % flt('sum by(service,pod)(%s) / clamp_min(sum by(service,pod)(%s), 0.001)' % (_cn, _cd)), "{{pod}}")],
        unit="percentunit", w=8, x=16, minv=0, maxv=1, overrides=TOTAL_OV, legend_calcs=LEGEND_CALCS, linestyle=DASH,
-       desc="命中前缀缓存的 prompt token 占比(sum(hits)/sum(queries),按 token 量加权)。"
-            "sglang 取 cached_tokens/prompt_tokens,vllm 取 prefix_cache_hits/prefix_cache_queries —— "
-            "两者都是 token 计数,引擎没导出的那套自然没有序列。"
+       desc="命中前缀缓存的 prompt token 占比(sum(cached)/sum(prompt),按 token 量加权)。"
             "不是各 pod 命中率的平均 —— 空闲 pod 的瞬时命中率是 0,直接平均会把结果稀释十倍。"
-            "**只算本地命中**:KV connector 跨实例传来的 token 走 external_prefix_cache_*,不计入,"
-            "否则 PD 分离部署的 decode 侧几乎每条 prompt 都来自传输,这条线会恒等于 100%。"
-            "旁边那个 bodylog 口径记的是响应里的 usage(vllm 定义为 local + external,即用户视角省下的量),"
-            "两者问的不是同一个问题,互相印证而不是互相替代。" + ENGDESC + RATE_NOTE)
+            "与「性能」区那个 bodylog 口径的缓存命中率可互相印证(一个是引擎自报,一个是网关记账)。" + ENGDESC + RATE_NOTE)
     _y[0] += 8
     _y[0] += 8
 
@@ -1275,13 +1025,11 @@ def build_gpu():
 def health_table():
     # 每 service 一行:就绪/总数、QPS、错误率、TTFT p95、出词 tok/s(全按 bodylog service 口径,-leader 已并)。
     # 全部剔除 unknown(非真实服务=归因不到 ModelRoute 的请求),三面板同集合
+    R, T, D = repl_ready(), repl_actual(), repl_desired()
     # 2=就绪>=期望 / 1=有就绪但不足期望 / 0=无就绪。
     # 分母用【期望】而非【实际】:实际含 maxSurge surge 出来的新副本,拿它当分母会让
     # 每次滚动更新都把满员的服务染成「降级」(2026-08-27 kimi 的误报就是这么来的)。
-    # PD services stay one row: replicas are the sum over router / prefill / decode, the state is the
-    # worst role's, and the P / D / R columns show each role's ready count (empty for other services).
-    rows = repl_rows()
-    R, T, D, state = rows["ready_total"], rows["actual_total"], rows["desired_total"], rows["state_total"]
+    state = '(%s > bool 0) + (%s >= bool %s)' % (R, R, D)
     # 行门控:只保留近 24h 内副本数 >0 过的 service。ModelRoute/namespace 删除后,openresty 落的
     # bodylog 请求计数器仍冻结在 exporter 内存里持续上报(不随对象删除消失,累计跨天也不重置,
     # 滚天清不掉),会让早已下线的 service 永远以红 DOWN 幽灵行赖在表里。用 max_over_time(...[24h])>0
@@ -1313,9 +1061,6 @@ def health_table():
          "TTFT_p95"),
         ('sum by(service)(%s)' % mrg('rate(bodylog_completion_tokens_total{service=~"$service",service!="unknown"}[1m])') + GATE, "出词tok/s"),
         (state, "状态"),
-        (rows["per_role"]("prefill"), "P"),
-        (rows["per_role"]("decode"), "D"),
-        (rows["per_role"]("router"), "R"),
         # 当前并发 = 引擎侧正在处理的请求数之和。openresty 的 adaptive_cc_conc 也能反映在途并发,
         # 但它缺 auto-scaling-test/kimi-sglang 那条 route(实测只有 2/3 个服务有),引擎侧三个全覆盖。
         # 本 dashboard 没有 $service 变量,所以不能用 flt(),直接 and on(service) 交 bodylog 活服务白名单(GATE)。
@@ -1335,12 +1080,12 @@ def health_table():
     ref = {lbl: "Value #" + chr(65 + i) for i, (_, lbl) in enumerate(qs)}
     rename = dict({v: k for k, v in ref.items()}, service="service")
     # 列顺序(indexByName 要原始字段名,所以过 ref 翻译一次)
-    cols = ["状态", "就绪", "期望", "实际", "P", "D", "R", "重启24h", "QPS", "并发", "错误率", "TTFT_p95", "出词tok/s"]
+    cols = ["状态", "就绪", "期望", "实际", "重启24h", "QPS", "并发", "错误率", "TTFT_p95", "出词tok/s"]
     order = dict({"service": 0}, **{ref[c]: i + 1 for i, c in enumerate(cols)})
     # 列宽:全部列(含 service)定宽。只给数字列定宽的话,service 会自动吃掉所有剩余空间
     # 变得过宽(最长的名字也就 ~34 字符);全定宽后右侧留白,总比第一列拉到半屏强。
     ov = [{"matcher": {"id": "byName", "options": n}, "properties": [{"id": "custom.width", "value": w}]}
-          for n, w in [("service", 300), ("状态", 84), ("就绪", 64), ("期望", 64), ("实际", 64), ("P", 48), ("D", 48), ("R", 48), ("QPS", 104),
+          for n, w in [("service", 300), ("状态", 84), ("就绪", 64), ("期望", 64), ("实际", 64), ("QPS", 104),
                        ("重启24h", 80), ("并发", 72), ("错误率", 88), ("TTFT_p95", 96), ("出词tok/s", 96)]]
     ov += [
         {"matcher": {"id": "byName", "options": "状态"}, "properties": [
@@ -1352,11 +1097,6 @@ def health_table():
             {"id": "custom.cellOptions", "value": {"type": "color-background"}},
             {"id": "thresholds", "value": {"steps": [{"color": "green", "value": None}, {"color": "orange", "value": 0.02}, {"color": "red", "value": 0.05}]}}]},
         {"matcher": {"id": "byName", "options": "TTFT_p95"}, "properties": [{"id": "unit", "value": "s"}]},
-        {"matcher": {"id": "byRegexp", "options": "^(P|D|R)$"}, "properties": [
-            {"id": "decimals", "value": 0},
-            {"id": "custom.cellOptions", "value": {"type": "color-text"}},
-            {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}},
-            {"id": "mappings", "value": PD_SHORT_MAPPINGS}]},
         {"matcher": {"id": "byName", "options": "重启24h"}, "properties": [
             {"id": "custom.cellOptions", "value": {"type": "color-background"}},
             {"id": "thresholds", "value": {"mode": "absolute", "steps": [
@@ -1364,7 +1104,7 @@ def health_table():
         {"matcher": {"id": "byName", "options": "QPS"}, "properties": [{"id": "unit", "value": "reqps"}]},
     ]
     panels.append({"type": "table", "id": nid(), "title": "当前服务健康", "datasource": DS,
-                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。PD 分离服务仍是一行:副本三列 = router+prefill+decode 之和,状态取最差的角色,P/D/R 三列 = 各角色就绪数(绿=满 / 橙=不足期望 / 红=0;prefill/decode 取 kube-state-metrics 的 StatefulSet 副本)。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
+                   "description": "类 monitor 主页:每 service 一行 —— 状态(UP 绿/降级 橙=就绪<期望/DOWN 红)、就绪/期望/实际副本、QPS、并发(引擎侧 num_running 之和)、错误率、TTFT p95、出词速率(bodylog 口径,-leader 已归并)。副本三列:期望=工作负载 spec.replicas(LWS 取 LWS 本身),实际=EndpointSlice 全部(滚动更新时会比期望多出 maxSurge,那是正常 surge 不是降级),就绪=conditions.ready。错误率【只算 5xx】=服务侧错误;4xx 不计(含 400 客户端坏请求 / 499 客户端断连 / 429 限流,非服务健康信号)。>2% 橙 / >5% 红。",
                    "gridPos": {"h": 9, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
                    "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": ov},
                    "transformations": [{"id": "merge", "options": {}},
@@ -1518,18 +1258,13 @@ def h3_status_table():
          (h3-minimax-h3-server-fl2va-0)会匹配成 deployment="h3-minimax-h3-server",
          再加上匹配不上的会归到空名字,表里多出 `?` 和半截名的假行。
     """
-    NS = H3_NS
+    NS = 'namespace="minimax-h3"'
     # 每条查询都必须 sum by (deployment) —— KSM 的原始 series 带着 __name__/container/
     # endpoint/instance/job/pod/uid 一大串标签,各条查询标签集不同,表格的 merge 就 join 不到
     # 同一行:结果是【同一个 deployment 裂成多行】(一行只有"就绪"、另一行只有"期望"),
     # 而且那些标签会全部变成多余的列。聚合掉只剩 deployment,才能合成一行。(踩过)
-    # ⚠️ 必须同时按 deployment 名过滤,不能只靠 namespace:变量选 All 时
-    # namespace=~".*" 匹配所有 namespace,KSM 的通用指标会把全集群上百个
-    # deployment 拉进这张表(回放实测:rook-ceph / cert-manager / network-operator 全来了)。
-    # 过滤用 chart 名 minimax-h3(不带 release 名),两套 release 都匹配得上。
-    H3D = 'deployment=~".*minimax-h3-.*"'
-    R = 'sum by (deployment) (kube_deployment_status_replicas_ready{%s,%s})' % (NS, H3D)
-    D = 'sum by (deployment) (kube_deployment_status_replicas{%s,%s})' % (NS, H3D)
+    R = 'sum by (deployment) (kube_deployment_status_replicas_ready{%s})' % NS
+    D = 'sum by (deployment) (kube_deployment_status_replicas{%s})' % NS
     Z = '(0 * sum by (deployment) (%s))' % R          # 空闲时补 0,见坑 ①
     POD_RE = '[a-f0-9]{8,10}-[a-z0-9]{5}'
     qs = [
@@ -1537,25 +1272,21 @@ def h3_status_table():
         (D, "期望"),
         # 2=就绪>=期望 / 1=有就绪但不足 / 0=全挂。分母用期望而非实际,理由同健康总览。
         ('(%s > bool 0) + (%s >= bool %s)' % (R, R, D), "状态"),
-        ('sum by (deployment) (label_replace(h3_queue_running_on_instance{%s},'
-         ' "deployment", "$1", "h3_instance", "(.*)-[^-]+-[^-]+")) or %s' % (NS, Z), "正在执行"),
-        # deployment 名从 **job** 取,不再拼 "h3-minimax-h3-server-<capability>":
-        # 那个前缀是写死的 release 名,第二套 release 的任务会被记到第一套那一行上。
-        # job 标签就是 Service 名 = Deployment 名(实测两套各自的 job 与 capability 一一对应)。
-        # by 里保留 namespace:否则 max 会跨 namespace 取两套的最大值。
-        ('sum by (deployment) (label_replace(max by (namespace,job,status) '
-         '(h3_queue_tasks{%s,status=~"queued|running"}),'
-         ' "deployment", "$1", "job", "(.*)")) or %s' % (NS, Z), "积压"),
+        ('sum by (deployment) (label_replace(h3_queue_running_on_instance,'
+         ' "deployment", "$1", "h3_instance", "(.*)-[^-]+-[^-]+")) or %s' % Z, "正在执行"),
+        ('sum by (deployment) (label_replace(max by (capability,status) '
+         '(h3_queue_tasks{status=~"queued|running"}),'
+         ' "deployment", "h3-minimax-h3-server-$1", "capability", "(.*)")) or %s' % Z, "积压"),
         # ⚠️ 24h 失败数【不能】用 h3_queue_completed_24h:它带着 job/service 标签、看着像按服务分,
         #    但值是集群级的(每个副本都从共享 PG 读同一份,两个 job 报的是同一个数)——
         #    按 job 拆会把同一批失败在每行各显示一次。只能从 capability 推(实测:capability 推出
         #    fl2va=2 / ref2va 无 series,合计正好等于集群级的 2)。
         #    子查询分辨率给 5m 而不是 1h:1h 的话最近一小时内的失败要等到下个整点才进得来。
-        ('round(sum by (deployment) (label_replace(delta(max by (namespace,job,status) '
-         '(h3_queue_tasks{%s,status="failed"})[24h:5m]),'
-         ' "deployment", "$1", "job", "(.*)"))) or %s' % (NS, Z), "错误24h"),
+        ('round(sum by (deployment) (label_replace(delta(max by (capability,status) '
+         '(h3_queue_tasks{status="failed"})[24h:5m]),'
+         ' "deployment", "h3-minimax-h3-server-$1", "capability", "(.*)"))) or %s' % Z, "错误24h"),
         ('round(sum by (deployment) (increase(label_replace('
-         'kube_pod_container_status_restarts_total{%s,pod=~".*minimax-h3-.*-%s"},'
+         'kube_pod_container_status_restarts_total{%s,pod=~"h3-minimax-h3-.*-%s"},'
          ' "deployment", "$1", "pod", "^(.*)-%s$")[24h:1h]))) or %s' % (NS, POD_RE, POD_RE, Z), "重启24h"),
     ]
     tg = [{"refId": chr(65 + i), "expr": e, "legendFormat": l, "datasource": DS,
@@ -1596,19 +1327,13 @@ def h3_status_table():
                                   "错误24h=过去 24 小时进入 failed 终态的任务数(按能力池拆开,"
                                   "不是集群级的 h3_queue_completed_24h —— 那个按服务拆会重复计数)。"
                                   "router 没有业务指标,这几列恒为 0 属正常。",
-                   # 高度按行数给:每套 release 占 3 行(router/fl2va/ref2va)。h=6 只放得下
-                   # 表头+3 行,第二套 release 上线后表格就得滚动(实拍:6 行只露出 3 行半)。
-                   # Grafana 的 table 没有自适应高度,只能给够:h=10 配 cellHeight=sm
-                   # 约容纳 8 行,够两套半;再加一套要连同下面的 _y[0] 一起调。
-                   "gridPos": {"h": 10, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
+                   "gridPos": {"h": 6, "w": 24, "x": 0, "y": _y[0]}, "targets": tg,
                    "fieldConfig": {"defaults": {"custom": {"align": "auto"}}, "overrides": ov},
                    "transformations": [{"id": "merge", "options": {}},
                        {"id": "organize", "options": {"excludeByName": {"Time": True},
                                                       "renameByName": rename, "indexByName": order}}],
-                   "options": {"showHeader": True, "cellHeight": "sm",
-                               "sortBy": [{"displayName": "工作负载"}]}})
-    # ⚠️ 必须与上面的 gridPos.h 一致:_y[0] 不跟着加,下一排面板会压在这张表上。
-    _y[0] += 10
+                   "options": {"showHeader": True, "sortBy": [{"displayName": "工作负载"}]}})
+    _y[0] += 6
 
 
 
@@ -1659,12 +1384,12 @@ def build_h3():
     #     · 按池:用 `0 * max by(capability)(h3_queue_backend_up)` 兜底 ——
     #       backend_up 每个 capability 恒有,正好提供带正确标签的 0。
     ts("积压任务(按能力池 × 状态)",
-       [('max by (namespace,capability,status) (h3_queue_tasks{%s,status="queued"}) '
-         'or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{%s}), "status", "queued", "", "")' % (H3_NS, H3_NS),
-         "{{namespace}} {{capability}} {{status}}"),
-        ('max by (namespace,capability,status) (h3_queue_tasks{%s,status="running"}) '
-         'or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{%s}), "status", "running", "", "")' % (H3_NS, H3_NS),
-         "{{namespace}} {{capability}} {{status}}")],
+       [('max by (capability,status) (h3_queue_tasks{status="queued"}) '
+         'or label_replace(0 * max by (capability) (h3_queue_backend_up), "status", "queued", "", "")',
+         "{{capability}} {{status}}"),
+        ('max by (capability,status) (h3_queue_tasks{status="running"}) '
+         'or label_replace(0 * max by (capability) (h3_queue_backend_up), "status", "running", "", "")',
+         "{{capability}} {{status}}")],
        w=8, stacking=True,
        desc="**只画 queued/running**:h3_queue_tasks 含历史累计的 succeeded,一起画会被存量压平、"
             "看不出积压。堆叠,所以顶端就是总积压;分组同时按能力池(fl2va 文生视频 / ref2va 参考图)"
@@ -1675,14 +1400,14 @@ def build_h3():
             "这样补出来的 0 标签集与真实 series 一致,图例不会多出没名字的一条。"
             "这张图抬头 = 产能跟不上或有任务卡住。")
     ts("完成量(每 10 分钟)+ 历史累计",
-       [('sum by (namespace,status) (rate(max by (namespace,capability,status) '
-         '(h3_queue_tasks{%s,status=~"succeeded|failed|cancelled"})[$__rate_interval:])) * 600' % H3_NS,
-         "{{namespace}} {{status}}"),
+       [('sum by (status) (rate(max by (capability,status) '
+         '(h3_queue_tasks{status=~"succeeded|failed|cancelled"})[$__rate_interval:])) * 600',
+         "{{status}}"),
         # 累计线:h3_queue_tasks 本身就是累计值,直接画(24h 实测单调、零回退)。
         # 量级与速率差两个数量级(324 vs 0~2),必须挂右轴,否则速率线会被压成一条贴地的直线。
-        ('sum by (namespace,status) (max by (namespace,capability,status) '
-         '(h3_queue_tasks{%s,status=~"succeeded|failed|cancelled"}))' % H3_NS,
-         "{{namespace}} {{status}} 累计")],
+        ('sum by (status) (max by (capability,status) '
+         '(h3_queue_tasks{status=~"succeeded|failed|cancelled"}))',
+         "{{status}} 累计")],
        unit="short", w=8, x=8,
        # ⚠️ interval="10m" 是这张图的关键:任务完成是【稀疏离散事件】(高峰期也才每分钟 2~4 个),
        #   窗口短于 10 分钟时曲线会在 0 和 1 之间高频跳变、糊成一片竖线(2026-09-16 实拍:
@@ -1721,8 +1446,8 @@ def build_h3():
     # 这个**故意不补 0**:0 的含义是「有任务、刚进来 0 秒」,和「根本没有任务」是两回事,
     # 补零等于撒谎(会让"有没有卡住的任务"这个判断失真)。改成在标题里点明空闲即无数据。
     ts("最老任务年龄(空闲时无数据)",
-       [('max by (namespace) (h3_queue_oldest_queued_age_seconds{%s})' % H3_NS, "{{namespace}} 最老排队"),
-        ('max by (namespace) (h3_queue_oldest_running_age_seconds{%s})' % H3_NS, "{{namespace}} 最老运行中")],
+       [('max(h3_queue_oldest_queued_age_seconds)', "最老排队"),
+        ('max(h3_queue_oldest_running_age_seconds)', "最老运行中")],
        unit="s", w=8, x=16,
        desc="没有排队/运行中的任务时**不上报**,所以空闲时是 No data —— 这里**故意不补 0**:"
             "0 表示「有任务、刚进来」,与「没有任务」语义不同,补零会让判断失真。"
@@ -1737,16 +1462,16 @@ def build_h3():
     #     TaskWorker、最多一条在途任务;state=queued 也必然恒 0(一次只提交一个)。
     row("运行与健康")
     ts("各副本正在执行的任务",
-       [('sum by (h3_instance) (h3_queue_running_on_instance{%s})' % H3_NS, "{{h3_instance}}")],
+       [('sum by (h3_instance) (h3_queue_running_on_instance)', "{{h3_instance}}")],
        w=8, desc="每个副本手上正在跑的任务数(单副本最多 1)。既能看负载分布,也能看出谁在干活、谁闲着。")
     ts("副本数(期望 / 就绪)",
-       [('kube_deployment_status_replicas{%s,deployment=~".*minimax-h3-.*"}' % H3_NS, "{{deployment}} 期望"),
-        ('kube_deployment_status_replicas_ready{%s,deployment=~".*minimax-h3-.*"}' % H3_NS, "{{deployment}} 就绪")],
+       [('kube_deployment_status_replicas{namespace="minimax-h3"}', "{{deployment}} 期望"),
+        ('kube_deployment_status_replicas_ready{namespace="minimax-h3"}', "{{deployment}} 就绪")],
        w=8, x=8, desc="来自 kube-state-metrics。就绪 < 期望 = 正在滚动或有副本起不来(**包含 SGLang 没就绪**"
                       "的情况,因为 sglang 容器有自己的 readinessProbe);滚动更新时 maxSurge=1 会短暂出现就绪 > 期望。")
     ts("异常任务",
-       [('max by (namespace) (h3_queue_waiting_takeover{%s})' % H3_NS, "{{namespace}} 等待接管"),
-        ('max by (namespace) (h3_queue_backend_unavailable{%s})' % H3_NS, "{{namespace}} 与 SGLang 失联")],
+       [('max(h3_queue_waiting_takeover)', "等待接管"),
+        ('max(h3_queue_backend_unavailable)', "与 SGLang 失联")],
        w=8, x=16,
        desc="两条都是**持续大于 0 才算问题**。等待接管:租约过期/为空、等别副本接手 —— 持续大于 0 = "
             "该能力池副本全挂或全卡(滚动时短暂抬头正常)。与 SGLang 失联:running 但连不上后端、仍在租约内重试。")
@@ -1756,7 +1481,7 @@ def build_h3():
             "timezone": "browser", "schemaVersion": 42, "refresh": "30s",
             "time": {"from": "now-6h", "to": "now"},
             "graphTooltip": 2,
-            "templating": {"list": [VAR_H3_NS]}, "panels": panels}
+            "templating": {"list": []}, "panels": panels}
 
 
 # 参数名 -> (生成函数, 快照文件名)。文件名是 kustomization.yaml 里引用的名字,改名要两边一起改。

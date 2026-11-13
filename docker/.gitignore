@@ -3,5 +3,4 @@
 hosts
 keys/
 generated/
-data/
 *.swp

@@ -220,7 +220,8 @@ NS=""
 NAME="engine-$ROUTE"
 
 [ -d "$MODEL_PATH" ] || { echo "weights not found: $MODEL_PATH"; exit 1; }
-mkdir -p "/root/.cache-$ROUTE-$ENGINE"
+# The deploying user's home on that server (/root for root), not a fixed /root.
+mkdir -p "\$HOME/.cache-$ROUTE-$ENGINE"
 
 # Unchanged and running: keep it (FORCE_ENGINES=1 recreates it anyway).
 SPEC=$spec
@@ -251,7 +252,7 @@ exec \$CLI \$NS run -d --name "\$NAME" \\
   --ipc=host \\
   --ulimit memlock=-1 --ulimit stack=67108864 \\
   -v "$MODEL_PATH":/model:ro \\
-  -v "/root/.cache-$ROUTE-$ENGINE":/root/.cache \\
+  -v "\$HOME/.cache-$ROUTE-$ENGINE":/root/.cache \\
   $docker_flags \\
   --entrypoint /bin/bash \\
   "$ENGINE_IMAGE" -c "\$ENGINE_CMD"

@@ -22,6 +22,8 @@ set -a; . "$ENV_PATH"; set +a
 # The route name render.sh settled on (ROUTE, or derived from MODEL_NAME).
 [ -f generated/route ] || ./render.sh
 ROUTE=$(cat generated/route)
+# The compose project up.sh used for this route (see up.sh).
+COMPOSE="docker compose -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac
@@ -47,7 +49,10 @@ fi
 
 if [ "${KEEP_ROUTER:-0}" != "1" ]; then
     echo "---- routing layer"
-    # --profile so the listener is removed too when it was started; `down` on its own
-    # leaves a profile's container behind and then calls it an orphan.
-    docker compose --profile bodylog down
+    $COMPOSE down
 fi
+# Nothing of this deployment runs any more, so there is nothing for the next ./up.sh
+# to clean up after.
+[ "${SKIP_ENGINES:-0}" != "1" ] && [ "${KEEP_ROUTER:-0}" != "1" ] \
+    && rm -f generated/.applied-manifest generated/.applied-route
+exit 0

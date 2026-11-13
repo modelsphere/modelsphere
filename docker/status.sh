@@ -23,6 +23,7 @@ elif [ -z "${ROUTE:-}" ]; then
     ROUTE=$(printf '%s' "${MODEL_NAME##*/}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9._-]+/-/g')
 fi
 CLI=${CTR_CLI:-docker}
+COMPOSE="docker compose -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
 NS=""; [ "$CLI" = nerdctl ] && NS="--namespace ${CTR_NAMESPACE:-default}"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
@@ -61,7 +62,7 @@ while read -r target script instance role; do
 done < generated/manifest
 
 echo "=== routing layer"
-running=$(docker compose ps --status running --services 2>/dev/null)
+running=$($COMPOSE ps --status running --services 2>/dev/null)
 for svc in openresty cart; do
     if printf '%s\n' "$running" | grep -qx "$svc"; then echo "  $svc  running"
     else echo "  $svc  NOT running"; ok=0; fi

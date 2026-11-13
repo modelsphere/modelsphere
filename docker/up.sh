@@ -28,11 +28,13 @@ done
 # for the same reason.
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-5400}
 
-# What the previous run deployed, before rendering overwrites it: servers dropped from
-# `hosts` (or a changed route name) leave engines behind that this run has to stop.
+# What the last successful run deployed: servers dropped from `hosts` (or a changed
+# route name) leave engines behind that this run has to stop. Recorded at the end of a
+# run that got that far, not taken from generated/manifest, which every render
+# overwrites -- a run that fails half-way must not make the next one forget them.
 PREV_MANIFEST=""; PREV_ROUTE=""
-[ -f generated/manifest ] && PREV_MANIFEST=$(cat generated/manifest)
-[ -f generated/route ] && PREV_ROUTE=$(cat generated/route)
+[ -f generated/.applied-manifest ] && PREV_MANIFEST=$(cat generated/.applied-manifest)
+[ -f generated/.applied-route ] && PREV_ROUTE=$(cat generated/.applied-route)
 
 echo "=== render"
 ./render.sh
@@ -42,6 +44,10 @@ case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;
 set -a; . "$ENV_PATH"; set +a
 # The route name render.sh settled on (ROUTE, or derived from MODEL_NAME).
 ROUTE=$(cat generated/route)
+# The compose project is named after it, so deployments of different models on one
+# control machine keep separate routing containers. Project names allow no dots.
+project_of() { printf 'ms-%s' "$1" | tr '.' '-'; }
+COMPOSE="docker compose -p $(project_of "$ROUTE")"
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac
@@ -91,9 +97,12 @@ prev_targets=$(printf '%s\n' "$PREV_MANIFEST" | awk 'NF {print $1}')
 # A changed route name means a different engine container on the same ports: the old
 # one has to go before the new one can bind, on every server it ran on.
 if [ "${SKIP_ENGINES:-0}" != "1" ] && [ -n "$PREV_ROUTE" ] && [ "$PREV_ROUTE" != "$ROUTE" ]; then
-    echo "=== route changed ($PREV_ROUTE -> $ROUTE): removing the previous engines first"
+    echo "=== route changed ($PREV_ROUTE -> $ROUTE): removing the previous deployment first"
     # shellcheck disable=SC2086
     stop_engines "$PREV_ROUTE" "" $prev_targets
+    # Its routing layer too: a different project now, on the same ports.
+    docker compose -p "$(project_of "$PREV_ROUTE")" down >/dev/null 2>&1 \
+        && echo "    routing layer of $PREV_ROUTE removed"
 fi
 
 if [ "${SKIP_ENGINES:-0}" != "1" ]; then
@@ -169,9 +178,9 @@ cat "$SB_TMP" > generated/session_base.conf && rm -f "$SB_TMP"
 # The ports, before starting: with host networking these bind here directly, and a
 # port already taken means nginx fails to bind and the container exits -- visible
 # otherwise only as a container that will not stay up.
-# Skipped when this deployment's routing containers already exist: a re-apply (change
-# .env, run ./up.sh again) finds the ports held by its own openresty and CART.
-if [ -z "$(docker compose ps -aq 2>/dev/null)" ]; then
+# Skipped while this deployment's own openresty is running: a re-apply (change .env,
+# run ./up.sh again) finds the ports held by its own openresty and CART.
+if ! $COMPOSE ps --status running --services 2>/dev/null | grep -qx openresty; then
     busy=""
     # An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
     # the check wants the port part.
@@ -188,18 +197,10 @@ if [ -z "$(docker compose ps -aq 2>/dev/null)" ]; then
         exit 1
     fi
 fi
-# One switch, not two. Setting BODYLOG_LISTENER_HOST makes openresty build and send
-# request records; the listener that receives them is a compose profile. Set the
-# address without enabling the profile and openresty sends into nothing: the frames
-# buffer in each worker and are then dropped, counted in drop_count and otherwise
-# silent. So the address decides both.
-PROFILE=""
-[ -n "${BODYLOG_LISTENER_HOST:-}" ] && PROFILE="--profile bodylog"
-# shellcheck disable=SC2086
 # The key directory is mounted whether or not it holds a key file (no file = no
 # authentication). Create it here rather than let docker create it as root.
 mkdir -p "${API_KEYS_DIR:-./keys}"
-docker compose $PROFILE up -d
+$COMPOSE up -d
 
 # Applying a changed configuration to a routing layer that is already running:
 #   - openresty: a graceful reload picks up the rendered route, peers included
@@ -208,25 +209,25 @@ docker compose $PROFILE up -d
 #   - CART re-reads its worker list only on SIGHUP. Without the signal it keeps routing
 #     to the workers it started with (measured: "No available workers" after a machine
 #     was readdressed) and the route falls through to the engines tier behind it.
-if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx openresty; then
+if $COMPOSE ps --status running --services 2>/dev/null | grep -qx openresty; then
     echo "--- reload openresty onto the rendered route (graceful: in-flight streams kept)"
-    docker compose $PROFILE exec -T openresty openresty -s reload \
+    $COMPOSE exec -T openresty openresty -s reload \
         && echo "    reloaded" \
-        || echo "    reload failed -- docker compose logs openresty"
+        || echo "    reload failed -- $COMPOSE logs openresty"
 fi
 #   - CART's other fields (body limit, cache, timeouts) are rejected by that SIGHUP
 #     handler, so a change there restarts CART instead.
 no_workers() { awk '/^[[:space:]]*#/ {next} /^workers:/ {skip=1; next} skip && /^[^[:space:]-]/ {skip=0} !skip' "$1"; }
-if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx cart && \
+if $COMPOSE ps --status running --services 2>/dev/null | grep -qx cart && \
    [ -f generated/.applied-cart.yaml ] && ! cmp -s generated/.applied-cart.yaml generated/cart.yaml; then
     if [ "$(no_workers generated/.applied-cart.yaml)" != "$(no_workers generated/cart.yaml)" ]; then
         echo "--- CART's settings changed: restart CART (its SIGHUP accepts only the worker list)"
-        docker compose $PROFILE restart cart >/dev/null && echo "    restarted" \
-            || echo "    restart failed -- docker compose logs cart"
+        $COMPOSE restart cart >/dev/null && echo "    restarted" \
+            || echo "    restart failed -- $COMPOSE logs cart"
     else
         echo "--- CART's workers changed: SIGHUP so it re-reads them"
-        docker compose $PROFILE kill -s HUP cart >/dev/null && echo "    signalled" \
-            || echo "    signal failed -- docker compose logs cart"
+        $COMPOSE kill -s HUP cart >/dev/null && echo "    signalled" \
+            || echo "    signal failed -- $COMPOSE logs cart"
     fi
 fi
 cp generated/cart.yaml generated/.applied-cart.yaml
@@ -246,6 +247,11 @@ if [ "${SKIP_ENGINES:-0}" != "1" ] && [ -n "$PREV_ROUTE" ] && [ "$PREV_ROUTE" = 
         stop_engines "$ROUTE" "$keep" $gone
     fi
 fi
+# What this run deployed, for the next one (see PREV_MANIFEST above).
+if [ "${SKIP_ENGINES:-0}" != "1" ]; then
+    cp generated/manifest generated/.applied-manifest
+    cp generated/route generated/.applied-route
+fi
 
 
 # The address clients use. GATEWAY_PORT may be a bare port (every interface: show the
@@ -259,7 +265,9 @@ echo
 echo "=== model service"
 echo "  endpoint   http://$GW/$ROUTE/v1        (OpenAI-compatible)"
 echo "  model      $MODEL_NAME"
-if [ "${SKIP_ENGINES:-0}" = "1" ] || [ "$WAIT" != "1" ]; then
+if [ "${SKIP_ENGINES:-0}" = "1" ]; then
+    echo "  instances  not checked (SKIP_ENGINES) -- see ./status.sh"
+elif [ "$WAIT" != "1" ]; then
     echo "  instances  still loading -- follow with ./status.sh"
 else
     echo "  instances  ${n_ready:-0} of ${n_total:-0} ready"
