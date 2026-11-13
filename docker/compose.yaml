@@ -23,7 +23,7 @@
 # No healthchecks: these images carry the component and nothing else -- no curl, no
 # wget -- so a HEALTHCHECK here would report the shell's failure rather than the
 # service's. Check them from outside instead, with the endpoints in
-# docs/docker-compose.md.
+# README.md.
 
 name: modelsphere
 

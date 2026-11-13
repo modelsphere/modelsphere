@@ -5,6 +5,10 @@
 #   ./up.sh                  # all of it
 #   SKIP_ENGINES=1 ./up.sh   # routing layer only -- a limit change, a new address
 #   WAIT=0 ./up.sh           # do not wait for the engines to finish loading
+#   FORCE_ENGINES=1 ./up.sh  # recreate every engine, even one running unchanged
+#
+# An engine already running with exactly the rendered spec is kept, so adding a
+# machine to `hosts` and re-running starts only the new one.
 #
 # Rendering is part of starting, so there is no separate step to forget. To see what
 # would be applied without applying it, run ./render.sh and read generated/.
@@ -42,7 +46,7 @@ run_remote() {   # run_remote <ssh target> <local script>
     b64=$(base64 < "$file" | tr -d '\n') || return 1
     # shellcheck disable=SC2086
     ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \
-        "echo $b64 | base64 -d > /tmp/.ms_engine_launch.sh; bash /tmp/.ms_engine_launch.sh" < /dev/null
+        "echo $b64 | base64 -d > /tmp/.ms_engine_launch.sh; FORCE_ENGINES=${FORCE_ENGINES:-0} bash /tmp/.ms_engine_launch.sh" < /dev/null
 }
 
 if [ "${SKIP_ENGINES:-0}" != "1" ]; then
@@ -89,7 +93,8 @@ echo "=== routing layer"
 # writes the directive differently fails here rather than serving the wrong thing.
 echo "--- framework config: gateway on ${GATEWAY_PORT:-8080}, admin server off"
 SB=/usr/local/openresty/nginx/conf/conf.d/session_base.conf
-docker run --rm --entrypoint cat "${OPENRESTY_IMAGE:?}" "$SB" > generated/session_base.conf \
+SB_TMP=generated/.session_base.conf.tmp
+docker run --rm --entrypoint cat "${OPENRESTY_IMAGE:?}" "$SB" > "$SB_TMP" \
     || { echo "!! could not read $SB out of ${OPENRESTY_IMAGE}" >&2; exit 1; }
 # The admin server (8090) serves /healthz, unauthenticated, and nothing here asks
 # for it -- up.sh waits on the engine's /v1/models and the route's own status
@@ -99,30 +104,40 @@ docker run --rm --entrypoint cat "${OPENRESTY_IMAGE:?}" "$SB" > generated/sessio
 # wrong.
 for pair in "8080:${GATEWAY_PORT:-8080}" "8090:unix:/usr/local/openresty/nginx/sock/admin.sock"; do
     from=${pair%%:*} to=${pair#*:}
-    n=$(grep -cE "^[[:space:]]*listen ${from};" generated/session_base.conf)
+    n=$(grep -cE "^[[:space:]]*listen ${from};" "$SB_TMP")
     [ "$n" = 1 ] || { echo "!! expected one 'listen ${from};' in the image's config, found $n" >&2; exit 1; }
     [ "$from" = "$to" ] && continue
-    sed -i -E "s|^([[:space:]]*)listen ${from};|\\1listen ${to};|" generated/session_base.conf
+    sed -i -E "s|^([[:space:]]*)listen ${from};|\\1listen ${to};|" "$SB_TMP"
     echo "    listen ${from} -> ${to}"
 done
+# Into the mounted file IN PLACE, never by replacing it: session_base.conf is a
+# single-file bind mount, which follows the inode. `sed -i` (or mv) on the mounted path
+# swaps in a new inode, the running container keeps reading the old one, and the next
+# reload loads the UNsubstituted config -- measured: "bind() to 0.0.0.0:8080 failed
+# (98: Address already in use)", the reload rejected, the old peers kept serving.
+cat "$SB_TMP" > generated/session_base.conf && rm -f "$SB_TMP"
 
 # The ports, before starting: with host networking these bind here directly, and a
 # port already taken means nginx fails to bind and the container exits -- visible
 # otherwise only as a container that will not stay up.
-busy=""
-# An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
-# the check wants the port part.
-for p in "${GATEWAY_PORT:-8080}" "${CART_PORT:-8071}"; do
-    p=${p##*:}
-    case "$p" in ''|*[!0-9]*) continue ;; esac   # an address with no port
-    ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
-done
-if [ -n "$busy" ]; then
-    echo "!! port(s) in use on this machine:$busy" >&2
-    for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
-    echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
-    echo "   or change it there. The engines are unaffected either way." >&2
-    exit 1
+# Skipped when this deployment's routing containers already exist: a re-apply (change
+# .env, run ./up.sh again) finds the ports held by its own openresty and CART.
+if [ -z "$(docker compose ps -aq 2>/dev/null)" ]; then
+    busy=""
+    # An address:port value is allowed (127.0.0.1:8090 keeps the admin server local);
+    # the check wants the port part.
+    for p in "${GATEWAY_PORT:-8080}" "${CART_PORT:-8071}"; do
+        p=${p##*:}
+        case "$p" in ''|*[!0-9]*) continue ;; esac   # an address with no port
+        ss -ltn 2>/dev/null | grep -q ":$p " && busy="$busy $p"
+    done
+    if [ -n "$busy" ]; then
+        echo "!! port(s) in use on this machine:$busy" >&2
+        for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
+        echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
+        echo "   or change it there. The engines are unaffected either way." >&2
+        exit 1
+    fi
 fi
 # One switch, not two. Setting BODYLOG_LISTENER_HOST makes openresty build and send
 # request records; the listener that receives them is a compose profile. Set the
@@ -134,18 +149,31 @@ PROFILE=""
 # shellcheck disable=SC2086
 docker compose $PROFILE up -d
 
-# A route change is a reload, not a restart: a restart cuts responses that are still
-# streaming, and `up -d` leaves an already-running openresty alone -- so without
-# this it would keep serving the previous route.
+# Applying a changed configuration to a routing layer that is already running:
+#   - openresty: a graceful reload picks up the rendered route, peers included
+#     (in-flight streams are kept). `up -d` leaves a running openresty alone, so without
+#     the reload it would keep serving the previous route.
+#   - CART re-reads its worker list only on SIGHUP. Without the signal it keeps routing
+#     to the workers it started with (measured: "No available workers" after a machine
+#     was readdressed) and the route falls through to the engines tier behind it.
 if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx openresty; then
     echo "--- reload openresty onto the rendered route (graceful: in-flight streams kept)"
     docker compose $PROFILE exec -T openresty openresty -s reload \
         && echo "    reloaded" \
         || echo "    reload failed -- docker compose logs openresty"
 fi
+if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx cart && \
+   [ -f generated/.applied-cart.yaml ] && ! cmp -s generated/.applied-cart.yaml generated/cart.yaml; then
+    echo "--- CART's config changed: SIGHUP so it re-reads its worker list"
+    docker compose $PROFILE kill -s HUP cart >/dev/null && echo "    signalled" \
+        || echo "    signal failed -- docker compose logs cart"
+fi
+cp generated/cart.yaml generated/.applied-cart.yaml
 
+# GATEWAY_PORT may be a bare port or address:port.
+case "${GATEWAY_PORT:-8080}" in *:*) GW=${GATEWAY_PORT} ;; *) GW=127.0.0.1:${GATEWAY_PORT:-8080} ;; esac
 echo
-echo "ready: curl http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/v1/chat/completions \\"
+echo "ready: curl http://$GW/$ROUTE/v1/chat/completions \\"
 echo "         -H 'Content-Type: application/json' \\"
 echo "         -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
-echo "state: curl -s http://127.0.0.1:${GATEWAY_PORT:-8080}/$ROUTE/_health_status"
+echo "state: curl -s http://$GW/$ROUTE/_health_status"
