@@ -97,6 +97,9 @@ the service, for example:
   endpoint   http://10.0.0.21:8080/glm-5.3-flash/v1        (OpenAI-compatible)
   model      glm-5.3-flash
   instances  1 of 1 ready
+  auth       OFF -- anyone who can reach 10.0.0.21:8080 can call it; to turn it on, put keys
+             in ./keys/keys and run ./up.sh (README: Authentication)
+  limits     off (RATE_LIMIT=false)
   try        curl http://10.0.0.21:8080/glm-5.3-flash/v1/chat/completions -H 'Content-Type: application/json' \
                -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hello"}],"max_tokens":256}'
 ```

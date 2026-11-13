@@ -221,6 +221,11 @@ if [ -n "$busy" ]; then
     for p in $busy; do ss -ltnp 2>/dev/null | grep ":$p " | sed 's/^/     /' >&2; done
     echo "   GATEWAY_PORT and CART_PORT in $ENV_FILE both move; free the port" >&2
     echo "   or change it there. The engines are unaffected either way." >&2
+    if [ "${SKIP_ENGINES:-0}" = "1" ] && [ -n "$PREV_ROUTE" ] && [ "$PREV_ROUTE" != "$ROUTE" ]; then
+        echo "   Likely holder: the routing layer of the previous route '$PREV_ROUTE'. The route" >&2
+        echo "   name changed, and SKIP_ENGINES=1 skips removing the previous deployment;" >&2
+        echo "   run ./up.sh without it, or: docker compose -p $(project_of "$PREV_ROUTE") down" >&2
+    fi
     exit 1
 fi
 # The key directory is mounted whether or not it holds a key file (no file = no
@@ -298,6 +303,13 @@ elif [ "$WAIT" != "1" ]; then
 else
     echo "  instances  ${n_ready:-0} of ${n_total:-0} ready"
 fi
+if [ -f "${API_KEYS_DIR:-./keys}/keys" ]; then
+    echo "  auth       on (${API_KEYS_DIR:-./keys}/keys)"
+else
+    echo "  auth       OFF -- anyone who can reach $GW can call it; to turn it on, put keys"
+    echo "             in ${API_KEYS_DIR:-./keys}/keys and run ./up.sh (README: Authentication)"
+fi
+echo "  limits     $( [ "${RATE_LIMIT:-false}" = true ] && echo on || echo "off (RATE_LIMIT=false)" )"
 echo "  try        curl http://$GW/$ROUTE/v1/chat/completions -H 'Content-Type: application/json' \\"
 echo "               -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":256}'"
 if [ "$WAIT" = "1" ] && [ "${SKIP_ENGINES:-0}" != "1" ] && [ "${n_ready:-0}" -lt "${n_total:-0}" ]; then

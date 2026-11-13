@@ -16,12 +16,12 @@ case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;
 [ -f generated/manifest ] \
     || { echo "status: no generated/manifest -- nothing has been deployed from this directory; run ./up.sh" >&2; exit 2; }
 set -a; . "$ENV_PATH"; set +a
-# The route name: as render.sh recorded it, or -- for output from an older render.sh
-# that did not record it -- derived the same way (ROUTE, else from MODEL_NAME).
-if [ -f generated/route ]; then ROUTE=$(cat generated/route)
-elif [ -z "${ROUTE:-}" ]; then
-    ROUTE=$(printf '%s' "${MODEL_NAME##*/}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9._-]+/-/g')
-fi
+# The route name render.sh settled on. Read, not re-derived: a second copy of the
+# derivation could drift from render.sh's. (down.sh renders when it is missing; this
+# script stays read-only and asks instead.)
+[ -f generated/route ] \
+    || { echo "status: no generated/route -- run ./up.sh (or ./render.sh) once to record it" >&2; exit 2; }
+ROUTE=$(cat generated/route)
 CLI=${CTR_CLI:-docker}
 COMPOSE="docker compose -p $(printf 'ms-%s' "$ROUTE" | tr '.' '-')"
 NS=""; [ "$CLI" = nerdctl ] && NS="--namespace ${CTR_NAMESPACE:-default}"
