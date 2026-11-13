@@ -65,9 +65,11 @@ run_remote() {   # run_remote <ssh target> <local script>
     # authorized_keys for nothing.
     if is_this_machine "$target"; then bash "$file"; return; fi
     b64=$(base64 < "$file" | tr -d '\n') || return 1
+    # A private temp file on the far side: a fixed /tmp name left behind by another
+    # user (root, say) is not writable for this one, and the launch would fail.
     # shellcheck disable=SC2086
     ssh ${SSH_OPTS:-} "${SSH_USER:-root}@$target" \
-        "echo $b64 | base64 -d > /tmp/.ms_engine_launch.sh; FORCE_ENGINES=${FORCE_ENGINES:-0} bash /tmp/.ms_engine_launch.sh" < /dev/null
+        "f=\$(mktemp); echo $b64 | base64 -d > \$f; FORCE_ENGINES=${FORCE_ENGINES:-0} bash \$f; rc=\$?; rm -f \$f; exit \$rc" < /dev/null
 }
 
 
