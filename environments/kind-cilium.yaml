@@ -1,0 +1,18 @@
+# The kind cluster of the `cilium` profile (make test-e2e-kind KIND_PROFILE=cilium).
+# Layered over default.yaml and kind.yaml. kind starts without a CNI or
+# kube-proxy (test/e2e/kind/kind-cilium-config.yaml), and this installs cilium
+# with kubeProxyReplacement (cni/overrides.yaml.gotmpl), so Services are
+# served by cilium's eBPF datapath. The cilium release waits until its agent
+# is ready, which is when the node turns Ready for the rest of the stack.
+enabled:
+  cilium: true
+
+cilium:
+  clusterName: kind
+  # No kube-proxy, so the agent talks to the apiserver directly: the control
+  # plane node by name on kind's docker network. test/e2e/kind sets this from
+  # KIND_CLUSTER, so the value here only matters for a hand-run apply.
+  k8sServiceHost: modelsphere-e2e-control-plane
+  k8sServicePort: 6443
+  podCIDR: 10.244.0.0/16          # kind's default podSubnet
+  serviceMonitors: false          # no monitoring.coreos.com/v1 without kube-prometheus-stack

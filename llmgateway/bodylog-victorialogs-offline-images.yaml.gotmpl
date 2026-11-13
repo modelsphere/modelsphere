@@ -1,0 +1,30 @@
+# Air-gapped image addresses for the bodylog-victorialogs release.
+#
+# Only referenced from helmfile.yaml.gotmpl when registryMode is `rewrite`, so a
+# normal install never reads this file and renders exactly as it did before.
+#
+# The upstream host is dropped and the rest of the path kept, so
+# docker.io/timberio/vector becomes <registry>/timberio/vector -- see the note on
+# registryMode in environments/default.yaml. script/offline_load.sh retags by the
+# same rule when it pushes.
+vector:
+  image:
+    repository: {{ .Values.registry }}/timberio/vector
+
+victorialogs:
+  server:
+    image:
+      # repository stays victoriametrics/victoria-logs, so this composes to
+      # <registry>/victoriametrics/victoria-logs -- the same rule as above.
+      registry: {{ .Values.registry }}
+
+# The helm-test hook image. Only `helm test` pulls it, never an install, but the
+# bundle scrapes it from the render all the same -- so an address left pointing
+# at docker.io is one address the bundle holds that the cluster cannot reach.
+#
+# repository only. The chart keeps the tag in test.image.tag for exactly this:
+# restating a version this repo does not own is how a pin drifts, which
+# autoconfig's entry in the helmfile has the long version of.
+test:
+  image:
+    repository: {{ .Values.registry }}/curlimages/curl

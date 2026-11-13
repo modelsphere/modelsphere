@@ -37,8 +37,25 @@ spec:
     - name: llm-serving.rules
       interval: 30s
       rules:
+        # The exporter labels these three metrics by role from 0.2.13 on: empty for an
+        # ordinary service, and router / prefill / decode for a disaggregated one.
+        # Without a role matcher a disaggregated service goes from one series to
+        # three, so any single role at zero pages someone -- and the autoscaler
+        # scales an individual role down to zero on purpose, which would make that
+        # a routine false alarm.
+        #
+        # `|router` matches both the empty label and "router": the former is what
+        # the older exporter emits, where this series counted the routers anyway,
+        # and the latter is the new one. Both report the same quantity, so this
+        # rule change and the exporter upgrade need no ordering between them.
+        # Measured: with the matcher, each service keeps exactly one alertable
+        # series and the firing set is the one from before the upgrade; without it,
+        # a disaggregated service matches once per role.
+        #
+        # Alerting per role is a separate feature: it needs its own thresholds and
+        # its own wording, and should not arrive as a side effect of a new label.
         - alert: LLMServiceNoReadyReplica
-          expr: bodylog_service_replicas_ready{service!="unknown"} == 0
+          expr: bodylog_service_replicas_ready{service!="unknown",role=~"|router"} == 0
           for: 2m
           labels:
             severity: critical
@@ -48,9 +65,12 @@ spec:
             description: "{{ $labels.service }} 的就绪副本数为 0,该服务已不可用。"
 
         - alert: LLMServiceDegraded
+          # Role as above, and it has to be on both sides: a binary operator matches
+          # its operands on the full label set, so filtering only one side leaves
+          # nothing to match and the rule silently stops firing altogether.
           expr: |
-            bodylog_service_replicas_ready{service!="unknown"}
-              < bodylog_service_replicas{service!="unknown"}
+            bodylog_service_replicas_ready{service!="unknown",role=~"|router"}
+              < bodylog_service_replicas{service!="unknown",role=~"|router"}
           for: 15m
           labels:
             severity: warning
@@ -205,6 +225,114 @@ spec:
           annotations:
             summary: "{{ $labels.service }} 流量归零"
             description: "近 15 分钟没有任何请求,但近 6 小时有过流量。可能是路由断开、上游停止发送或蓝绿切换异常。注意此时该服务的 TTFT / OutputRate 等 SLO 告警会因无样本而静默,不能据其判断健康。"
+
+        # ---- An engine dying, seen from two sides ----------------------
+        #
+        # Both rules came out of 2026-09-23, from an investigation into kimi-k3
+        # restarting over and over. What it found: the engine's front end
+        # (sglang's tokenizer / HTTP process) stops answering while the
+        # scheduler and the GPUs carry on -- the GPUs were still at 52-100%
+        # utilisation a minute after the crash -- and hang-watcher, seeing
+        # /metrics unanswered for 60s, calls it hung and restarts the
+        # container. External resources were ruled out: 12 of 256 CPU cores in
+        # use, 486 GiB memory free, GPU memory up 0.4 GB over 38 minutes, fds
+        # at 134/524288, conntrack at 258/262144.
+        #
+        # One rule counts how often service was interrupted; the other counts
+        # how many half-finished answers users actually received. The second
+        # finds more events than the first, because not every hang ends in a
+        # restart.
+
+        # Measured baseline (2026-09-23, kimi-k3 on four replicas): 24 restarts
+        # in 24h, arriving in bursts rather than evenly -- the same pod about
+        # every 63 minutes, being 22 minutes of model loading, 35-37 minutes of
+        # service, then the hang call. So a single restart is a warning (at the
+        # current failure rate, roughly 24 a day) and only repeated restarts
+        # are critical.
+        #
+        # Scope: every container in a namespace one of our services lives in --
+        # the engine (sglang, vllm, whatever a chart calls it) and everything
+        # deployed next to it: hang-watcher, cart / reload / hagate, H3's server
+        # and router. A restart of any of them is worth knowing about, so the
+        # wording says which pod and container restarted and nothing more.
+        # Test workloads outside those namespaces are left out.
+        #   - LLM services: the namespaces bodylog knows. Its `service` label
+        #     is "<namespace>/<service>", so the namespace is cut out of it.
+        #   - GPU services bodylog does not cover, listed by namespace:
+        #     minimax-h3 (H3 video). bodylog does carry a minimax-h3 service,
+        #     but that is H3's router, not its GPU backend, and no requests are
+        #     recorded for it -- relying on it would lose H3 the day the router
+        #     moves. Add further namespaces to that regex the same way.
+        # ⚠️ Aggregate by namespace/pod/container. kube-state-metrics' raw series
+        #    carries service="kube-prometheus-stack-kube-state-metrics" -- the
+        #    Service the metric came from -- whereas `service` in every other
+        #    rule here means an inference service. Passing it through
+        #    unaggregated would put two meanings on one label.
+        - alert: LLMPodRestarted
+          expr: |
+            max by(namespace, pod, container)(
+              increase(kube_pod_container_status_restarts_total[15m])
+              and on(namespace) (
+                label_replace(bodylog_service_replicas_ready{service!="unknown"}, "namespace", "$1", "service", "([^/]+)/.*")
+                or kube_namespace_status_phase{namespace=~"minimax-h3", phase="Active"} == 1
+              )
+            ) > 0
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} 重启"
+            description: "{{ $labels.namespace }}/{{ $labels.pod }} 的 {{ $labels.container }} 容器在 15 分钟内重启过。"
+
+        # round(): increase() extrapolates to the window edges, so the raw value
+        # reads 6.1 or 14.1 restarts. Rounding keeps both the threshold and the
+        # count in the summary whole.
+        - alert: LLMPodCrashLooping
+          expr: |
+            round(max by(namespace, pod, container)(
+              increase(kube_pod_container_status_restarts_total[1h])
+              and on(namespace) (
+                label_replace(bodylog_service_replicas_ready{service!="unknown"}, "namespace", "$1", "service", "([^/]+)/.*")
+                or kube_namespace_status_phase{namespace=~"minimax-h3", phase="Active"} == 1
+              )
+            )) >= 3
+          labels:
+            severity: critical
+            channel: business
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} 1 小时内重启 {{ $value }} 次"
+            description: "{{ $labels.namespace }}/{{ $labels.pod }} 的 {{ $labels.container }} 容器 1 小时内重启 {{ $value }} 次。"
+
+        # Silent truncation: HTTP 200, response headers long since sent, and
+        # then the stream is cut mid-flight. The client is left holding a
+        # fluent-looking half answer with no finish_reason and no error code to
+        # retry on. An error-rate graph sees none of it -- the status is 200.
+        #
+        # ⚠️ Depends on bodylog-exporter's finish_reason="none" bucket
+        #    (llm-openresty MR !46). Older exporters drop an empty
+        #    finish_reason, so the series does not exist and this rule simply
+        #    never fires -- no false alarms, just no effect -- until the
+        #    exporter is upgraded.
+        #
+        # Where the threshold comes from (2026-09-23, replaying a full day of
+        # real bodylog: 120,700 responses with status 200):
+        #   the day's 744 truncations were spread over 245 distinct minutes,
+        #   nearly all of them one or two a minute -- that is clients hanging
+        #   up, not a fault. An engine dying looks nothing like it: dozens cut
+        #   off **within the same second** (51 in one second at the peak; 32 at
+        #   22:48:53). So this alerts on the size of a burst, not on a ratio:
+        #     >10 a minute   -> hits 11 minutes across the day, one for one
+        #                       with the moments an engine died
+        #     >0.5% of traffic -> stands 26% of the day, pure noise
+        - alert: LLMSilentTruncation
+          expr: |
+            sum by(service)(increase(bodylog_finish_reason_total{finish_reason="none",service!="unknown"}[1m])) > 10
+          labels:
+            severity: warning
+            channel: business
+          annotations:
+            summary: "{{ $labels.service }} 有 {{ $value }} 个请求被静默截断"
+            description: "一分钟内有超过 10 个请求以 HTTP 200 结束却没有 finish_reason,即响应被中途切断而客户端收到的是成功状态。这种成批出现通常意味着后端引擎在那一刻猝死,把所有在途的流一起带走了。用户侧表现为回答说到一半就停,且不会重试。"
 
     # ---------------- 网关与控制面 ----------------
     - name: llm-gateway.rules

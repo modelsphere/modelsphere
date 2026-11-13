@@ -1,0 +1,51 @@
+# A single-node, CPU-only kind cluster: what test/e2e/kind installs (make test-e2e-kind).
+# Layered over default.yaml. Everything that needs GPUs, NICs, disks for ceph or
+# a Prometheus operator is off; what is left is the serving path -- openresty,
+# autoconfig, bodylog, llm-operator, llm-slo, swissd and console -- sized to fit
+# a 4 vCPU / 16 GB runner.
+enabled:
+  cilium: false            # kind brings its own CNI
+  rookCeph: false
+  rookCephCluster: false
+  cephCsiDrivers: false
+  kubePrometheusStack: false
+  llmAlerts: false
+  llmDashboards: false
+  nodeProblemDetector: false
+  descheduler: false
+  gpuOperator: false
+  dcgmCustomMetrics: false
+  networkOperator: false
+  ascendDevicePlugin: false
+  nicClusterPolicy: false
+  lws: false
+  volcano: false
+  volcanoPdb: false
+  condition2taint: false
+  alertWebhook: false
+  llmCanaryOperator: false
+
+storage:
+  className: standard      # kind's local-path provisioner
+  persistence: false
+
+llmGateway:
+  # kind names its node <cluster>-control-plane; test/e2e/kind sets this from
+  # KIND_CLUSTER, so the value here only matters for a hand-run apply.
+  node: modelsphere-e2e-control-plane
+  hostPath: /var/lib/bodylog
+  memoryLimit: 512Mi
+  serviceMonitor: false    # no monitoring.coreos.com/v1 without kube-prometheus-stack
+  victorialogsSize: 1Gi
+  # The chart asks for 2 replicas x 2 CPU / 2Gi; the whole stack then requests
+  # more than 6 CPUs.
+  openrestyOverrides:
+    replicas: 1
+    # Turns openresty's API-key check on with a test-only key, so test/e2e/kind
+    # can check that a wrong or missing key is refused.
+    secret:
+      create: true
+      keys: "sk-e2e-kind:e2e"
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: "2", memory: 1Gi }
