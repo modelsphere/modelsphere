@@ -1,0 +1,86 @@
+# Node NIC link-flapping, which the chart's bundled rule cannot see.
+#
+# System-level alerts normally come from kube-prometheus-stack's own rules (see
+# the note in the Makefile), and the stack does ship one for this:
+#
+#   NodeNetworkInterfaceFlapping
+#     changes(node_network_up{device!~"veth.+",job="node-exporter"}[2m]) > 2
+#
+# It cannot fire on a fast-flapping port, for a structural reason rather than a
+# tuning one. node_network_up is a boolean sampled once per scrape, and a flap
+# that lasts under a second -- the kernel log puts "Link down" and "Link up" in
+# the same second -- is over before the next sample, so the series reads 1
+# throughout. An interface can drop carrier continuously for hours while that
+# expression stays at or below its threshold.
+#
+# node_network_carrier_changes_total is a counter, so it loses nothing between
+# scrapes. This alerts on its rate.
+#
+# ⚠️ metadata.labels must carry the release label this deployment's Prometheus
+#    selects rules by (release: kube-prometheus-stack here). Without it the
+#    object is SILENTLY ignored: kubectl shows it, Prometheus never loads it.
+#    After applying, confirm on Prometheus's /rules page, not with kubectl.
+#
+# ── Why > 1 per minute, held for 5m ──
+#
+# A healthy interface's counter moves only when the link is established, so its
+# rate over a 15-minute window settles at zero and stays there. Anything
+# sustained above one change per minute is therefore not normal operation, and
+# the margin between that and a genuinely flapping port is wide -- a failing
+# module or cable produces orders of magnitude more.
+#
+# The hold is short on purpose. Flapping of this kind is bursty: a port can be
+# quiet for an hour and then drop carrier every few minutes, so a long hold
+# risks sitting out the whole episode. It can be short safely because the rate
+# window already absorbs one-off events: a cable reseat or a reboot contributes
+# a handful of changes, which over fifteen minutes is far below the threshold
+# before the hold is even considered.
+#
+# The device filter drops the virtual interfaces that legitimately come and go
+# with pods (cilium's lxc*, veth*, cali*, and docker's bridge). Left in, they
+# would alert on ordinary scheduling.
+#
+# severity: warning. A port flapping at this rate is a cable or optics fault
+# that wants replacing, but it degrades rather than removes connectivity --
+# TCP retries through a sub-second gap. It is worth waking someone's working
+# day, not their night.
+#
+# channel: infra -- the fix is physical (swap the cable or the module), so this
+# goes to whoever can touch the hardware.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-network-rules
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: node-network.rules
+      interval: 30s
+      rules:
+        - alert: NodeNicCarrierFlapping
+          expr: |
+            rate(node_network_carrier_changes_total{
+              job="node-exporter",
+              device!~"veth.+|lo|cali.+|lxc.+|docker.+|cilium.+|dummy.*"
+            }[15m]) * 60 > 1
+          for: 5m
+          labels:
+            severity: warning
+            channel: infra
+          annotations:
+            summary: "{{ $labels.device }} on {{ $labels.instance }} is flapping"
+            description: >-
+              {{ $labels.device }} on {{ $labels.instance }} has lost and regained
+              carrier {{ $value | printf "%.1f" }} times per minute over the last
+              15 minutes; a healthy interface sits at 0. Each drop usually lasts
+              under a second, which is why the bundled NodeNetworkInterfaceFlapping
+              rule does not see it: that rule samples node_network_up, and the link
+              is back up by the next scrape. Most often a failing optical module or
+              cable. Compare the four per-channel receive powers of the same module
+              with `ethtool -m <dev>` and suspect whichever channel sits about 2 dB
+              under its siblings; judge a channel against its own module, not
+              against an absolute figure, since cable length and vendor move the
+              whole set. On an RDMA port this can time out cross-node NCCL, so read
+              this alert alongside any engine hang in the same window.

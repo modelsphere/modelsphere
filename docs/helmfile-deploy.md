@@ -232,6 +232,7 @@ but helmfile pulls the real thing:
 | `openresty`, `bodylog`, `bodylog-exporter` | `chartRepo` (environment value: public GitHub Pages / internal ChartMuseum) | see `versions:` |
 | `autoconfig`, `llm-slo-decision-gen`, `llmscaleoperator` | `chartRepo` (same) | see `versions:` |
 | `condition2taint`, `alert-webhook`, `llm-canary-operator` | `chartRepo` (same) | see `versions:` |
+| `console` | `chartRepo` (same) | see `versions:` |
 | `volcano` | `https://volcano-sh.github.io/helm-charts` | `1.15.1` |
 
 Versions are not repeated here on purpose: they live in `versions:` in

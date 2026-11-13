@@ -15,7 +15,30 @@
   },
   "graphTooltip": 2,
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(kube_deployment_status_replicas{deployment=~\".*minimax-h3-server-.*\"}, namespace)",
+          "refId": "ns"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1,
+        "label": "namespace"
+      }
+    ]
   },
   "panels": [
     {
@@ -40,7 +63,7 @@
       },
       "description": "每个工作负载一行。状态:UP(就绪≥期望)/降级(有就绪但不足期望)/DOWN。正在执行=该池各副本手上的任务数之和(单副本最多 1);积压=queued+running;错误24h=过去 24 小时进入 failed 终态的任务数(按能力池拆开,不是集群级的 h3_queue_completed_24h —— 那个按服务拆会重复计数)。router 没有业务指标,这几列恒为 0 属正常。",
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 1
@@ -48,7 +71,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})",
+          "expr": "sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})",
           "legendFormat": "就绪",
           "datasource": {
             "type": "prometheus",
@@ -59,7 +82,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (deployment) (kube_deployment_status_replicas{namespace=\"minimax-h3\"})",
+          "expr": "sum by (deployment) (kube_deployment_status_replicas{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})",
           "legendFormat": "期望",
           "datasource": {
             "type": "prometheus",
@@ -70,7 +93,7 @@
         },
         {
           "refId": "C",
-          "expr": "(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}) > bool 0) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}) >= bool sum by (deployment) (kube_deployment_status_replicas{namespace=\"minimax-h3\"}))",
+          "expr": "(sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"}) > bool 0) + (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"}) >= bool sum by (deployment) (kube_deployment_status_replicas{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"}))",
           "legendFormat": "状态",
           "datasource": {
             "type": "prometheus",
@@ -81,7 +104,7 @@
         },
         {
           "refId": "D",
-          "expr": "sum by (deployment) (label_replace(h3_queue_running_on_instance, \"deployment\", \"$1\", \"h3_instance\", \"(.*)-[^-]+-[^-]+\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "expr": "sum by (deployment) (label_replace(h3_queue_running_on_instance{namespace=~\"$namespace\"}, \"deployment\", \"$1\", \"h3_instance\", \"(.*)-[^-]+-[^-]+\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})))",
           "legendFormat": "正在执行",
           "datasource": {
             "type": "prometheus",
@@ -92,7 +115,7 @@
         },
         {
           "refId": "E",
-          "expr": "sum by (deployment) (label_replace(max by (capability,status) (h3_queue_tasks{status=~\"queued|running\"}), \"deployment\", \"h3-minimax-h3-server-$1\", \"capability\", \"(.*)\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "expr": "sum by (deployment) (label_replace(max by (namespace,job,status) (h3_queue_tasks{namespace=~\"$namespace\",status=~\"queued|running\"}), \"deployment\", \"$1\", \"job\", \"(.*)\")) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})))",
           "legendFormat": "积压",
           "datasource": {
             "type": "prometheus",
@@ -103,7 +126,7 @@
         },
         {
           "refId": "F",
-          "expr": "round(sum by (deployment) (label_replace(delta(max by (capability,status) (h3_queue_tasks{status=\"failed\"})[24h:5m]), \"deployment\", \"h3-minimax-h3-server-$1\", \"capability\", \"(.*)\"))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "expr": "round(sum by (deployment) (label_replace(delta(max by (namespace,job,status) (h3_queue_tasks{namespace=~\"$namespace\",status=\"failed\"})[24h:5m]), \"deployment\", \"$1\", \"job\", \"(.*)\"))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})))",
           "legendFormat": "错误24h",
           "datasource": {
             "type": "prometheus",
@@ -114,7 +137,7 @@
         },
         {
           "refId": "G",
-          "expr": "round(sum by (deployment) (increase(label_replace(kube_pod_container_status_restarts_total{namespace=\"minimax-h3\",pod=~\"h3-minimax-h3-.*-[a-f0-9]{8,10}-[a-z0-9]{5}\"}, \"deployment\", \"$1\", \"pod\", \"^(.*)-[a-f0-9]{8,10}-[a-z0-9]{5}$\")[24h:1h]))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"})))",
+          "expr": "round(sum by (deployment) (increase(label_replace(kube_pod_container_status_restarts_total{namespace=~\"$namespace\",pod=~\".*minimax-h3-.*-[a-f0-9]{8,10}-[a-z0-9]{5}\"}, \"deployment\", \"$1\", \"pod\", \"^(.*)-[a-f0-9]{8,10}-[a-z0-9]{5}$\")[24h:1h]))) or (0 * sum by (deployment) (sum by (deployment) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"})))",
           "legendFormat": "重启24h",
           "datasource": {
             "type": "prometheus",
@@ -423,6 +446,7 @@
       ],
       "options": {
         "showHeader": true,
+        "cellHeight": "sm",
         "sortBy": [
           {
             "displayName": "工作负载"
@@ -439,7 +463,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 7
+        "y": 11
       }
     },
     {
@@ -455,13 +479,13 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 8
+        "y": 12
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (capability,status) (h3_queue_tasks{status=\"queued\"}) or label_replace(0 * max by (capability) (h3_queue_backend_up), \"status\", \"queued\", \"\", \"\")",
-          "legendFormat": "{{capability}} {{status}}",
+          "expr": "max by (namespace,capability,status) (h3_queue_tasks{namespace=~\"$namespace\",status=\"queued\"}) or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{namespace=~\"$namespace\"}), \"status\", \"queued\", \"\", \"\")",
+          "legendFormat": "{{namespace}} {{capability}} {{status}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -469,8 +493,8 @@
         },
         {
           "refId": "B",
-          "expr": "max by (capability,status) (h3_queue_tasks{status=\"running\"}) or label_replace(0 * max by (capability) (h3_queue_backend_up), \"status\", \"running\", \"\", \"\")",
-          "legendFormat": "{{capability}} {{status}}",
+          "expr": "max by (namespace,capability,status) (h3_queue_tasks{namespace=~\"$namespace\",status=\"running\"}) or label_replace(0 * max by (namespace,capability) (h3_queue_backend_up{namespace=~\"$namespace\"}), \"status\", \"running\", \"\", \"\")",
+          "legendFormat": "{{namespace}} {{capability}} {{status}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -517,13 +541,13 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 8
+        "y": 12
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status) (rate(max by (capability,status) (h3_queue_tasks{status=~\"succeeded|failed|cancelled\"})[$__rate_interval:])) * 600",
-          "legendFormat": "{{status}}",
+          "expr": "sum by (namespace,status) (rate(max by (namespace,capability,status) (h3_queue_tasks{namespace=~\"$namespace\",status=~\"succeeded|failed|cancelled\"})[$__rate_interval:])) * 600",
+          "legendFormat": "{{namespace}} {{status}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -531,8 +555,8 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (status) (max by (capability,status) (h3_queue_tasks{status=~\"succeeded|failed|cancelled\"}))",
-          "legendFormat": "{{status}} 累计",
+          "expr": "sum by (namespace,status) (max by (namespace,capability,status) (h3_queue_tasks{namespace=~\"$namespace\",status=~\"succeeded|failed|cancelled\"}))",
+          "legendFormat": "{{namespace}} {{status}} 累计",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -698,13 +722,13 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 8
+        "y": 12
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max(h3_queue_oldest_queued_age_seconds)",
-          "legendFormat": "最老排队",
+          "expr": "max by (namespace) (h3_queue_oldest_queued_age_seconds{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} 最老排队",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -712,8 +736,8 @@
         },
         {
           "refId": "B",
-          "expr": "max(h3_queue_oldest_running_age_seconds)",
-          "legendFormat": "最老运行中",
+          "expr": "max by (namespace) (h3_queue_oldest_running_age_seconds{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} 最老运行中",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -753,7 +777,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 20
       }
     },
     {
@@ -769,12 +793,12 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 17
+        "y": 21
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (h3_instance) (h3_queue_running_on_instance)",
+          "expr": "sum by (h3_instance) (h3_queue_running_on_instance{namespace=~\"$namespace\"})",
           "legendFormat": "{{h3_instance}}",
           "datasource": {
             "type": "prometheus",
@@ -819,12 +843,12 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 17
+        "y": 21
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "kube_deployment_status_replicas{namespace=\"minimax-h3\"}",
+          "expr": "kube_deployment_status_replicas{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"}",
           "legendFormat": "{{deployment}} 期望",
           "datasource": {
             "type": "prometheus",
@@ -833,7 +857,7 @@
         },
         {
           "refId": "B",
-          "expr": "kube_deployment_status_replicas_ready{namespace=\"minimax-h3\"}",
+          "expr": "kube_deployment_status_replicas_ready{namespace=~\"$namespace\",deployment=~\".*minimax-h3-.*\"}",
           "legendFormat": "{{deployment}} 就绪",
           "datasource": {
             "type": "prometheus",
@@ -878,13 +902,13 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 17
+        "y": 21
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max(h3_queue_waiting_takeover)",
-          "legendFormat": "等待接管",
+          "expr": "max by (namespace) (h3_queue_waiting_takeover{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} 等待接管",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -892,8 +916,8 @@
         },
         {
           "refId": "B",
-          "expr": "max(h3_queue_backend_unavailable)",
-          "legendFormat": "与 SGLang 失联",
+          "expr": "max by (namespace) (h3_queue_backend_unavailable{namespace=~\"$namespace\"})",
+          "legendFormat": "{{namespace}} 与 SGLang 失联",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
