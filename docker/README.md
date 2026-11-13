@@ -179,6 +179,7 @@ model name.
 
 | Setting | Default | What it does |
 |---|---|---|
+| `RATE_LIMIT` | `false` | Turns the limits below on. While it is `false`, the gateway lets every request through and rejects none with `429` |
 | `MAX_CONCURRENCY` | `100` | The maximum number of requests in flight per instance at the gateway. The route's limit is this value multiplied by the number of healthy instances |
 | `TTFT_LIMIT_MS` | `30000` | When the average time to first token reaches this value, new requests receive `429` |
 | `TPS_LIMIT_TPS` | `20` | The target decode rate per request, in tokens/s. Below this rate, adaptive concurrency lowers the limit |
@@ -187,8 +188,8 @@ model name.
 | `CART_MAX_LOAD` | `50` | The maximum number of requests in flight per instance at CART |
 | `MAX_BODY_SIZE` | `209715200` | The largest request body in bytes (200 MiB), applied by both the gateway and CART |
 
-A request over a limit receives `429` with `Retry-After: 1` immediately; nothing is
-queued.
+With `RATE_LIMIT=true`, a request over a limit receives `429` with `Retry-After: 1`
+immediately; nothing is queued.
 
 ### Applying changes
 
@@ -253,7 +254,7 @@ its GPU server.
 | `503` | Every instance failed its health check | Check `./status.sh`, then the engine logs |
 | `401` | `keys/keys` exists, and the request has no valid key | Send `Authorization: Bearer <key>` |
 | `413` | The request body is larger than `MAX_BODY_SIZE` | Raise `MAX_BODY_SIZE`, and run `./up.sh` again |
-| `429` at low load | `TPS_LIMIT_TPS` is higher than this hardware can decode, so adaptive concurrency stays at its floor; or `MAX_CONCURRENCY` is too low | Lower `TPS_LIMIT_TPS`, or raise `MAX_CONCURRENCY` |
+| `429` at low load | `RATE_LIMIT=true`, and `TPS_LIMIT_TPS` is higher than this hardware can decode, so adaptive concurrency stays at its floor; or `MAX_CONCURRENCY` is too low | Lower `TPS_LIMIT_TPS`, or raise `MAX_CONCURRENCY` |
 | `404`, or "model does not exist" | The request's `model` is not `MODEL_NAME` | Send the model name that `up.sh` printed |
 
 ## Limitations

@@ -46,6 +46,11 @@ printf '%s' "$ROUTE" | grep -qE '^[a-z0-9._-]+$' \
 # Largest request body, in bytes, for the route and CART alike (CART_MAX_BODY_SIZE is
 # the older name).
 MAX_BODY=${MAX_BODY_SIZE:-${CART_MAX_BODY_SIZE:-209715200}}
+RATE_LIMIT=${RATE_LIMIT:-false}
+case "$RATE_LIMIT" in
+    true|false) ;;
+    *) echo "render.sh: RATE_LIMIT must be true or false, got '$RATE_LIMIT'" >&2; exit 1 ;;
+esac
 case "$MAX_BODY" in ''|*[!0-9]*) die "MAX_BODY_SIZE must be a number of bytes, got '$MAX_BODY'" ;; esac
 # The same name as an nginx variable, which allows only [A-Za-z0-9_].
 ROUTE_VAR=$(printf '%s' "$ROUTE" | sed -E 's/[^A-Za-z0-9_]/_/g')
@@ -326,6 +331,10 @@ server {
                     -- keep the default probe (/v1/models).
                     {"127.0.0.1", ${CART_PORT:-8071}, "cart", 1, ${MAX_CONCURRENCY:-100}, probe = "/health"},
 $peers                },
+                -- The master switch for the three load-based 429s (concurrency, TTFT,
+                -- decode rate). Off, those requests are let through; the measurements
+                -- behind them, health checks and the 503 for an all-down pool still run.
+                load_rate_limit      = $RATE_LIMIT,
                 ttft_limit_ms        = ${TTFT_LIMIT_MS:-30000},
                 tps_limit_tps        = ${TPS_LIMIT_TPS:-20},
                 adaptive_cc          = ${ADAPTIVE_CC:-true},
