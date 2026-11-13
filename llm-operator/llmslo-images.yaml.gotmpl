@@ -5,9 +5,9 @@ decisionGen:
   image:
     repository: {{ .Values.registry }}/llm-scaler-decision-gen
 sloApi:
-  # On. The chart ships it off, because its published image looked for
-  # LLMSLORequirement under inference.x-k8s.io while the CRDs were moving to
-  # inference.modelsphere.dev, and would have found nothing. From 0.2.0 the
+  # On. Early versions of the chart shipped it off, because its published image
+  # looked for LLMSLORequirement under inference.x-k8s.io while the CRDs were
+  # moving to inference.modelsphere.dev, and would have found nothing. From 0.2.0 the
   # image asks the API server which group it serves and uses that, so it works
   # on a cluster on either side of that move -- which both of ours still are.
   enabled: true

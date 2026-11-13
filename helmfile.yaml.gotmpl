@@ -732,10 +732,10 @@ releases:
   # ────────────────────────────────────────────────────────────────── operators
   - name: llm-slo
     namespace: {{ .Values.namespaces.llmslo }}
-    # This chart renders its own Namespace object, unconditionally -- there is
-    # no value to switch it off -- and that collides with the namespace helm
-    # has to have before it can write its release secret. Both obvious settings
-    # fail, each in one state:
+    # Older versions of this chart render their own Namespace object,
+    # unconditionally -- there is no value to switch it off -- and that collides
+    # with the namespace helm has to have before it can write its release secret.
+    # Both obvious settings fail, each in one state:
     #
     #   createNamespace: false   works only where the namespace already exists;
     #                            on a fresh cluster helm cannot write its own
@@ -749,6 +749,12 @@ releases:
     # The namespace is therefore created here, already carrying the ownership
     # label and annotations helm looks for, which makes the chart's copy an
     # adoption rather than a conflict. Idempotent, and it runs before the sync.
+    #
+    # Newer versions render no Namespace, and helm deletes what a release used to
+    # own and no longer does, so upgrading across that change would delete the
+    # namespace and everything in it. The keep annotation stops that: helm reads
+    # it off the live object. Clusters pinned to an older chart still need the
+    # adoption above, so both stay.
     createNamespace: false
     hooks:
       - events: ["presync"]
@@ -762,7 +768,8 @@ releases:
             kubectl label namespace "$ns" app.kubernetes.io/managed-by=Helm --overwrite
             kubectl annotate namespace "$ns" \
               meta.helm.sh/release-name=llm-slo \
-              meta.helm.sh/release-namespace="$ns" --overwrite
+              meta.helm.sh/release-namespace="$ns" \
+              helm.sh/resource-policy=keep --overwrite
     chart: {{ template "chartref" (dict "local" $local "name" "llm-slo-decision-gen" "ver" .Values.versions.llmslo "fallback" "modelsphere/llm-slo-decision-gen") }}
     version: {{ .Values.versions.llmslo | quote }}
     installed: {{ .Values.enabled.llmslo }}
