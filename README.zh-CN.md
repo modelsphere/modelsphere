@@ -33,6 +33,8 @@ ModelSphere 是一个开源的大模型推理基建平台，目标是让生产�
 
 ## 快速开始
 
+以下步骤用于在 Kubernetes 上进行生产环境部署。如果只是想快速体验、没有 Kubernetes 集群，可以参考[基于 Docker 的部署指南](docker/README.md)（英文）。
+
 ### **前置条件**
 
 1. 一个 Kubernetes 集群，并且 `kubectl` 已指向该集群；

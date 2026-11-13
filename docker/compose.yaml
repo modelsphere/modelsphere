@@ -1,0 +1,70 @@
+# The routing layer: the router clients talk to, and the model's cache-aware router.
+# Brought up by ./up.sh, which renders their configuration first.
+#
+# Both run with host networking, so there is no compose network, no subnet to pick
+# and no address to pin: the gateway is on this machine's own address, and the two
+# talk to each other over the loopback. The ports come from .env -- up.sh substitutes
+# them into the framework config it extracts from the image, since host networking
+# leaves no mapping to do it with -- and both must be free on this machine. The
+# image's other listener, its unauthenticated /healthz admin server, is turned off
+# there as well: nothing in this deployment uses it.
+#
+#   GATEWAY_PORT  the gateway: http://<this machine>:8080/<route>/v1/...
+#                 Reachable from anywhere that can route here. Authentication is off
+#                 until API_KEYS_DIR (./keys) holds a `keys` file, and the /<route>/_* status
+#                 endpoints have none in any case and name the engines.
+#   CART_PORT     bound to 127.0.0.1 by the generated config, so other machines
+#                 cannot reach it at all.
+#
+# The engines are not here. They run on the machines in `hosts`, one container each,
+# also with host networking -- ./up.sh starts them from the per-machine scripts in
+# generated/.
+#
+# No healthchecks: these images carry the component and nothing else -- no curl, no
+# wget -- so a HEALTHCHECK here would report the shell's failure rather than the
+# service's. Check them from outside instead, with ./status.sh.
+#
+# No fixed project or container names: up.sh, down.sh and status.sh pass the project
+# name (ms-<route>), so two deployments of different models on one control machine
+# keep separate containers -- each needs its own GATEWAY_PORT and CART_PORT.
+
+services:
+  openresty:
+    image: ${OPENRESTY_IMAGE:?set OPENRESTY_IMAGE in .env}
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # The image ships the framework with zero routes; this is where the model's
+      # route comes from. render.sh writes it. Mounted as a directory, and render.sh
+      # overwrites the file inside it in place -- a single-file mount follows the
+      # inode, so a rewritten file would leave this container reading the old one.
+      - ./generated/routes:/usr/local/openresty/nginx/conf/conf.d/routes:ro
+      # The framework config, taken out of this image by up.sh with the listener
+      # ports substituted (host networking leaves nothing to remap them with), and
+      # re-extracted from the image on every run so it cannot drift from it.
+      - ./generated/session_base.conf:/usr/local/openresty/nginx/conf/conf.d/session_base.conf:ro
+      # API keys: the `keys` file in API_KEYS_DIR (default ./keys); no file, no auth.
+      # Mounted as a whole directory, never a single file: the engine re-reads the
+      # file on reload, and a file-level bind mount pins the inode so rotation
+      # silently stops working. An absent or unreadable file means NO
+      # authentication -- every request is let through and /_health_status reports
+      # api_keys_configured=false.
+      - ${API_KEYS_DIR:-./keys}:/etc/openresty/api-keys:ro
+    # nginx's SIGTERM is the fast shutdown that cuts requests mid-stream; the image
+    # declares STOPSIGNAL SIGQUIT so stopping drains instead. This is the hard
+    # cutoff after it -- size it to the longest response you serve.
+    stop_grace_period: 1h
+
+  cart:
+    image: ${CART_IMAGE:?set CART_IMAGE in .env}
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./generated/cart.yaml:/workspace/configs/config.yaml:ro
+    # Its launcher refuses to start below 65535 open files, and the daemon default
+    # is lower on some hosts: without this the container exits at once with
+    # "ulimit -n ... is too low".
+    ulimits:
+      nofile: 65535
+    stop_grace_period: 10m
+

@@ -32,6 +32,8 @@ ModelSphere is an open-source LLM inference platform designed to make production
 
 ## Quick start
 
+The steps below deploy ModelSphere on Kubernetes for production use. To try it out quickly without a Kubernetes cluster, see the [Docker-based deployment guide](docker/README.md).
+
 ### **Prerequisites**
 
 1. a Kubernetes cluster, and `kubectl` pointing at it;
@@ -122,6 +124,7 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 | [`docs/install.md`](docs/install.md) | the complete install: preparing the machines, creating the Kubernetes cluster, and installing the stack on it -- with the air-gapped path and the detail on each step linked from there |
 | [`docs/configuration.md`](docs/configuration.md) | what to change once it runs, and where: the cluster's environment file against a model's values file, with the guides for models, routing and rate limits, CART, autoscaling and rolling updates linked from there |
 | [`docs/console.md`](docs/console.md) | opening the portal the first time: the address, the first login, and what the Model Serving pages need |
+| [`docker/README.md`](docker/README.md) | the same stack without Kubernetes: the routing layer as containers and one engine container per GPU server, on NVIDIA or Ascend hardware |
 
 ## Community
 
