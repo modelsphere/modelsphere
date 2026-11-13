@@ -1,4 +1,4 @@
-# Serving a model with containers, without Kubernetes
+# Serving a model with Docker
 
 One model, on a set of GPU servers, with nothing but a container runtime and SSH. The
 routing layer runs as `docker compose` on a control machine; each GPU server runs one
@@ -36,8 +36,7 @@ server.
 
 ### Control machine
 
-Where you run `./up.sh`. It needs no accelerator, and it may be one of the engine
-GPU servers.
+Where you run `./up.sh`. It needs no accelerator, and it may be one of the GPU servers.
 
 | Requirement | How to check |
 |---|---|
@@ -60,156 +59,173 @@ GPU servers.
 
 ### Additionally, for an instance that spans GPU servers
 
-Only when `NODES_PER_INSTANCE` is greater than 1. Every item here fails silently: the
-model loads, and then the engine hangs at its first collective operation.
+These apply only when `NODES_PER_INSTANCE` is greater than 1, i.e. one model instance
+runs across several GPU servers. If any of them is not met, the engine usually loads
+the model and then stops responding when the servers first communicate, without an
+error message pointing to the cause.
 
 | Requirement | How to check |
 |---|---|
 | **RDMA/InfiniBand ready**, if you intend to use it: ports up, devices present | `ibstat` (every port `Active`), `ls /dev/infiniband`, and the device named in `DOCKER_FLAGS` |
-| **The collective interface named explicitly** | `-e NCCL_SOCKET_IFNAME=<nic>` or `-e HCCL_SOCKET_IFNAME=<nic>` in `DOCKER_FLAGS`. Left unset on a GPU server with several interfaces, the engine picks one that cannot reach its peer |
+| **The network interface the servers connect over, named explicitly** | `-e NCCL_SOCKET_IFNAME=<nic>` (NVIDIA) or `-e HCCL_SOCKET_IFNAME=<nic>` (Ascend) in `DOCKER_FLAGS`. The servers of an instance first find and connect to each other over this host interface. Without it, on a server with several network interfaces the engine chooses one automatically, and may choose one the other servers cannot reach (a container bridge, or a network without a route between the servers); the instance then never finishes connecting. On Ascend this is only the connection setup — the collective traffic itself runs over the NPUs' own RoCE ports, configured in `/etc/hccn.conf` |
 | **`DIST_PORT` free on every GPU server of the instance, and reachable between them** | `ss -ltn \| grep :<DIST_PORT>` |
 
 ## Quick start
 
 ```bash
 cd docker
-cp examples/ascend-glm53-flash.env .env   # ls examples/ for the others
+cp examples/glm-5.3-flash-910b4.env .env   # ls examples/ for the others
 cp hosts.example hosts                    # this GPU server; edit it for several
-# set MODEL_PATH (and MODEL_NAME, ROUTE) at the top of .env, then:
+# set MODEL_PATH (and MODEL_NAME) at the top of .env, then:
 ./up.sh
 ```
 
 `examples/` holds complete, tested starting points, one per hardware and model — copy
-the closest one rather than filling in a blank template. `up.sh` renders first, then
-starts the engine on every GPU server, waits until each serves `/v1/models` (a container
-starts in seconds, the weights load for minutes), then starts the routing layer. To
-see what would run without running it: `./render.sh`, then read `generated/`.
+the closest one rather than filling in a blank template. `up.sh` first generates the
+routing configuration and the launch commands from `.env` and `hosts`, then starts the
+engine on every GPU server, waits until each serves `/v1/models` (a container
+starts in seconds, the weights load for minutes), then starts the routing layer.
 
-```bash
-curl -s http://127.0.0.1:8080/<ROUTE>/_health_status
-curl http://127.0.0.1:8080/<ROUTE>/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"<MODEL_NAME>","messages":[{"role":"user","content":"hello"}],"max_tokens":16}'
+`up.sh` returns once every instance serves (up to 90 minutes) and prints the service,
+for example:
+
+```
+=== model service
+  endpoint   http://10.0.0.21:8080/glm-5.3-flash/v1        (OpenAI-compatible)
+  model      glm-5.3-flash
+  instances  1 of 1 ready
+  try        curl http://10.0.0.21:8080/glm-5.3-flash/v1/chat/completions -H 'Content-Type: application/json' \
+               -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-The first path segment is `ROUTE`, not the model name. `./down.sh` stops everything.
+| Command | What it does |
+|---|---|
+| `./up.sh` | Starts everything; returns once every instance serves |
+| `./up.sh --no-wait` | Starts everything and returns at once |
+| `./status.sh` | Shows each instance (serving, loading, stopped), the routing layer and the endpoint; exits 0 once everything serves |
+| `./down.sh` | Stops everything |
 
 ## Configuration
 
-`.env` holds everything, in sections ordered by how likely you are to change them;
-`hosts` is one GPU server per line (a second column only where SSH and the data network
-use different addresses). Both are gitignored. `generated/` is output, rewritten on
-every run — never edit it, and do not delete it while the stack runs: openresty and
-CART read files from it in place.
+| File | What it is |
+|---|---|
+| `.env` | All settings. Gitignored |
+| `hosts` | The GPU servers, one per line; a second column only where SSH and the data network use different addresses. Gitignored |
+| `keys/` | API keys (see Authentication). Gitignored |
+| `generated/` | Generated from `.env` and `hosts` on every run. Do not edit it, and do not delete it while the stack runs — openresty and CART read their configuration from it. `./render.sh` generates it without starting anything, to see exactly what would run |
 
 | Section of `.env` | Holds |
 |---|---|
 | the model | what you are serving, and where its weights are — always needs editing |
 | the shape | how the GPU servers in `hosts` add up to instances (`NODES_PER_INSTANCE`, `TP`, `PP`) |
 | the engine | engine, image, flags — comes with the example |
-| the accelerators | `DOCKER_FLAGS` (devices, environment, a vendor runtime) and `PRE_START` |
+| the accelerators | `DOCKER_FLAGS` (devices, environment, a vendor runtime) |
 | limits and access | rate limits and authentication — tune after measuring |
-| plumbing | ports, images, the container CLI, SSH — rarely touched |
+| ports, images and SSH | ports, images, the container CLI, SSH — rarely touched |
+
+The URL path is named after the model: `MODEL_NAME` without any `org/` prefix,
+lower-cased (`Qwen/Qwen3-32B` serves at `/qwen3-32b/v1`). Set
+`ROUTE` in `.env` to choose a different path.
 
 ### How many instances
 
 | `NODES_PER_INSTANCE` | Four 8-card GPU servers give | Use it when |
 |---|---|---|
-| `1` (default) | four instances of 8 cards, balanced by CART | the weights fit in one GPU server: more throughput, no cross-GPU server collectives, a failure costs one instance |
+| `1` (default) | four instances of 8 cards, balanced by CART | the weights fit in one GPU server: more throughput, no collectives across servers, a failure costs one instance |
 | `4` | one instance of 32 cards | the weights do not fit in one GPU server |
 
 GPU servers are taken in file order; the first GPU server of each instance is rank 0, the
-only one that serves the API. `render.sh` refuses a shape where `TP × PP` does not equal
+only one that serves the API. `up.sh` refuses a shape where `TP × PP` does not equal
 `DEVICES_PER_NODE × NODES_PER_INSTANCE`, or where the server count does not divide.
-An instance spanning GPU servers also needs the collective interface named in
+An instance spanning GPU servers also needs its network interface named in
 `DOCKER_FLAGS` (see Prerequisites), and is restarted as a whole — the containers run
 with `--restart no`, because a lone rank coming back waits at a rendezvous forever.
 
 ### Different hardware
 
-There is no vendor-specific code; the hardware is three variables:
+There is no vendor-specific code; the hardware is two variables:
 
 | Variable | What it is |
 |---|---|
 | `ENGINE_IMAGE` | the engine build for this hardware |
 | `DOCKER_FLAGS` | every extra container argument, verbatim: devices, `-e`, mounts, a vendor runtime. `{HOST}` is replaced with the GPU server's own address |
-| `PRE_START` | anything that must run inside the container before the engine |
 
 `--network host --ipc=host`, the memlock/stack ulimits, the weights mount and a cache
-directory are always added. Keep `DOCKER_FLAGS` on one line. Things that differ from
-Kubernetes:
+directory are always added. Keep `DOCKER_FLAGS` on one line. Also note:
 
-- **Nothing injects the devices.** No device plugin here: the runtime or device mounts
-  must be asked for in `DOCKER_FLAGS`. For Ascend, docker takes the runtime's
-  registered **name** (`--runtime ascend`, from `/etc/docker/daemon.json`), not a path.
-- **No CPU or memory limit** unless you add `--cpus` / `--memory` — relevant when
-  comparing throughput with a Kubernetes deployment, which normally has both.
-- **Ascend's driver is mounted at start**, so `PRE_START` runs `ldconfig` for it.
+- **Accelerators must be requested in `DOCKER_FLAGS`.** On NVIDIA it is `--gpus`. On
+  Ascend it is `--runtime ascend -e ASCEND_VISIBLE_DEVICES=0-7`, which needs `ascend`
+  listed under Runtimes in `docker info`. The Ascend Docker Runtime installer registers
+  it when docker is already installed; if it is missing, add it to
+  `/etc/docker/daemon.json` and restart dockerd:
+  `"runtimes": {"ascend": {"path": "/usr/local/Ascend/Ascend-Docker-Runtime/ascend-docker-runtime"}}`.
+  docker takes the registered name, not the path.
+- **No CPU or memory limit** unless you add `--cpus` / `--memory` to `DOCKER_FLAGS`.
 
 Mixing hardware in one deployment is not supported (the route's latency limits are
-judged across all instances); run a second deployment with its own `ROUTE`.
+judged across all instances); run a second deployment with its own model name.
 
-The engine command is built from `ENGINE`, the port and `TP`/`PP`;
-`ENGINE_EXTRA_ARGS` is appended verbatim (a JSON value needs its own single quotes),
-and `ENGINE_CMD` replaces the whole command for an image that starts its own way, with
-`{HOST} {BIND} {PORT} {RANK} {NNODES} {LEADER} {DIST_PORT} {MODEL_NAME} {TP} {PP}`
-substituted per GPU server. The flags the rate limiter depends on (`--enable-metrics`,
-`--enable-cache-report`, `--stream-response-default-include-usage` on SGLang,
-`--enable-prompt-tokens-details` on vLLM) are always added — with `ENGINE_CMD`, add
-them yourself.
+### Rate limits
 
-### Limits and applying changes
+| Setting | Default | What it does |
+|---|---|---|
+| `MAX_CONCURRENCY` | `100` | Requests in flight per instance at the gateway; the route's limit is this × healthy instances |
+| `TTFT_LIMIT_MS` | `30000` | When the average time to first token reaches this, new requests get `429` |
+| `TPS_LIMIT_TPS` | `20` | Target decode rate per request, in tokens/s; below it, adaptive concurrency lowers the limit |
+| `ADAPTIVE_CC` | `true` | Adaptive concurrency; `false` keeps the full `MAX_CONCURRENCY` and rejects with `429` when the decode rate is below target |
+| `ADAPTIVE_CC_MIN_FRAC` | `0.4` | Lowest adaptive limit, as a fraction of `MAX_CONCURRENCY` |
+| `CART_MAX_LOAD` | `50` | Requests in flight per instance at CART |
+| `MAX_BODY_SIZE` | `209715200` | Largest request body in bytes (200 MiB), for the gateway and CART alike |
 
-`MAX_CONCURRENCY` (per instance), `TTFT_LIMIT_MS`, `TPS_LIMIT_TPS`, `ADAPTIVE_CC` and
-`ADAPTIVE_CC_MIN_FRAC` are the gateway's limits; `CART_MAX_LOAD` and
-`CART_MAX_BODY_SIZE` are CART's. Over a limit is an immediate `429` with
-`Retry-After: 1` — nothing is queued.
+Over a limit is an immediate `429` with `Retry-After: 1`; nothing is queued.
 
-Re-running `./up.sh` applies any change: engines whose rendered spec is unchanged and
-still running are kept, openresty reloads gracefully, and CART is signalled to re-read
-its worker list.
+### Applying changes
+
+Re-run `./up.sh`. It keeps every engine whose configuration is unchanged and still
+running, reloads openresty gracefully, and signals CART to re-read its worker list.
 
 | Change | In-flight requests |
 |---|---|
-| Limits, route name, adding or removing GPU servers | kept — only new GPU servers start, removed ones need `docker rm -f engine-<ROUTE>` on that GPU server |
+| Limits, route name, adding or removing GPU servers | kept — only new GPU servers start, removed ones need `docker rm -f engine-<route>` on that GPU server |
 | Engine flags, `TP`/`PP`, image | cut on the GPU servers whose engine changed — those are recreated |
 | Any CART field other than its workers | restart CART: `docker compose restart cart` |
 | Force every engine to restart | `FORCE_ENGINES=1 ./up.sh` |
 
 ### Authentication
 
-Off by default: with no key file every request is let through and `_health_status`
-reports `api_keys_configured=false`. To turn it on:
+The gateway reads its keys from `keys/keys` (`API_KEYS_DIR`, default `./keys`). While
+that file does not exist, every request is let through and `_health_status` reports
+`api_keys_configured=false`. To turn authentication on:
 
 ```bash
-mkdir -p keys && echo 'sk-one:team-a,sk-two:team-b' > keys/keys
-# .env:  API_KEYS_DIR=./keys
-docker compose up -d && docker compose exec openresty openresty -s reload
+echo 'sk-one:team-a,sk-two:team-b' > keys/keys
+./up.sh
 ```
 
-Keys are reloaded without a restart, so a new key can be added beside the old one
-before the old one is removed. The `/<ROUTE>/_*` status endpoints are never
-authenticated.
+Requests then need `Authorization: Bearer <key>`. Re-running `./up.sh` reloads the keys
+without a restart, so a new key can be added beside the old one before the old one
+is removed. The `/<route>/_*` status endpoints are never authenticated.
 
 ## Troubleshooting
 
+Start with `./status.sh`. The gateway's own status endpoints, on the control machine:
+
 ```bash
-curl -s http://127.0.0.1:8080/<ROUTE>/_health_status   # each peer: active or banned
-curl -s http://127.0.0.1:8080/<ROUTE>/_tps_status      # decode rate, adaptive limit
-curl -s http://127.0.0.1:8080/<ROUTE>/_429_status      # rejections by reason
+curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_health_status   # each peer: active or banned
+curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_tps_status      # decode rate, adaptive limit
+curl -s http://127.0.0.1:<GATEWAY_PORT>/<route>/_429_status      # rejections by reason
 ```
 
 | Symptom | Check |
 |---|---|
-| `502` on the route | the first path segment is not `ROUTE` |
-| `503` | every peer failed its health check: `_health_status`, then `docker logs engine-<ROUTE>` on the GPU server |
+| `502` on the route | the first path segment is not the route `up.sh` printed, or no engine is reachable yet (`./status.sh`) |
+| `503` | every peer failed its health check: `_health_status`, then `docker logs engine-<route>` on the GPU server |
 | `429` at low load | adaptive concurrency at its floor: `_tps_status`, and whether `TPS_LIMIT_TPS` is reachable on this hardware |
-| An instance never becomes ready | `docker logs engine-<ROUTE>` on rank 0, and on every rank of a multi-server instance |
+| An instance never becomes ready | `docker logs engine-<route>` on rank 0, and on every rank of a multi-server instance |
 | Which instance served a request | set `EXPOSE_ROUTED_PEER=true` and re-run `./up.sh`: responses then carry `X-Routed-Peer` |
 
 ## Not provided
 
-Compared with the Kubernetes deployment: nothing restarts a failed instance, there is
-no autoscaling, no backend discovery (`hosts` is the truth), no rolling update, and one
-model per deployment — a second model is a second copy of `docker/` with its own
-`ROUTE`, ports and GPU servers.
+Nothing restarts a failed instance, and there is no autoscaling, no backend discovery
+(`hosts` is the truth), no rolling update, and one model per deployment — a second
+model is a second copy of `docker/` with its own model name, ports and GPU servers.

@@ -19,6 +19,9 @@ GRACE=${GRACE:-60}
 # an absolute path. ENV_FILE may be either.
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
+# The route name render.sh settled on (ROUTE, or derived from MODEL_NAME).
+[ -f generated/route ] || ./render.sh
+ROUTE=$(cat generated/route)
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac

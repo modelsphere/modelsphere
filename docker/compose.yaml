@@ -11,7 +11,7 @@
 #
 #   GATEWAY_PORT  the gateway: http://<this machine>:8080/<route>/v1/...
 #                 Reachable from anywhere that can route here. Authentication is off
-#                 unless API_KEYS_DIR names a key file, and the /<route>/_* status
+#                 until API_KEYS_DIR (./keys) holds a `keys` file, and the /<route>/_* status
 #                 endpoints have none in any case and name the engines.
 #   CART_PORT     bound to 127.0.0.1 by the generated config, so other machines
 #                 cannot reach it at all.
@@ -43,13 +43,13 @@ services:
       # ports substituted (host networking leaves nothing to remap them with), and
       # re-extracted from the image on every run so it cannot drift from it.
       - ./generated/session_base.conf:/usr/local/openresty/nginx/conf/conf.d/session_base.conf:ro
-      # API keys, off unless API_KEYS_DIR names a directory holding a `keys` file.
+      # API keys: the `keys` file in API_KEYS_DIR (default ./keys); no file, no auth.
       # Mounted as a whole directory, never a single file: the engine re-reads the
       # file on reload, and a file-level bind mount pins the inode so rotation
       # silently stops working. An absent or unreadable file means NO
       # authentication -- every request is let through and /_health_status reports
       # api_keys_configured=false.
-      - ${API_KEYS_DIR:-./.no-api-keys}:/etc/openresty/api-keys:ro
+      - ${API_KEYS_DIR:-./keys}:/etc/openresty/api-keys:ro
     environment:
       # Empty means body logging is off: nothing is captured and nothing is sent,
       # with no fallback address. With the bodylog service below, use 127.0.0.1 --

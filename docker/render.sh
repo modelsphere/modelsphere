@@ -31,7 +31,24 @@ die() { echo "render: $*" >&2; exit 1; }
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
 
-: "${ROUTE:?set ROUTE in $ENV_FILE}" "${MODEL_NAME:?set MODEL_NAME}" "${MODEL_PATH:?set MODEL_PATH}"
+: "${MODEL_NAME:?set MODEL_NAME}" "${MODEL_PATH:?set MODEL_PATH}"
+
+# The route -- the first path segment clients call, /<route>/v1/... -- is the model name
+# unless ROUTE overrides it: the part after the last '/', lower-cased, with anything the
+# gateway's dispatcher does not accept ([a-z0-9._-]) turned into '-'.
+#   glm-5.3-flash              -> /glm-5.3-flash/
+#   Qwen/Qwen2.5-72B-Instruct  -> /qwen2.5-72b-instruct/
+if [ -z "${ROUTE:-}" ]; then
+    ROUTE=$(printf '%s' "${MODEL_NAME##*/}" | tr 'A-Z' 'a-z' | sed -E 's/[^a-z0-9._-]+/-/g')
+fi
+printf '%s' "$ROUTE" | grep -qE '^[a-z0-9._-]+$' \
+    || die "ROUTE '$ROUTE' must match [a-z0-9._-]+ -- the gateway routes nothing else, every request would get 502"
+# Largest request body, in bytes, for the route and CART alike (CART_MAX_BODY_SIZE is
+# the older name).
+MAX_BODY=${MAX_BODY_SIZE:-${CART_MAX_BODY_SIZE:-209715200}}
+case "$MAX_BODY" in ''|*[!0-9]*) die "MAX_BODY_SIZE must be a number of bytes, got '$MAX_BODY'" ;; esac
+# The same name as an nginx variable, which allows only [A-Za-z0-9_].
+ROUTE_VAR=$(printf '%s' "$ROUTE" | sed -E 's/[^A-Za-z0-9_]/_/g')
 : "${ENGINE_IMAGE:?set ENGINE_IMAGE}" "${ENGINE_PORT:?set ENGINE_PORT}"
 
 ENGINE=${ENGINE:-sglang}
@@ -73,6 +90,8 @@ mkdir -p "$OUT/routes"
 # shows the new config while the container serves the old, with nothing to see.
 rm -f "$OUT"/engine-*.sh 2>/dev/null || true
 : > "$OUT/manifest"
+# up.sh and down.sh name the engine containers after it.
+printf '%s\n' "$ROUTE" > "$OUT/route"
 
 ############################### the engine commands ###############################
 # One script per machine. A script rather than more compose services because each
@@ -289,10 +308,12 @@ server {
     # The image's dispatcher on 8080 forwards /$ROUTE/ here; the socket name must be
     # the route name.
     listen unix:/usr/local/openresty/nginx/sock/$ROUTE.sock;
+    # The image's own default is 10m; the same limit as CART, so neither cuts the other.
+    client_max_body_size $MAX_BODY;
     server_name _;
     set \$route "$ROUTE";
 
-    set_by_lua_block \$__${ROUTE}_init {
+    set_by_lua_block \$__${ROUTE_VAR}_init {
         _G.register_route("$ROUTE", function()
             return {
                 peers = {
@@ -352,8 +373,8 @@ proxy:
   request_timeout_secs: 10000
   connect_timeout_secs: 2
   # A multimodal request carrying inline base64 image or video data easily passes
-  # 10 MiB on its own, so the default is 200 MiB.
-  max_body_size: ${CART_MAX_BODY_SIZE:-209715200}
+  # 10 MiB on its own, so the default is 200 MiB. The route above uses the same value.
+  max_body_size: $MAX_BODY
 CONF
 
 echo "render: /$ROUTE/ -> $(( nhosts / NODES_PER_INSTANCE )) instance(s) of $NODES_PER_INSTANCE machine(s) x $DEVICES_PER_NODE device(s), $ENGINE TP=$TP PP=$PP"

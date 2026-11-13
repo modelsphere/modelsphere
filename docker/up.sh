@@ -2,9 +2,10 @@
 # Bring the model up: render the configuration, start the engine on every machine,
 # start the routing layer.
 #
-#   ./up.sh                  # all of it
+#   ./up.sh                  # all of it; returns once every instance serves
+#   ./up.sh --no-wait        # start everything and return at once (or WAIT=0);
+#                            #   follow the loading with ./status.sh
 #   SKIP_ENGINES=1 ./up.sh   # routing layer only -- a limit change, a new address
-#   WAIT=0 ./up.sh           # do not wait for the engines to finish loading
 #   FORCE_ENGINES=1 ./up.sh  # recreate every engine, even one running unchanged
 #
 # An engine already running with exactly the rendered spec is kept, so adding a
@@ -17,6 +18,12 @@ cd "$(dirname "$0")"
 
 ENV_FILE=${ENV_FILE:-.env}
 WAIT=${WAIT:-1}
+for a in "$@"; do
+    case "$a" in
+        --no-wait) WAIT=0 ;;
+        *) echo "up.sh: unknown argument '$a' (only --no-wait)" >&2; exit 2 ;;
+    esac
+done
 # A large model can take tens of minutes to load; the Kubernetes charts budget 90
 # for the same reason.
 WAIT_TIMEOUT=${WAIT_TIMEOUT:-5400}
@@ -27,6 +34,8 @@ echo "=== render"
 # an absolute path. ENV_FILE may be either.
 case "$ENV_FILE" in /*|./*|../*) ENV_PATH=$ENV_FILE ;; *) ENV_PATH=./$ENV_FILE ;; esac
 set -a; . "$ENV_PATH"; set +a
+# The route name render.sh settled on (ROUTE, or derived from MODEL_NAME).
+ROUTE=$(cat generated/route)
 
 is_this_machine() {   # is_this_machine <address>: loopback or one of our own IPv4s
     case "$1" in 127.*|localhost) return 0 ;; esac
@@ -67,6 +76,7 @@ if [ "${SKIP_ENGINES:-0}" != "1" ]; then
         # /v1/models answering is readiness, not the container being up: the
         # container starts in seconds and the weights load for minutes.
         deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
+        n_total=0; n_ready=0
         while read -r target script instance role; do
             case "$role" in rank0-serves:*) ;; *) continue ;; esac
             addr=${script#engine-}; addr=${addr%.sh}; port=${role#rank0-serves:}
@@ -76,8 +86,9 @@ if [ "${SKIP_ENGINES:-0}" != "1" ]; then
                 if curl -fs -m 10 "http://$addr:$port/v1/models" >/dev/null 2>&1; then ok=1; break; fi
                 printf '.'; sleep 20
             done
-            [ "$ok" = 1 ] && echo " ready" \
-                || echo " NOT READY -- on the machine: ${CTR_CLI:-docker} logs engine-$ROUTE"
+            n_total=$(( n_total + 1 ))
+            if [ "$ok" = 1 ]; then echo " ready"; n_ready=$(( n_ready + 1 ))
+            else echo " NOT READY -- on the machine: ${CTR_CLI:-docker} logs engine-$ROUTE"; fi
         done < generated/manifest
     fi
 fi
@@ -147,6 +158,9 @@ fi
 PROFILE=""
 [ -n "${BODYLOG_LISTENER_HOST:-}" ] && PROFILE="--profile bodylog"
 # shellcheck disable=SC2086
+# The key directory is mounted whether or not it holds a key file (no file = no
+# authentication). Create it here rather than let docker create it as root.
+mkdir -p "${API_KEYS_DIR:-./keys}"
 docker compose $PROFILE up -d
 
 # Applying a changed configuration to a routing layer that is already running:
@@ -170,10 +184,25 @@ if docker compose $PROFILE ps --status running --services 2>/dev/null | grep -qx
 fi
 cp generated/cart.yaml generated/.applied-cart.yaml
 
-# GATEWAY_PORT may be a bare port or address:port.
-case "${GATEWAY_PORT:-8080}" in *:*) GW=${GATEWAY_PORT} ;; *) GW=127.0.0.1:${GATEWAY_PORT:-8080} ;; esac
+# The address clients use. GATEWAY_PORT may be a bare port (every interface: show the
+# address of the interface this machine's default route leaves by) or address:port.
+case "${GATEWAY_PORT:-8080}" in
+    *:*) GW=${GATEWAY_PORT} ;;
+    *)   ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -nE 's/.* src ([0-9.]+).*/\1/p')
+         GW=${ip:-127.0.0.1}:${GATEWAY_PORT:-8080} ;;
+esac
 echo
-echo "ready: curl http://$GW/$ROUTE/v1/chat/completions \\"
-echo "         -H 'Content-Type: application/json' \\"
-echo "         -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
-echo "state: curl -s http://$GW/$ROUTE/_health_status"
+echo "=== model service"
+echo "  endpoint   http://$GW/$ROUTE/v1        (OpenAI-compatible)"
+echo "  model      $MODEL_NAME"
+if [ "${SKIP_ENGINES:-0}" = "1" ] || [ "$WAIT" != "1" ]; then
+    echo "  instances  still loading -- follow with ./status.sh"
+else
+    echo "  instances  ${n_ready:-0} of ${n_total:-0} ready"
+fi
+echo "  try        curl http://$GW/$ROUTE/v1/chat/completions -H 'Content-Type: application/json' \\"
+echo "               -d '{\"model\":\"$MODEL_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}'"
+if [ "$WAIT" = "1" ] && [ "${SKIP_ENGINES:-0}" != "1" ] && [ "${n_ready:-0}" -lt "${n_total:-0}" ]; then
+    echo "!! not every instance is ready; the route serves only the ready ones" >&2
+    exit 1
+fi
