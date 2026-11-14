@@ -19,4 +19,5 @@ nodeSelector:
 secret:
   existingSecret: bodylog
 serviceMonitor:
-  enabled: {{ $g.serviceMonitor }}
+  # Empty follows enabled.kubePrometheusStack: the CRD ships with it.
+  enabled: {{ if kindIs "bool" (dig "serviceMonitor" "" $g) }}{{ dig "serviceMonitor" false $g }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
