@@ -883,8 +883,8 @@ releases:
 
   # The model catalog and the engine charts, served in the cluster for swissd
   # where GitHub cannot be reached (enabled.catalogMirror; the offline
-  # environments turn it on). Filled from the bundle's catalog-seed.tar.gz
-  # when catalogSeed names it, synced from GitHub Pages otherwise -- see
+  # environments turn it on). Filled from the bundle's catalog-snapshot.tar.gz
+  # when catalogSnapshot names it, synced from GitHub Pages otherwise -- see
   # console/catalog-mirror.yaml.gotmpl.
   - name: catalog-mirror
     namespace: {{ .Values.namespaces.console }}
@@ -898,12 +898,12 @@ releases:
 {{- if $rewrite }}
       - console/catalog-mirror-offline-images.yaml.gotmpl
 {{- end }}
-{{- if .Values.catalogSeed }}
+{{- if .Values.catalogSnapshot }}
     hooks:
       - events: ["presync"]
         showlogs: true
         command: "sh"
-        args: ["console/catalog-seed.sh", {{ .Values.namespaces.console | quote }}, {{ .Values.catalogSeed | quote }}]
+        args: ["console/catalog-snapshot.sh", {{ .Values.namespaces.console | quote }}, {{ .Values.catalogSnapshot | quote }}]
 {{- end }}
 
   - name: console

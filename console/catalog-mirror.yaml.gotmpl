@@ -1,23 +1,23 @@
 # catalog-mirror: the model catalog and the engine chart repository, served in
 # the cluster for swissd (console/swiss-overrides.yaml.gotmpl points it here).
 #
-# Two ways to fill it, chosen by catalogSeed:
-#   set     an air-gapped cluster. The bundle's catalog-seed.tar.gz arrives as a
+# Two ways to fill it, chosen by catalogSnapshot:
+#   set     an air-gapped cluster. The bundle's catalog-snapshot.tar.gz arrives as a
 #           ConfigMap (the presync hook on this release creates it) and is
 #           unpacked on every pod start; nothing syncs, since there is nothing
-#           to sync from. No volume is needed -- the seed refills an emptyDir.
+#           to sync from. No volume is needed -- the snapshot refills an emptyDir.
 #   empty   a cluster that reaches GitHub, slowly or now and then: the chart's
 #           own sync copies GitHub Pages every five minutes, onto a PVC when
 #           storage.persistence is on.
-{{- $seed := .Values.catalogSeed | default "" }}
-{{- if $seed }}
+{{- $snapshot := .Values.catalogSnapshot | default "" }}
+{{- if $snapshot }}
 sync:
   enabled: false
-seed:
-  configMap: catalog-mirror-seed
-  key: seed.tar.gz
-  # A new bundle is a new seed: roll the pod so it is unpacked.
-  checksum: {{ readFile $seed | sha256sum | quote }}
+snapshot:
+  configMap: catalog-mirror-snapshot
+  key: snapshot.tar.gz
+  # A new bundle is a new snapshot: roll the pod so it is unpacked.
+  checksum: {{ readFile $snapshot | sha256sum | quote }}
 persistence:
   enabled: false
 {{- else }}

@@ -394,16 +394,16 @@ GitHub Pages. Offline, the bundle carries a copy and
 [catalog-mirror](https://github.com/modelsphere/helm-charts/tree/main/charts/catalog-mirror)
 serves it in the cluster:
 
-- `offline_bundle.sh` writes **`catalog-seed.tar.gz`**: the catalog (v1 and v2
+- `offline_bundle.sh` writes **`catalog-snapshot.tar.gz`**: the catalog (v1 and v2
   indexes and every file they name, digests checked; not the HTML reports) and
   the newest release of each engine chart, plus the versions `versions:` pins,
-  with an `index.yaml` naming the archives by file name. It refuses a seed in
+  with an `index.yaml` naming the archives by file name. It refuses a snapshot in
   which some v2 catalog entry would find no chart. The same chart archives go
   into `charts/`, which is where the bundle reads a model's sidecar images
   from (above).
-- **`enabled.catalogMirror: true`** and **`catalogSeed: <bundle>/catalog-seed.tar.gz`**
+- **`enabled.catalogMirror: true`** and **`catalogSnapshot: <bundle>/catalog-snapshot.tar.gz`**
   in the environment (`environments/offline.yaml.example` has both). A presync
-  hook hands the seed over as a ConfigMap, and catalog-mirror unpacks it on
+  hook hands the snapshot over as a ConfigMap, and catalog-mirror unpacks it on
   every pod start, with its sync from GitHub off. swissd's own default catalog
   points at the copy.
 - **The site profile is written once**, by a postsync hook on the swissd

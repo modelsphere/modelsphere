@@ -73,7 +73,7 @@ the image list is derived, so a render that stops there produces no bundle:
 Produces:
   <dir>/charts/*.tgz     every chart of a release this environment installs,
                          at the version it pins, plus the engine charts
-  <dir>/catalog-seed.tar.gz  the model catalog and the engine charts, for the
+  <dir>/catalog-snapshot.tar.gz  the model catalog and the engine charts, for the
                          in-cluster catalog-mirror swissd deploys from
   <dir>/images.txt       one image address per line, derived from the render
   <dir>/images/<name>/   an OCI layout per image, copied with crane so the
@@ -610,9 +610,9 @@ SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT
 # NEWEST release that meets the catalog entry's constraint, from the chart
 # repository and catalog its site profile names -- GitHub Pages, which an
 # air-gapped cluster cannot reach. So the bundle carries both: the pinned
-# versions and the newest ones go into charts/, and catalog-seed.tar.gz holds the
+# versions and the newest ones go into charts/, and catalog-snapshot.tar.gz holds the
 # catalog plus those same charts for catalog-mirror to serve in the cluster.
-# catalog_seed.py refuses a seed that leaves a catalog entry with no chart.
+# catalog_snapshot.py refuses a snapshot that leaves a catalog entry with no chart.
 #
 # Measured, for the pinned half: without it README step 8 installed the model
 # from a copy an earlier run had left in ~/.cache/helm, and would have failed on
@@ -625,9 +625,9 @@ print(" ".join("--pin %s=%s" % (n, v[n]) for n in ("sglang", "vllm") if v.get(n)
 PY
 )
 # shellcheck disable=SC2086  # _pins is a list of flags
-if ! python3 "$REPO_ROOT/script/catalog_seed.py" "$OUT/catalog-seed.tar.gz" $_pins \
+if ! python3 "$REPO_ROOT/script/catalog_snapshot.py" "$OUT/catalog-snapshot.tar.gz" $_pins \
        --charts-dir "$OUT/charts" --models "${CATALOG_MODELS:-}" --images-out "$OUT/.catalog-images"; then
-  echo "could not build the catalog seed: swissd on the far side would have no" >&2
+  echo "could not build the catalog snapshot: swissd on the far side would have no" >&2
   echo "catalog and no engine chart to deploy from. Refusing to continue." >&2
   exit 1
 fi
@@ -1022,7 +1022,7 @@ image_format: oci            # crane OCI layouts, one directory per image.
 charts:      $(ls "$OUT/charts" | wc -l | tr -d ' ')
 images:      $COUNT ($( [ "$SKIP_IMAGES" = true ] && echo "list only" || echo "saved"))
 engines:     $ENGINE_COUNT (named in engine-images.txt, not derived) + ${CAT_COUNT:-0} from the catalog
-catalog_seed: catalog-seed.tar.gz ($(wc -c < "$OUT/catalog-seed.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})
+catalog_snapshot: catalog-snapshot.tar.gz ($(wc -c < "$OUT/catalog-snapshot.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})
 tools:       $TOOL_COUNT (binaries and units for the isolated side)
 EOF
 rm -f "$RENDER" "$OUT/.render.err" "$OUT/.releases.json" \

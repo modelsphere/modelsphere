@@ -453,7 +453,7 @@ A. registryMode: rewrite -- helm writes every address under the registry.
     # environments/<your-cluster>.yaml
     registry: $REGISTRY
     chartsDir: $BUNDLE/charts
-    catalogSeed: $BUNDLE/catalog-seed.tar.gz
+    catalogSnapshot: $BUNDLE/catalog-snapshot.tar.gz
     registryMode: rewrite
 
     # creating the cluster: the control-plane images are not helm's to rewrite
@@ -467,7 +467,7 @@ B. registryMode: mirror -- addresses stay upstream, the NODES redirect. Leave
 
     # environments/<your-cluster>.yaml
     chartsDir: $BUNDLE/charts
-    catalogSeed: $BUNDLE/catalog-seed.tar.gz
+    catalogSnapshot: $BUNDLE/catalog-snapshot.tar.gz
     registryMode: mirror
 
     # every node, before kubeadm init

@@ -31,7 +31,7 @@ chartRepo: https://modelsphere.github.io/helm-charts
 
 # The model catalog and the engine charts swissd deploys from, served in the
 # cluster by catalog-mirror (enabled below) out of this file from the bundle.
-catalogSeed: /root/bundle/catalog-seed.tar.gz
+catalogSnapshot: /root/bundle/catalog-snapshot.tar.gz
 
 # Put in front of every alert message, so an alert says which cluster it is from.
 name: "OFFLINE"

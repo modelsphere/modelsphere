@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Pack the model catalog and the engine charts for catalog-mirror's seed.
+"""Pack the model catalog and the engine charts for catalog-mirror's snapshot.
 
 swissd deploys a model from two things it reads over HTTP: the model catalog and
 the chart the catalog names (sglang or vllm). An air-gapped cluster reaches
 neither, so the bundle carries a copy and catalog-mirror serves it in the
-cluster (its `seed`, see the chart's README). This writes that copy: a gzip'd
+cluster (its `snapshot`, see the chart's README). This writes that copy: a gzip'd
 tar with the two trees nginx serves.
 
   model-catalog/  index.json and every version file it names (schema v1),
                   index-v2.json, every variant file and history it names (v2).
                   Not the HTML reports: swiss does not read them, and they are
-                  most of the catalog's size -- the seed travels in a ConfigMap,
+                  most of the catalog's size -- the snapshot travels in a ConfigMap,
                   which holds 1 MiB.
   helm-charts/    the newest release of every chart the catalog names, plus any
                   version passed with --pin, and an index.yaml naming the
                   archives by bare file name so helm fetches them from the mirror.
 
 Every file is checked against the digest its index pins, and every chart
-constraint in the catalog has to be met by an archive in the seed -- a seed that
+constraint in the catalog has to be met by an archive in the snapshot -- a snapshot that
 cannot deploy some model fails here, not in the room with no network.
 
-  catalog_seed.py <out.tar.gz> [--pin sglang=0.8.2 ...] [--charts-dir DIR]
+  catalog_snapshot.py <out.tar.gz> [--pin sglang=0.8.2 ...] [--charts-dir DIR]
                   [--models a,b --images-out FILE]
 
 --charts-dir also writes the chart archives there (the bundle's charts/, where
@@ -35,7 +35,7 @@ import yaml
 
 CATALOG_URL = os.environ.get("CATALOG_URL", "https://modelsphere.github.io/model-catalog/").rstrip("/") + "/"
 CHARTS_URL = os.environ.get("CHARTS_URL", "https://modelsphere.github.io/helm-charts/").rstrip("/") + "/"
-LIMIT = 1024 * 1024  # a ConfigMap's size limit, which the seed has to fit
+LIMIT = 1024 * 1024  # a ConfigMap's size limit, which the snapshot has to fit
 
 
 def get(url):
@@ -174,7 +174,7 @@ def main():
     # nobody needs offline -- so those are reported, not refused.
     unmet = [(n, c, w, s) for n, c, w, s in constraints if not any(satisfies(v, c) for v in have.get(n, []))]
     for n, c, w, s in unmet:
-        print(f"    {'' if s == 'v2' else '(v1, not used offline) '}no {n} chart in the seed meets {c!r}: {w}",
+        print(f"    {'' if s == 'v2' else '(v1, not used offline) '}no {n} chart in the snapshot meets {c!r}: {w}",
               file=sys.stderr)
     if any(s == "v2" for *_, s in unmet):
         raise SystemExit("a v2 catalog entry would find no chart offline; --pin a version that meets it")
@@ -187,11 +187,11 @@ def main():
             t.addfile(info, io.BytesIO(files[rel]))
     data = buf.getvalue()
     if len(data) > LIMIT:
-        raise SystemExit(f"the seed is {len(data)} bytes, over the {LIMIT} a ConfigMap holds")
+        raise SystemExit(f"the snapshot is {len(data)} bytes, over the {LIMIT} a ConfigMap holds")
     with open(a.out, "wb") as f:
         f.write(data)
     n_cat = sum(k.startswith("model-catalog/") for k in files)
-    print(f"    catalog seed: {n_cat} catalog files, charts "
+    print(f"    catalog snapshot: {n_cat} catalog files, charts "
           + ", ".join(f"{n}-{v}" for n, v in sorted(want)) + f"; {len(data)} bytes")
 
 
