@@ -35,22 +35,32 @@ case "$ARCH" in
 esac
 
 # name|url|kind   kind: bin (chmod +x), tar (unpack on install), image (docker load)
+#
+# containerd is the STATIC build: the dynamic one needs glibc >= 2.32 and does
+# not start on Kylin V10 or openEuler 20.03 (glibc 2.28) -- measured on a
+# Kunpeng 910B host, "GLIBC_2.32 not found". The static build runs on both.
+#
+# The three systemd files come from the repo (script/offline-units/), not from
+# raw.githubusercontent.com: some build hosts resolve that name to IPv6 only and
+# cannot reach it at all, while the files are fixed text at the pinned
+# versions -- containerd's at v2.3.3, the kubelet's at kubernetes/release
+# v0.16.5 (KUBE_RELEASE_TOOLS). Refresh them from there when bumping those.
 manifest() {
   cat <<EOF
 kubeadm|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubeadm|bin
 kubelet|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubelet|bin
 kubectl|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubectl|bin
 runc|https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/runc.$ARCH|bin
-containerd.tar.gz|https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-$CONTAINERD_VERSION-linux-$ARCH.tar.gz|tar
+containerd.tar.gz|https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-static-$CONTAINERD_VERSION-linux-$ARCH.tar.gz|tar
 cni-plugins.tgz|https://github.com/containernetworking/plugins/releases/download/$CNI_PLUGINS_VERSION/cni-plugins-linux-$ARCH-$CNI_PLUGINS_VERSION.tgz|tar
 helm.tar.gz|https://get.helm.sh/helm-$HELM_VERSION-linux-$ARCH.tar.gz|tar
 helmfile.tar.gz|https://github.com/helmfile/helmfile/releases/download/v$HELMFILE_VERSION/helmfile_${HELMFILE_VERSION}_linux_$ARCH.tar.gz|tar
 helm-diff.tgz|https://github.com/databus23/helm-diff/releases/download/$HELM_DIFF_VERSION/helm-diff-linux-$ARCH.tgz|tar
 crane.tar.gz|https://github.com/google/go-containerregistry/releases/download/$CRANE_VERSION/go-containerregistry_Linux_$CRANE_ARCH.tar.gz|tar
 nerdctl.tar.gz|https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-$ARCH.tar.gz|tar
-containerd.service|https://raw.githubusercontent.com/containerd/containerd/v$CONTAINERD_VERSION/containerd.service|unit
-kubelet.service|https://raw.githubusercontent.com/kubernetes/release/$KUBE_RELEASE_TOOLS/cmd/krel/templates/latest/kubelet/kubelet.service|unit
-10-kubeadm.conf|https://raw.githubusercontent.com/kubernetes/release/$KUBE_RELEASE_TOOLS/cmd/krel/templates/latest/kubeadm/10-kubeadm.conf|unit
+containerd.service|file://$REPO_ROOT/script/offline-units/containerd.service|unit
+kubelet.service|file://$REPO_ROOT/script/offline-units/kubelet.service|unit
+10-kubeadm.conf|file://$REPO_ROOT/script/offline-units/10-kubeadm.conf|unit
 EOF
 }
 
@@ -113,7 +123,10 @@ case "${1:-}" in
       done
       [ "$_src" = "$REGISTRY_IMAGE" ] || echo "      via $_src"
       if command -v crane >/dev/null 2>&1; then
-        _plat=${BUNDLE_PLATFORMS:-linux/amd64}
+        # The registry runs on the target, so its image follows ARCH unless
+        # told otherwise -- not linux/amd64, which left an arm64 bundle with
+        # arm64 binaries and an amd64 registry nothing could start.
+        _plat=${BUNDLE_PLATFORMS:-linux/$ARCH}
         _ins=""; [ "${BUNDLE_FETCH_INSECURE:-}" = true ] && _ins="--insecure"
         if crane pull --platform "${_plat%%,*}" $_ins "$_src" "$TOOLS/registry.tar.part"; then
           # The tarball carries the name it was fetched under, and a mirror's

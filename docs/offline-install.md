@@ -194,6 +194,20 @@ come from their own registries unless another entry covers them. A mirror must
 serve the publisher's manifest bytes -- a pull-through cache does -- or the
 digests the charts pin no longer match.
 
+The same entries cover the three charts that come straight from OCI registries
+(kube-prometheus-stack and node-problem-detector on ghcr.io, lws on
+registry.k8s.io): they are pulled through the mirror into `charts/` before the
+render, which then reads them from there. A host where registry.k8s.io answers
+but its downloads (redirected to `*.pkg.dev`) do not -- measured on a
+Kunpeng/Ascend build host -- cannot render at all without it. For such a host,
+with Docker Hub unreachable too:
+
+```bash
+BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc docker.io=docker.m.daocloud.io registry.k8s.io=k8s.m.daocloud.io" \
+  ARCH=arm64 make offline-tools
+BUNDLE_PLATFORMS=linux/arm64 BUNDLE_FETCH_MIRRORS="..." make offline-bundle ...
+```
+
 **The engine is the one image no render can name.** Everything else in the
 bundle comes out of a helmfile render, but a model service is not in any
 environment -- it comes in from a `MODELS=` file on the command line, and a
@@ -247,10 +261,15 @@ containerd config into place. Nothing here can be assumed present, which is why
 the registry image ships as a tool rather than as part of the image payload:
 step 2 cannot start without it.
 
-Check the target's glibc first: the pinned containerd (2.3.3) needs **glibc ≥
-2.34**, so Ubuntu 22.04+ or RHEL 9+. On an older host the binary does not start
-at all — on CentOS 7 (glibc 2.17): `GLIBC_2.32 / GLIBC_2.34 not found`. Drop
-`CONTAINERD_VERSION` to a 1.7.x build for those.
+containerd is the static build, so the target's glibc does not matter: the
+dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or openEuler
+20.03 (2.28), let alone CentOS 7 (2.17). The three systemd files ship in the repo
+(`script/offline-units/`).
+
+**For an arm64 target** (Kunpeng, Ascend), name it when fetching: `ARCH=arm64
+make offline-tools`. Nothing detects it -- the build host need not be the target
+-- and the default is amd64. The same goes for the images:
+`BUNDLE_PLATFORMS=linux/arm64` for `make offline-bundle`.
 
 **2. Registry, and load it.** Both read `offline/site.env`:
 

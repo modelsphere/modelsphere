@@ -172,6 +172,46 @@ RENDER_PLACEHOLDERS=(
   --state-values-set llmGateway.hostPath=/bundle
 )
 
+# OCI charts through BUNDLE_FETCH_MIRRORS, before anything renders. Three charts
+# come straight from OCI registries (kube-prometheus-stack and
+# node-problem-detector on ghcr.io, lws on registry.k8s.io), and the render
+# needs them: a host that cannot reach one cannot render at all. Measured on a
+# Kunpeng/Ascend build host: registry.k8s.io answers but hands the download to
+# *.pkg.dev, which does not, so the render stopped on lws. The mirror the images
+# go through (registry.k8s.io=k8s.m.daocloud.io) serves the same chart, same
+# digest; pulled into charts/ and rendered from there via chartsDir.
+CHARTS_FROM_MIRROR=false
+if [ -n "${BUNDLE_FETCH_MIRRORS:-}" ]; then
+  _oci=$(helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
+           --state-values-set registryMode=upstream --state-values-set enabled.catalogMirror=true \
+           --state-values-set catalogSnapshot= "${RENDER_PLACEHOLDERS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} \
+           list --output json 2>/dev/null \
+         | python3 -c 'import json,sys
+for r in json.load(sys.stdin):
+    if str(r.get("installed")).lower()=="true" and str(r.get("chart","")).startswith("oci://"):
+        print(r["chart"][len("oci://"):], r.get("version",""))' || true)
+  while read -r _ref _ver; do
+    [ -n "$_ref" ] || continue
+    _via=""
+    for _m in ${BUNDLE_FETCH_MIRRORS}; do
+      case "$_ref" in "${_m%%=*}"/*) _via="${_m#*=}/${_ref#"${_m%%=*}"/}"; break ;; esac
+    done
+    [ -n "$_via" ] || continue
+    _f="$OUT/charts/${_ref##*/}-$_ver.tgz"
+    if [ -s "$_f" ]; then CHARTS_FROM_MIRROR=true; continue; fi
+    if helm pull "oci://$_via" --version "$_ver" --destination "$OUT/charts" >/dev/null 2>&1; then
+      echo "    chart ${_ref##*/} $_ver via ${_via%%/*}"; CHARTS_FROM_MIRROR=true
+    else
+      echo "    chart ${_ref##*/} $_ver: not at oci://$_via -- the render will try $_ref" >&2
+    fi
+  done <<< "$_oci"
+fi
+# Render from charts/ when something was put there: a chart found by name and
+# version is used from the file (helmfile.yaml.gotmpl, chartref). The
+# environment's own chartsDir otherwise, as before.
+CHARTSDIR_ARGS=()
+[ "$CHARTS_FROM_MIRROR" = true ] && CHARTSDIR_ARGS=(--state-values-set "chartsDir=$OUT/charts")
+
 # enabled.catalogMirror=true on both the render and the release list below: it
 # is how swissd deploys a model on a cluster with no route to GitHub, and so it
 # belongs in every bundle -- off in default.yaml, where an online cluster reads
@@ -183,6 +223,7 @@ render_with() {
     --state-values-set enabled.catalogMirror=true \
     --state-values-set catalogSnapshot= \
     "${RENDER_PLACEHOLDERS[@]}" \
+    ${CHARTSDIR_ARGS[@]+"${CHARTSDIR_ARGS[@]}"} \
     ${EXTRA[@]+"${EXTRA[@]}"} \
     ${1:+"$1"} template --skip-tests
 }
