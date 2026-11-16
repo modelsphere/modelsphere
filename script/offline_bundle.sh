@@ -89,8 +89,14 @@ Environment:
                          to fetch; images are stored under their real names.
                          For a build host that reaches a registry through a
                          pull-through cache, since crane does not read
-                         /etc/docker/daemon.json. e.g.
+                         /etc/docker/daemon.json. An entry may name a path
+                         prefix, and the longer one wins if listed first, e.g.
                              BUNDLE_FETCH_MIRRORS="docker.io=docker.1ms.run"
+                         or, for our own images from the mainland China copy
+                         of Docker Hub's 4pdosc (same digests, anonymous):
+                             BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc"
+                         An image the mirror does not have is fetched from
+                         its real address instead.
   CATALOG_MODELS         comma-separated catalog models whose engine images go
                          into the bundle: `model` for every variant, or
                          `model:variant` for one, e.g.

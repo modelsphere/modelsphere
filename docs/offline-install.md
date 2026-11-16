@@ -175,6 +175,25 @@ make offline-bundle BUNDLE=offline ENV=<cluster> \
   ARGS='--set llmGateway.node=<node> --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks'
 ```
 
+**Fetching through a mirror.** `BUNDLE_FETCH_MIRRORS` sends the build's pulls
+somewhere else and stores the images under their real names, so nothing
+downstream changes. Each entry is `<upstream prefix>=<replacement>`, matched
+against the fully qualified name in the order given; an image the mirror does
+not answer for falls back to its real address. Where Docker Hub is slow, our
+own images come from the copy of `4pdosc` on Tencent Cloud, which carries the
+same tags and digests and needs no login:
+
+```bash
+BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc" \
+  make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
+```
+
+Only `4pdosc` is mirrored there; the engines (`lmsysorg/sglang`,
+`vllm/vllm-openai`) and everything on quay.io, nvcr.io and registry.k8s.io still
+come from their own registries unless another entry covers them. A mirror must
+serve the publisher's manifest bytes -- a pull-through cache does -- or the
+digests the charts pin no longer match.
+
 **The engine is the one image no render can name.** Everything else in the
 bundle comes out of a helmfile render, but a model service is not in any
 environment -- it comes in from a `MODELS=` file on the command line, and a
