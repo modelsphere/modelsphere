@@ -64,6 +64,57 @@ kubelet.service|file://$REPO_ROOT/script/offline-units/kubelet.service|unit
 EOF
 }
 
+# os/arch of a single-platform OCI layout (what `crane pull --platform`
+# writes), or every os/arch it holds when it kept an index.
+layout_arch() {
+  python3 - "$1" <<'LA'
+import json, os, sys
+p = sys.argv[1]
+def blob(d):
+    a, h = d.split(":")
+    return json.load(open(os.path.join(p, "blobs", a, h)))
+out = []
+for m in json.load(open(os.path.join(p, "index.json")))["manifests"]:
+    doc = blob(m["digest"])
+    for e in doc.get("manifests", []) or [None]:
+        try:
+            mm = blob(e["digest"]) if e else doc
+            if "config" in mm:
+                c = blob(mm["config"]["digest"])
+                out.append(f"{c.get('os')}/{c.get('architecture')}")
+        except FileNotFoundError:
+            continue   # an index entry whose platform was not pulled
+print(",".join(sorted(set(out))))
+LA
+}
+tar_arch() {
+  python3 - "$1" <<'TA'
+import json, sys, tarfile
+t = tarfile.open(sys.argv[1])
+print(",".join(sorted({"{}/{}".format(c.get("os"), c.get("architecture")) for c in
+  (json.load(t.extractfile(e["Config"])) for e in json.load(t.extractfile("manifest.json")))})))
+TA
+}
+layout_has() { case ",$(layout_arch "$1")," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
+
+fetch_via() {
+  local img=$1 m
+  for m in ${BUNDLE_FETCH_MIRRORS:-}; do
+    case "$img" in
+      "${m%%=*}"/*) echo "${m#*=}/${img#"${m%%=*}"/}"; return ;;
+    esac
+    # An unqualified name is docker.io (`registry:3`, not
+    # `docker.io/library/registry:3`).
+    if [ "${m%%=*}" = docker.io ]; then
+      case "$img" in
+        */*) case "${img%%/*}" in *.*|*:*|localhost) ;; *) echo "${m#*=}/$img"; return ;; esac ;;
+        *) echo "${m#*=}/library/$img"; return ;;
+      esac
+    fi
+  done
+  echo "$img"
+}
+
 case "${1:-}" in
   fetch)
     command -v curl >/dev/null || { echo "curl not found" >&2; exit 1; }
@@ -108,23 +159,10 @@ case "${1:-}" in
     # every kubeadm image "COPY FAILED" while the registry image, already
     # mirrored, came through. The name the bundle stores is always the
     # canonical one; only the source changes.
-    fetch_via() {
-      local img=$1 m
-      for m in ${BUNDLE_FETCH_MIRRORS:-}; do
-        case "$img" in
-          "${m%%=*}"/*) echo "${m#*=}/${img#"${m%%=*}"/}"; return ;;
-        esac
-        # An unqualified name is docker.io (`registry:3`, not
-        # `docker.io/library/registry:3`).
-        if [ "${m%%=*}" = docker.io ]; then
-          case "$img" in
-            */*) case "${img%%/*}" in *.*|*:*|localhost) ;; *) echo "${m#*=}/$img"; return ;; esac ;;
-            *) echo "${m#*=}/library/$img"; return ;;
-          esac
-        fi
-      done
-      echo "$img"
-    }
+    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "${BUNDLE_PLATFORMS:-linux/$ARCH}" ]; then
+      echo "    registry.tar is $(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable), not ${BUNDLE_PLATFORMS:-linux/$ARCH}: fetching it again"
+      rm -f "$TOOLS/registry.tar"
+    fi
     if [ ! -s "$TOOLS/registry.tar" ]; then
       echo "    registry image ($REGISTRY_IMAGE)"
       # BUNDLE_FETCH_MIRRORS, the same variable offline_bundle.sh takes: a build
@@ -146,12 +184,21 @@ case "${1:-}" in
           # name is not the one the target runs: loaded as
           # <cache>/library/registry:3, `docker run registry:3` finds nothing.
           # So put the canonical name back before it leaves this host.
-          python3 - "$TOOLS/registry.tar.part" "$REGISTRY_IMAGE" <<'RETAG'
+          if python3 - "$TOOLS/registry.tar.part" "$REGISTRY_IMAGE" "${_plat%%,*}" <<'RETAG'
 import io, json, os, sys, tarfile
-src, want = sys.argv[1], sys.argv[2]
+src, want, plat = sys.argv[1], sys.argv[2], sys.argv[3]
 tmp = src + ".retag"
 with tarfile.open(src) as t:
     mf = json.loads(t.extractfile("manifest.json").read())
+    # What was asked is not always what comes back: a source that serves a
+    # single manifest instead of an index makes --platform a no-op, and an
+    # arm64 bundle then carries an amd64 registry nobody can start. Check
+    # the config, not the request.
+    os_, arch = plat.split("/")[:2]
+    for e in mf:
+        c = json.loads(t.extractfile(e["Config"]).read())
+        if (c.get("os"), c.get("architecture")) != (os_, arch):
+            sys.exit(f"      registry image is {c.get('os')}/{c.get('architecture')}, wanted {plat}: not saved")
     for e in mf:
         e["RepoTags"] = [want]
     with tarfile.open(tmp, "w") as o:
@@ -164,7 +211,8 @@ with tarfile.open(src) as t:
                 o.addfile(m, t.extractfile(m) if m.isfile() else None)
 os.replace(tmp, src)
 RETAG
-          mv "$TOOLS/registry.tar.part" "$TOOLS/registry.tar"
+          then mv "$TOOLS/registry.tar.part" "$TOOLS/registry.tar"
+          else rm -f "$TOOLS/registry.tar.part" "$TOOLS/registry.tar.part.retag"; fi
         else
           rm -f "$TOOLS/registry.tar.part"
         fi
@@ -210,7 +258,12 @@ RETAG
             _from=$(fetch_via "$img")
             [ "$_from" = "$img" ] || echo "      $img via $_from"
             if crane pull --format=oci --platform "${BUNDLE_PLATFORMS:-linux/$ARCH}" $_ins "$_from" "$d.part" >/dev/null 2>&1; then
-              rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
+              if layout_has "$d.part" "${BUNDLE_PLATFORMS:-linux/$ARCH}"; then
+                rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
+              else
+                rm -rf "$d.part"; ka_failed=$((ka_failed+1))
+                echo "      WRONG PLATFORM: $img is $(layout_arch "$d.part" 2>/dev/null || echo unreadable), wanted ${BUNDLE_PLATFORMS:-linux/$ARCH}" >&2
+              fi
             else
               rm -rf "$d.part"; ka_failed=$((ka_failed+1))
               echo "      COPY FAILED: $img" >&2
@@ -240,6 +293,12 @@ RETAG
       if [ -s "$TOOLS/$extra" ]; then printf '  OK   %-22s %s\n' "$extra" "$(du -h "$TOOLS/$extra" | cut -f1)"
       else printf '  MISS %s\n' "$extra"; miss=$((miss+1)); fi
     done
+    # Present is not enough: an amd64 registry in an arm64 bundle is present,
+    # and nothing on site can start it.
+    want=${BUNDLE_PLATFORMS:-linux/$ARCH}; want=${want%%,*}
+    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "$want" ]; then
+      printf '  WRONG registry.tar is %s, not %s\n' "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable)" "$want"; miss=$((miss+1))
+    fi
     # The kubeadm images themselves, not just the list naming them. verify used
     # to check only the list, and reported missing=0 over an empty images/
     # directory -- the one shape that makes an air-gapped kubeadm init fail.
@@ -247,7 +306,9 @@ RETAG
       while read -r img; do
         [ -z "$img" ] && continue
         d="$TOOLS/images/$(echo "$img" | tr '/:@' '___')"
-        if [ -f "$d/oci-layout" ]; then printf '  OK   %-22s %s\n' "$(basename "$d" | cut -c1-22)" "$(du -sh "$d" | cut -f1)"
+        if [ -f "$d/oci-layout" ] && ! layout_has "$d" "$want"; then
+          printf '  WRONG %s is %s, not %s\n' "$img" "$(layout_arch "$d" 2>/dev/null || echo unreadable)" "$want"; miss=$((miss+1))
+        elif [ -f "$d/oci-layout" ]; then printf '  OK   %-22s %s\n' "$(basename "$d" | cut -c1-22)" "$(du -sh "$d" | cut -f1)"
         else printf '  MISS %s (kubeadm)\n' "$img"; miss=$((miss+1)); fi
       done < "$TOOLS/kubeadm-images.txt"
     fi
