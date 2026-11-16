@@ -824,6 +824,36 @@ releases:
   # Both charts come from chartRepo like the other charts of ours, so this
   # needs modelsphere/helm-charts to have published the pinned versions
   # (versions.console and versions.swiss below).
+{{- /* The site profile the swissd release's postsync hook writes once (see
+       there). Every mode sets the sidecars, not just rewrite: the chart's own
+       pins for CART's ha and reload are an old autoconfig build, linux/amd64
+       only, and belong at the autoconfig version the cluster runs anyway; under
+       mirror `registry` is the public prefix, so these are public addresses. */}}
+{{- $swissProfile := list
+      (printf "name: %s" (dig "swiss" "siteName" "this-cluster" .Values | quote))
+      (printf "namespace: %s" (dig "swiss" "modelNamespace" "llm-demo" .Values | quote))
+      "catalogs:"
+      "  - name: default"
+      (printf "    url: %s/model-catalog/index-v2.json" $catalogMirrorURL)
+      "    schemaVersion: v2"
+      "    default: true"
+      (printf "chartRepo: %s/helm-charts" $catalogMirrorURL)
+      "registry:"
+      (printf "  mirror: %s" (ternary (.Values.registry | quote) "\"\"" $rewrite))
+      "model:"
+      (printf "  pathTemplate: %s" (dig "swiss" "modelPathTemplate" "/mnt/disk0/models/{{name}}" .Values | quote))
+      "extra:"
+      "  hangWatcher:"
+      "    image:"
+      (printf "      repository: %s/hang-watcher" .Values.registry)
+      "  cart:"
+      "    image:"
+      (printf "      repository: %s/cache_aware_router" .Values.registry)
+      "    ha:"
+      (printf "      image: %s" (printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote))
+      "    reload:"
+      (printf "      image: %s" (printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote))
+    | join "\n" }}
   - name: swissd
     namespace: {{ .Values.namespaces.console }}
     chart: {{ template "chartref" (dict "local" $local "name" "swiss" "ver" .Values.versions.swiss "fallback" "modelsphere/swiss") }}
@@ -850,35 +880,11 @@ releases:
           - console/swiss-profile.sh
           - {{ .Values.namespaces.console | quote }}
           - swissd-profile
-          - |
-            name: {{ dig "swiss" "siteName" "this-cluster" .Values | quote }}
-            namespace: {{ dig "swiss" "modelNamespace" "llm-demo" .Values | quote }}
-            catalogs:
-              - name: default
-                url: {{ $catalogMirrorURL }}/model-catalog/index-v2.json
-                schemaVersion: v2
-                default: true
-            chartRepo: {{ $catalogMirrorURL }}/helm-charts
-            registry:
-              mirror: {{ if $rewrite }}{{ .Values.registry | quote }}{{ else }}""{{ end }}
-            model:
-              pathTemplate: {{ dig "swiss" "modelPathTemplate" "/mnt/disk0/models/{{name}}" .Values | quote }}
-            # Every mode, not just rewrite: the chart's own pins for CART's ha and
-            # reload sidecars are an old autoconfig build, linux/amd64 only, and
-            # they belong at the autoconfig version the cluster runs anyway.
-            # Under mirror `registry` is the public prefix, so these are the
-            # public addresses.
-            extra:
-              hangWatcher:
-                image:
-                  repository: {{ .Values.registry }}/hang-watcher
-              cart:
-                image:
-                  repository: {{ .Values.registry }}/cache_aware_router
-                ha:
-                  image: {{ printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote }}
-                reload:
-                  image: {{ printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote }}
+          # base64: helmfile renders hook args as a template a second time
+          # when it runs the hook, and the profile carries swiss's own
+          # placeholders ({{"{{"}}name{{"}}"}} in pathTemplate) that must reach swissd
+          # as written.
+          - {{ $swissProfile | b64enc | quote }}
 {{- end }}
 
   # The model catalog and the engine charts, served in the cluster for swissd
