@@ -273,6 +273,13 @@ detects it -- the build host need not be the target -- and the default is amd64.
 platform of every image too. `make offline-tools` checks what it pulled: an
 image of the wrong architecture is not kept, and `verify` reports it.
 
+An all-Ascend cluster also wants the NVIDIA components off, in the bundle's
+`ARGS` and in the environment alike: `enabled.gpuOperator`,
+`enabled.dcgmCustomMetrics`, `enabled.networkOperator` and
+`enabled.nicClusterPolicy`. They are on by default, they do nothing without
+NVIDIA hardware, and the GPU operator pulls at least one image that has no
+arm64 build (`nvidia-sandbox-device-plugin`), which fails an arm64 bundle.
+
 **2. Registry, and load it.** Both read `offline/site.env`:
 
 ```bash

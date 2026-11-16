@@ -158,7 +158,7 @@ versions:
   llmCanaryOperator: "0.2.6"
   # The ModelSphere portal. Published to chartRepo by modelsphere/helm-charts;
   # keep this in step with the chart release there.
-  console: "0.2.1"
+  console: "0.2.2"              # the first with a linux/arm64 image
   # swissd, the model deployment backend behind the portal. Same deal.
   swiss: "0.7.2"
   # The in-cluster catalog and engine chart repository swissd deploys from
