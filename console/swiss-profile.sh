@@ -21,11 +21,16 @@ if kubectl -n "$NS" get configmap "$CM" >/dev/null 2>&1; then
   # Left alone, but not silently: lines this environment would write that the
   # stored profile does not have -- a profile saved before catalog-mirror was
   # on, a registry that moved, an autoconfig upgrade the sidecars did not follow.
-  HAVE=$(kubectl -n "$NS" get configmap "$CM" -o jsonpath='{.data.profile\.yaml}')
-  printf '%s\n' "$PROFILE" | grep -E 'chartRepo:|url:|mirror:|autoconfig-(hagate|reload)|repository:' \
+  # Compared without quotes and indentation: a profile saved from the web is
+  # re-serialised by swissd, which drops the quotes this hook wrote and omits
+  # an empty mirror altogether -- neither is a difference.
+  norm() { sed -e 's/"//g' -e "s/'//g" -e 's/^ *//' -e 's/ *$//'; }
+  HAVE=$(kubectl -n "$NS" get configmap "$CM" -o jsonpath='{.data.profile\.yaml}' | norm)
+  printf '%s\n' "$PROFILE" | grep -E 'chartRepo:|url:|mirror:|autoconfig-(hagate|reload)|repository:' | norm \
     | while IFS= read -r line; do
-        printf '%s\n' "$HAVE" | grep -qF -- "$(echo "$line" | sed 's/^ *//')" \
-          || echo "  WARNING: the profile lacks \"$(echo "$line" | sed 's/^ *//')\" -- update it from the console if this environment is right"
+        case "$line" in *: ) continue ;; esac          # an empty value: nothing to compare
+        printf '%s\n' "$HAVE" | grep -qxF -- "$line" \
+          || echo "  WARNING: the profile lacks \"$line\" -- update it from the console if this environment is right"
       done
   exit 0
 fi

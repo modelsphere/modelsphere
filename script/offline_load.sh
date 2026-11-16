@@ -170,6 +170,9 @@ _mirror_path() {
 }
 
 loaded=0; pushed=0; skipped=0; failed=0
+# Every name this load pushes, with the image behind it -- the swiss-name pass
+# below must not land on one of them with a different image.
+_targets=$(mktemp); trap 'rm -f "$_targets"' EXIT
 while read -r img; do
   [ -z "$img" ] && continue
   case "$img" in */*:*) ;; *) skipped=$((skipped+1)); continue ;; esac
@@ -230,6 +233,7 @@ while read -r img; do
   esac
 
   mirror_target="$REGISTRY/$(_mirror_path "$src_ref")"
+  printf '%s %s\n%s %s\n' "${target%@sha256:*}" "$img" "${mirror_target%@sha256:*}" "$img" >> "$_targets"
   if [ "$DRY_RUN" = true ]; then
     echo "    would push: $img -> $target"
     [ "$mirror_target" != "$target" ] && echo "    would push: $img -> $mirror_target (mirror name)"
@@ -284,7 +288,10 @@ done < "$BUNDLE/images.txt"
 # second over the first, so that is refused instead.
 if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
   echo "==> engine images under the name swiss's mirror asks for"
-  _seen=$(mktemp)
+  # Seeded with what the pass above pushed: 4pdosc/sglang:t lands on
+  # <registry>/sglang:t there, and lmsysorg/sglang:t would land on it here.
+  _seen=$(mktemp); cp "$_targets" "$_seen"
+  _norm() { echo "$1" | sed -E 's#^docker\.io/##; s#@sha256:.*##'; }
   while read -r img; do
     [ -n "$img" ] || continue
     _ref=${img%@sha256:*}
@@ -293,20 +300,22 @@ if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
     _prev=$(awk -v k="$_short" '$1==k {print $2; exit}' "$_seen")
     if [ -n "$_prev" ]; then
       # docker.io/x/y:t and x/y:t are one image spelled twice, not a collision.
-      if [ "$(echo "$_prev" | sed -E 's#^docker\.io/##')" != "$(echo "$img" | sed -E 's#^docker\.io/##')" ]; then
-        echo "    COLLISION: $_prev and $img both become $_short -- the second is NOT pushed" >&2
+      if [ "$(_norm "$_prev")" != "$(_norm "$img")" ]; then
+        echo "    COLLISION: $_prev and $img both become $_short -- $img is NOT pushed there" >&2
         failed=$((failed+1))
       fi
       continue
     fi
-    echo "$_short $img" >> "$_seen"
     dir="$BUNDLE/images/$(echo "$img" | tr '/:@' '___')"
     if [ "$DRY_RUN" = true ]; then
       echo "    would push: $img -> $_short"
+      echo "$_short $img" >> "$_seen"
     elif [ ! -f "$dir/oci-layout" ]; then
+      # not recorded: another spelling of the same image may still have a layout
       echo "    MISSING: no OCI layout at $dir -- $_short not pushed" >&2
       skipped=$((skipped+1))
     elif crane push "$dir" "$_short" $CRANE_INSECURE > /tmp/.push_out.$$ 2>&1; then
+      echo "$_short $img" >> "$_seen"
       pushed=$((pushed+1))
     else
       echo "    PUSH FAILED: $_short (swiss mirror name)" >&2
@@ -444,6 +453,9 @@ for _c in "$BUNDLE"/charts/*.tgz; do [ -f "$_c" ] && CHARTS=$((CHARTS+1)); done
 echo "==> charts: $CHARTS tarballs in $BUNDLE/charts, installed from there"
 echo "    (not uploaded anywhere: point chartsDir at that directory)"
 
+# Absolute in what is printed for copying: catalogSnapshot refuses a relative
+# path, and BUNDLE is ./offline by default.
+BUNDLE_ABS=$(cd "$BUNDLE" && pwd)
 cat <<EOF
 
 Everything is in the registry under both names it can be asked for. Pick how
@@ -453,8 +465,9 @@ A. registryMode: rewrite -- helm writes every address under the registry.
 
     # environments/<your-cluster>.yaml
     registry: $REGISTRY
-    chartsDir: $BUNDLE/charts
-    catalogSnapshot: $BUNDLE/catalog-snapshot.tar.gz
+    chartsDir: $BUNDLE_ABS/charts
+    catalogSnapshot: $BUNDLE_ABS/catalog-snapshot.tar.gz   # absolute
+    enabled: { catalogMirror: true }   # swissd deploys from the snapshot
     registryMode: rewrite
 
     # creating the cluster: the control-plane images are not helm's to rewrite.
@@ -470,8 +483,9 @@ B. registryMode: mirror -- addresses stay upstream, the NODES redirect. Leave
    containerd on every node, including the ones kubeadm runs on:
 
     # environments/<your-cluster>.yaml
-    chartsDir: $BUNDLE/charts
-    catalogSnapshot: $BUNDLE/catalog-snapshot.tar.gz
+    chartsDir: $BUNDLE_ABS/charts
+    catalogSnapshot: $BUNDLE_ABS/catalog-snapshot.tar.gz   # absolute
+    enabled: { catalogMirror: true }   # swissd deploys from the snapshot
     registryMode: mirror
 
     # every node, before kubeadm init

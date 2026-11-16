@@ -655,11 +655,20 @@ print(" ".join("--pin %s=%s" % kv for kv in sorted(pins.items())))
 PY
 )
 # shellcheck disable=SC2086  # _pins is a list of flags
+# Fatal only where something reads it: catalog-mirror is installed with the
+# console. Without the console a failure here (GitHub Pages unreachable, say)
+# costs the engine charts of `models:` entries, which was a warning before.
+_cm=$(python3 -c 'import json,sys; print(any(r.get("name")=="catalog-mirror" and str(r.get("installed")).lower()=="true" for r in json.load(open(sys.argv[1]))))' "$OUT/.releases.json" 2>/dev/null || echo True)
+: > "$OUT/.catalog-images"
 if ! python3 "$REPO_ROOT/script/catalog_snapshot.py" "$OUT/catalog-snapshot.tar.gz" $_pins \
        --charts-dir "$OUT/charts" --models "${CATALOG_MODELS:-}" --images-out "$OUT/.catalog-images"; then
-  echo "could not build the catalog snapshot: swissd on the far side would have no" >&2
-  echo "catalog and no engine chart to deploy from. Refusing to continue." >&2
-  exit 1
+  if [ "$_cm" = True ]; then
+    echo "could not build the catalog snapshot: swissd on the far side would have no" >&2
+    echo "catalog and no engine chart to deploy from. Refusing to continue." >&2
+    exit 1
+  fi
+  echo "    ⚠️  no catalog snapshot (the console is off here, so nothing reads one);" >&2
+  echo "       the engine charts a models: entry installs are missing from charts/" >&2
 fi
 
 img_failed=0
@@ -1055,7 +1064,7 @@ image_format: oci            # crane OCI layouts, one directory per image.
 charts:      $(ls "$OUT/charts" | wc -l | tr -d ' ')
 images:      $COUNT ($( [ "$SKIP_IMAGES" = true ] && echo "list only" || echo "saved"))
 engines:     $ENGINE_COUNT (named in engine-images.txt, not derived) + ${CAT_COUNT:-0} from the catalog
-catalog_snapshot: catalog-snapshot.tar.gz ($(wc -c < "$OUT/catalog-snapshot.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})
+catalog_snapshot: $( [ -f "$OUT/catalog-snapshot.tar.gz" ] && echo "catalog-snapshot.tar.gz ($(wc -c < "$OUT/catalog-snapshot.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})" || echo none)
 tools:       $TOOL_COUNT (binaries and units for the isolated side)
 EOF
 rm -f "$RENDER" "$OUT/.render.err" "$OUT/.releases.json" \

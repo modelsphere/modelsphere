@@ -10,6 +10,13 @@
 #           own sync copies GitHub Pages every five minutes, onto a PVC when
 #           storage.persistence is on.
 {{- $snapshot := .Values.catalogSnapshot | default "" }}
+{{- /* Absolute only: helmfile resolves a relative path in this file against
+       console/, while the presync hook runs from the helmfile's directory, so
+       one relative spelling cannot satisfy both -- ./offline/... would be
+       found by neither consistently. */}}
+{{- if and $snapshot (not (isAbs $snapshot)) }}
+{{-   fail (printf "catalogSnapshot: %s is a relative path. Give it absolute, e.g. %s -- it is read from two places that resolve relative paths differently." $snapshot "/root/bundle/catalog-snapshot.tar.gz") }}
+{{- end }}
 {{- if and $snapshot (not (isFile $snapshot)) }}
 {{-   fail (printf "catalogSnapshot: %s is not a file on this machine. It is the bundle's catalog-snapshot.tar.gz, read where helmfile runs -- point catalogSnapshot at it, or set it empty to sync from GitHub instead." $snapshot) }}
 {{- end }}

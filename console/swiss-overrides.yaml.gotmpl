@@ -47,8 +47,15 @@ rbac:
 {{- range $m := (dig "models" (list) .Values) }}
 {{-   $swissNs = append $swissNs (dig "namespace" "llm-demo" $m) }}
 {{- end }}
-{{- /* and where swissd itself deploys by default (the site profile's namespace) */}}
-{{- $swissNs = append $swissNs (dig "swiss" "modelNamespace" "llm-demo" .Values) }}
+{{- /* and where swissd deploys by default, when this repo writes the site
+       profile (catalog-mirror on) or the environment names it. Only then: a
+       cluster with no such namespace would otherwise fail on the Role. */}}
+{{- if or (dig "enabled" "catalogMirror" false .Values) (hasKey (dig "swiss" (dict) .Values) "modelNamespace") }}
+{{-   $swissNs = append $swissNs (dig "swiss" "modelNamespace" "llm-demo" .Values) }}
+{{- end }}
+{{- if not $swissNs }}
+{{-   $swissNs = list "llm-demo" }}
+{{- end }}
 {{- range $ns := $swissNs | uniq }}
       - {{ $ns | quote }}
 {{- end }}

@@ -33,7 +33,9 @@ chartsDir: offline/charts
 # The bundle's catalog-snapshot.tar.gz: the model catalog and the engine charts that
 # catalog-mirror serves to swissd on a cluster with no route to GitHub. Set, it
 # is handed over as a ConfigMap and catalog-mirror stops syncing; empty, it
-# syncs from GitHub Pages. Only read when enabled.catalogMirror is true.
+# syncs from GitHub Pages. Only read when enabled.catalogMirror is true. An
+# absolute path: it is read both by a values file and by a hook, which resolve
+# a relative one against different directories.
 catalogSnapshot: ""
 
 # Where charts and images are taken from.

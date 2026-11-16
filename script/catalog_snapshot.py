@@ -72,8 +72,10 @@ def vkey(v):
 
 
 def bound(v):
-    """The x.y.z of a lower bound, a pre-release one included (>=0.8.0-rc1)."""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)", str(v).strip())
+    """The x.y.z of a lone lower bound, a pre-release one included (0.8.0-rc1).
+    The whole string has to be that: `0.8.0 <1.0` is a range this script does
+    not read, and taking its prefix would drop the upper bound."""
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?", str(v).strip())
     return tuple(int(x) for x in m.groups()) if m else None
 
 

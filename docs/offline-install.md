@@ -434,8 +434,8 @@ serves it in the cluster:
   which some v2 catalog entry would find no chart. The same chart archives go
   into `charts/`, which is where the bundle reads a model's sidecar images
   from (above).
-- **`enabled.catalogMirror: true`** and **`catalogSnapshot: <bundle>/catalog-snapshot.tar.gz`**
-  in the environment (`environments/offline.yaml.example` has both). A presync
+- **`enabled.catalogMirror: true`** and **`catalogSnapshot: <bundle>/catalog-snapshot.tar.gz`**,
+  an absolute path, in the environment (`environments/offline.yaml.example` has both). A presync
   hook hands the snapshot over as a ConfigMap, and catalog-mirror unpacks it on
   every pod start, with its sync from GitHub off. swissd's own default catalog
   points at the copy.
