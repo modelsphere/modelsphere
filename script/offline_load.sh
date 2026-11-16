@@ -276,6 +276,47 @@ while read -r img; do
   rm -f /tmp/.push_out.$$
 done < "$BUNDLE/images.txt"
 
+# Engine images once more, under the name swiss's image mirror asks for. swissd
+# composes an engine address as <registry.mirror>/<last path segment>:<tag> --
+# lmsysorg/sglang:v0.5.20 becomes <registry>/sglang:v0.5.20 -- while the push
+# above put it at <registry>/lmsysorg/sglang. Same blobs, one more manifest.
+# Two engines whose last segment and tag agree would land on one name, the
+# second over the first, so that is refused instead.
+if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
+  echo "==> engine images under the name swiss's mirror asks for"
+  _seen=$(mktemp)
+  while read -r img; do
+    [ -n "$img" ] || continue
+    _ref=${img%@sha256:*}
+    case "$_ref" in */*:*|*:*) ;; *) continue ;; esac
+    _short="$REGISTRY/${_ref##*/}"
+    _prev=$(awk -v k="$_short" '$1==k {print $2; exit}' "$_seen")
+    if [ -n "$_prev" ]; then
+      if [ "$_prev" != "$img" ]; then
+        echo "    COLLISION: $_prev and $img both become $_short -- the second is NOT pushed" >&2
+        failed=$((failed+1))
+      fi
+      continue
+    fi
+    echo "$_short $img" >> "$_seen"
+    dir="$BUNDLE/images/$(echo "$img" | tr '/:@' '___')"
+    if [ "$DRY_RUN" = true ]; then
+      echo "    would push: $img -> $_short"
+    elif [ ! -f "$dir/oci-layout" ]; then
+      echo "    MISSING: no OCI layout at $dir -- $_short not pushed" >&2
+      skipped=$((skipped+1))
+    elif crane push "$dir" "$_short" $CRANE_INSECURE > /tmp/.push_out.$$ 2>&1; then
+      pushed=$((pushed+1))
+    else
+      echo "    PUSH FAILED: $_short (swiss mirror name)" >&2
+      tail -2 /tmp/.push_out.$$ | sed 's/^/      /' >&2
+      failed=$((failed+1))
+    fi
+    rm -f /tmp/.push_out.$$
+  done < "$BUNDLE/swiss-engine-images.txt"
+  rm -f "$_seen"
+fi
+
 if [ "$DRY_RUN" = false ]; then
   echo "    loaded=$loaded pushed=$pushed skipped=$skipped failed=$failed"
   if [ "$skipped" -gt 0 ]; then
@@ -412,6 +453,7 @@ A. registryMode: rewrite -- helm writes every address under the registry.
     # environments/<your-cluster>.yaml
     registry: $REGISTRY
     chartsDir: $BUNDLE/charts
+    catalogSeed: $BUNDLE/catalog-seed.tar.gz
     registryMode: rewrite
 
     # creating the cluster: the control-plane images are not helm's to rewrite
@@ -425,6 +467,7 @@ B. registryMode: mirror -- addresses stay upstream, the NODES redirect. Leave
 
     # environments/<your-cluster>.yaml
     chartsDir: $BUNDLE/charts
+    catalogSeed: $BUNDLE/catalog-seed.tar.gz
     registryMode: mirror
 
     # every node, before kubeadm init

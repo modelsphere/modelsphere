@@ -6,6 +6,15 @@
 image:
   repository: {{ .Values.registry }}/swissd
 
+{{- if and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
+
+# The catalog a fresh install reads until a site profile names one, and the
+# one `swiss` on a laptop reads: catalog-mirror's copy, the v2 index by name.
+# The profile the swissd release's postsync hook writes points at the same.
+config:
+  catalog: http://catalog-mirror.{{ .Values.namespaces.console }}.svc/model-catalog/index-v2.json
+{{- end }}
+
 # No PVC by default: sqlite goes on an emptyDir, so the audit log and plan
 # history go when the pod is replaced. Recommended: turn it on (needs a
 # StorageClass or existingClaim), see docs/console.md.

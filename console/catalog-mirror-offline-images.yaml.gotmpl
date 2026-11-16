@@ -1,0 +1,11 @@
+# Air-gapped image addresses for the catalog-mirror release. Referenced from
+# helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# Both are stock Docker Hub images, so host off, path kept:
+# docker.io/library/nginx becomes <registry>/library/nginx, where
+# offline_load.sh pushed it.
+image:
+  nginx:
+    repository: {{ .Values.registry }}/library/nginx
+  python:
+    repository: {{ .Values.registry }}/library/python

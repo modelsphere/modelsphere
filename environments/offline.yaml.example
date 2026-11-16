@@ -29,6 +29,10 @@ registryMode: mirror              # or: rewrite
 chartsDir: /root/bundle/charts
 chartRepo: https://modelsphere.github.io/helm-charts
 
+# The model catalog and the engine charts swissd deploys from, served in the
+# cluster by catalog-mirror (enabled below) out of this file from the bundle.
+catalogSeed: /root/bundle/catalog-seed.tar.gz
+
 # Put in front of every alert message, so an alert says which cluster it is from.
 name: "OFFLINE"
 
@@ -48,10 +52,10 @@ enabled:
   networkOperator: false
   nicClusterPolicy: false
 
-  # Off unless the bundle carries their images.
-  alertWebhook: false
-  llmCanaryOperator: false
-  condition2taint: false
+  # swissd deploys from catalog-mirror's copy of the catalog and the engine
+  # charts, not from GitHub Pages. Its site profile is written once to match
+  # (console/swiss-profile.sh) -- see swiss: in environments/default.yaml.
+  catalogMirror: true
 
 # Left off (the repo default), so the monitoring stack runs on emptyDir rather
 # than waiting for a StorageClass that does not exist here. ⚠️ Metrics, alert

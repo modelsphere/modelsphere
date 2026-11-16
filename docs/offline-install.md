@@ -85,12 +85,6 @@ A bundle built from the public `default` environment therefore holds them as
 the escape hatch for a list that is wrong for some reason -- not the normal
 path.
 
-⚠️ Three of our charts are not published publicly yet (`alert-webhook`,
-`condition2taint`, `llm-canary-operator`), so until they are, the chart half of
-a default render needs the internal repo — `--set
-chartRepo=https://harbor.internal/chartrepo/infra`, which changes nothing
-about the image addresses.
-
 `rewrite` is the one to reach for by default — what the cluster will pull is
 visible in `helmfile diff`, with nothing depending on node state. `mirror` is
 worth it when the charts' digests matter, when the environment file must stay
@@ -391,6 +385,53 @@ make helm-apply ENV=<cluster> SELECTOR=tier=model \
 The weights themselves are not in the bundle and never were: put them on the
 node first, as [install step 8](install.md#8-deploy-a-model) describes.
 
+### Deploying a model from the console
+
+swissd, the backend behind the console, deploys a model from two things it
+reads over HTTP: the [model catalog](https://github.com/modelsphere/model-catalog)
+and the engine chart (sglang or vllm) a catalog entry names. Online both are
+GitHub Pages. Offline, the bundle carries a copy and
+[catalog-mirror](https://github.com/modelsphere/helm-charts/tree/main/charts/catalog-mirror)
+serves it in the cluster:
+
+- `offline_bundle.sh` writes **`catalog-seed.tar.gz`**: the catalog (v1 and v2
+  indexes and every file they name, digests checked; not the HTML reports) and
+  the newest release of each engine chart, plus the versions `versions:` pins,
+  with an `index.yaml` naming the archives by file name. It refuses a seed in
+  which some v2 catalog entry would find no chart. The same chart archives go
+  into `charts/`, which is where the bundle reads a model's sidecar images
+  from (above).
+- **`enabled.catalogMirror: true`** and **`catalogSeed: <bundle>/catalog-seed.tar.gz`**
+  in the environment (`environments/offline.yaml.example` has both). A presync
+  hook hands the seed over as a ConfigMap, and catalog-mirror unpacks it on
+  every pod start, with its sync from GitHub off. swissd's own default catalog
+  points at the copy.
+- **The site profile is written once**, by a postsync hook on the swissd
+  release, and only if none exists: the catalog (v2) and `chartRepo` on
+  catalog-mirror; under `registryMode: rewrite` also `registry.mirror` and the
+  four sidecar images under `registry`, the addresses
+  `models/images.yaml.gotmpl` gives a `models:` entry. swissd owns the profile
+  from then on -- edit it from the console; a later helmfile run leaves it
+  alone. `swiss.siteName`, `swiss.modelNamespace` and `swiss.modelPathTemplate`
+  in the environment fill in its other fields.
+
+**Engine images come from the catalog by model name.** One is ~20 GB, so none
+is bundled unless asked for:
+
+```bash
+CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
+```
+
+Every variant's image of each named model goes into `images.txt`, exactly as
+the catalog spells it, and into the bundle's `swiss-engine-images.txt` together
+with the hand-written list. `offline_load.sh` pushes those once more under the name
+swiss's image mirror asks for: swiss keeps only the last path segment, so
+`lmsysorg/sglang:v0.5.20` is asked for as `<registry>/sglang:v0.5.20`, not
+`<registry>/lmsysorg/sglang:v0.5.20`. Two engines whose last segment and tag
+agree would land on one name; the load refuses that rather than overwrite one
+with the other. Under `registryMode: mirror` nothing is rewritten, and the
+nodes redirect the catalog's addresses like any other.
+
 ### One known gap: what values cannot reach
 
 Rewriting addresses in values changes what the **Pod spec says**. It cannot
@@ -494,7 +535,8 @@ Two chart-specific shapes worth knowing:
 ### What the bundle does not cover
 
 - Images referenced by workloads rather than by this helmfile — inference
-  engines, anything under `gateway-api/`.
+  engines (named in `engine-images.txt` or through `CATALOG_MODELS`, see
+  above), anything under `gateway-api/`.
 - Components whose flags are off. The image list is derived from a render, and
   a render only sees what is switched on. Turning a feature on later means
   rebuilding the bundle. cilium is the one exception: the bundle renders it a
@@ -530,19 +572,10 @@ Two chart-specific shapes worth knowing:
   `quay.io/repository/ceph/ceph`. The first is a literal `<tag>`, which is why
   CRDs are scraped for real image fields only.
 - Releases switched off for the run. One that is off renders no objects, so its
-  images are absent from the list; `offline_bundle.sh` names them rather than
-  letting the count come up short.
-
-  **alert-webhook is the live case.** It hard-fails at template time unless
-  `webhook.urls` is supplied, and `observability/alert-webhook/config.yaml.gotmpl`
-  ships that key as an empty placeholder for the environment to fill. So the
-  bundle is normally built with it disabled, and then lacks its server image,
-  `harbor.internal/infra/alert-webhook-server:260828-fe78`. Set
-  `alertWebhook.urls` in the environment to have it bundled, or mirror it by
-  hand. `--set webhook.urls.X=...` does NOT work -- the placeholder is null and
-  helm cannot nest a key under a null. The chart's other image is the `helm
-  test` probe; offline it is pointed at the busybox the bundle already carries
-  for prom-stack rather than the bare `busybox:1.37` the chart defaults to.
+  images are absent from the list -- and its chart is not pulled either, since
+  the chart alone would install nothing that can run. `offline_bundle.sh` names
+  them rather than letting the count come up short; build with the flag on to
+  include one.
 
 A reference with no registry host is expanded rather than dropped:
 `busybox:1.37` means `docker.io/library/busybox:1.37`. The expansion is gated

@@ -57,14 +57,6 @@ name each image is pushed under (the one a mirror asks for) would then be
 <registry>/<project>/<name>, which is wrong for any cluster that keeps the
 public `registry` value -- which is the case registryMode: mirror exists for.
 
-⚠️ Three of our charts are not published publicly yet (alert-webhook,
-condition2taint, llm-canary-operator), so the chart half of a `default` render
-needs the internal repo until they are:
-
-  script/offline_bundle.sh -o /tmp/bundle \
-      --set chartRepo=https://charts.example.com/team
-
-That changes where CHARTS come from and nothing about the image addresses.
   --set k=v       passed to helmfile as --state-values-set; repeatable
   --charts-only   skip the image copy, write the image list only
 
@@ -74,18 +66,15 @@ the environment file, while bodylog and bodylog-exporter hard-fail at
 template time without llmGateway.node and llmGateway.hostPath. Rendering is how
 the image list is derived, so a render that stops there produces no bundle:
 
-  script/offline_bundle.sh -o /tmp/bundle -e wlcb \
+  script/offline_bundle.sh -o /tmp/bundle -e <cluster> \
       --set llmGateway.node=<a node in that cluster> \
-      --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks \
-      --set alertWebhook.urls.WEBHOOK_URL=<that cluster's alert target>
-
-alert-webhook is the same shape and was missing from this list: wlcb enables it
-and no environment file carries its urls, so a render without that --set stops
-before any image is collected. Switching it off instead (--set
-enabled.alertWebhook=false) builds a bundle that quietly lacks its two images.
+      --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks
 
 Produces:
-  <dir>/charts/*.tgz     every chart, at the version the environment pins
+  <dir>/charts/*.tgz     every chart of a release this environment installs,
+                         at the version it pins, plus the engine charts
+  <dir>/catalog-seed.tar.gz  the model catalog and the engine charts, for the
+                         in-cluster catalog-mirror swissd deploys from
   <dir>/images.txt       one image address per line, derived from the render
   <dir>/images/<name>/   an OCI layout per image, copied with crane so the
                          manifest -- and the digest charts pin -- is unchanged
@@ -102,6 +91,10 @@ Environment:
                          pull-through cache, since crane does not read
                          /etc/docker/daemon.json. e.g.
                              BUNDLE_FETCH_MIRRORS="docker.io=docker.1ms.run"
+  CATALOG_MODELS         comma-separated catalog model names whose engine
+                         images go into the bundle (every variant of each),
+                         e.g. CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b.
+                         Unset: none -- one engine image is ~20 GB.
   BUNDLE_FETCH_INSECURE  true to allow plain HTTP when fetching through a
                          mirror above. Never applied to an upstream address.
   DOCKER_CONFIG          where crane looks for registry credentials.
@@ -172,10 +165,15 @@ RENDER_PLACEHOLDERS=(
   --state-values-set llmGateway.hostPath=/bundle
 )
 
+# enabled.catalogMirror=true on both the render and the release list below: it
+# is how swissd deploys a model on a cluster with no route to GitHub, and so it
+# belongs in every bundle -- off in default.yaml, where an online cluster reads
+# GitHub directly, and switched on by the offline environments.
 render_with() {
   helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
     --state-values-set registryMode=upstream \
     --state-values-set cilium.serviceMonitors=false \
+    --state-values-set enabled.catalogMirror=true \
     "${RENDER_PLACEHOLDERS[@]}" \
     ${EXTRA[@]+"${EXTRA[@]}"} \
     ${1:+"$1"} template --skip-tests
@@ -230,10 +228,8 @@ fi
 
 # ──────────────────────────────────────────────────── what did NOT get rendered
 # A release switched off for this run contributes no objects, so its images are
-# absent from the list -- and nothing said so. alert-webhook is the live
-# example: it hard-fails at template time unless webhook.urls is supplied, so
-# it gets disabled to make the bundle build, and the bundle then quietly lacks
-# its two images. Name them instead of letting the count come up short.
+# absent from the list -- and nothing said so. Name them instead of letting the
+# count come up short.
 echo "==> collecting images from the render"
 # Images do NOT all live on an `image:` key. Measured against a full wlcb
 # render, four shapes carry them, and three of those are not pod specs at all
@@ -277,8 +273,8 @@ def _has_version(tok):
 # single-segment name lives under library/: `busybox:1.37` is
 # `docker.io/library/busybox:1.37`. The ADDR pattern demands a dotted host, so
 # these matched nothing and were dropped without being counted or reported --
-# alert-webhook's init container is exactly that, and it went missing from the
-# list in silence. Expanded here so the bundle holds what a cluster will pull.
+# an init container named that way went missing from the list in silence.
+# Expanded here so the bundle holds what a cluster will pull.
 SHORT = re.compile(r'^[a-z0-9]+(?:[._-][a-z0-9]+)*'
                    r'(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*'
                    r'(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?$')
@@ -511,6 +507,7 @@ if ! helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
        --state-values-set registryMode=upstream \
        --state-values-set enabled.cilium=true \
        --state-values-set cilium.serviceMonitors=false \
+       --state-values-set enabled.catalogMirror=true \
        ${EXTRA[@]+"${EXTRA[@]}"} \
        list --output json > "$OUT/.releases.json" 2>"$OUT/.releases.err"; then
   echo "could not list releases -- charts cannot be pulled:" >&2
@@ -533,8 +530,7 @@ except Exception as e:
     sys.exit(1)
 # Which releases are switched off, while the list is already open. A disabled
 # release contributes no objects, so its images are absent from the bundle and
-# nothing said so -- alert-webhook is the live example, disabled to make the
-# build run at all.
+# nothing said so.
 off = [r for r in releases if str(r.get("installed")).lower() != "true"
        and r.get("name") != "cilium"]          # cilium is rendered separately
 if off:
@@ -544,12 +540,30 @@ if off:
     for r in off:
         print("      %-24s chart %s" % (r.get("name"), r.get("chart")))
 
-seen, failed, have = set(), [], 0
+seen, failed, have, copied = set(), [], 0, 0
 for r in releases:
     chart, version = r.get("chart"), r.get("version")
     if not chart or (chart, version) in seen:
         continue
+    # Only the releases this environment installs. A switched-off release has
+    # no images in the bundle (listed above), so its chart alone would install
+    # nothing that runs -- and pulling it anyway made the whole build depend on
+    # charts the cluster never uses being reachable from this host.
+    if r in off:
+        continue
     seen.add((chart, version))
+    # A chart that is a file or directory in this repo, not a repository
+    # reference: copied, not pulled. `helm pull ./x.tgz` reads the path as
+    # repo "." and fails ("repo . not found").
+    if os.path.exists(chart):
+        import shutil
+        if os.path.isdir(chart):
+            subprocess.check_call(["helm", "package", chart, "--destination", dest],
+                                  stdout=subprocess.DEVNULL)
+        else:
+            shutil.copy2(chart, dest)
+        copied += 1
+        continue
     # A chart already in the directory is left alone. That makes a re-run cheap,
     # and it is the only way to finish a bundle whose last chart cannot be
     # reached from this host: fetch that one .tgz elsewhere, drop it in, run
@@ -563,8 +577,8 @@ for r in releases:
         cmd += ["--version", version]
     if subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         failed.append("%s@%s" % (chart, version))
-print("    %d charts pulled, %d already present, %d failed" % (
-      len(seen) - len(failed) - have, have, len(failed)))
+print("    %d charts pulled, %d copied from the repo, %d already present, %d failed" % (
+      len(seen) - len(failed) - have - copied, copied, have, len(failed)))
 for f in failed:
     print("      FAILED %s" % f)
 if failed:
@@ -589,38 +603,34 @@ SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT
 [ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
 [ -n "$SOURCE_REGISTRY" ] || echo "       and offline_load.sh will need --source-registry" >&2
 
-# The engine charts. A model release only exists when someone passes a file of
-# `models:` entries on the command line (MODELS=), and a bundle is built before
-# anyone knows which models the site will run -- so pull them at the versions
-# `versions:` pins, like every other chart here.
+# The engine charts and the model catalog, for both ways a model gets deployed.
 #
-# Measured: without them, README step 8 installed the model from a
-# copy an earlier run had left in ~/.cache/helm, and would have failed on a node
-# without that leftover -- the "works here, breaks in the room with no network"
-# failure a bundle exists to prevent.
-python3 - "$OUT/charts" <<'PY' | while read -r _n _v; do
-import sys, yaml
-try:
-    d = yaml.safe_load(open("environments/default.yaml")) or {}
-except Exception as e:
-    sys.exit(0)
-# The engines are pinned in `versions:` with every other chart -- there is no
-# separate list of them to drift from it.
-v = d.get("versions") or {}
-for name in ("sglang", "vllm"):
-    if v.get(name):
-        print("%s %s" % (name, v[name]))
+# A `models:` entry (MODELS= on the command line) installs the sglang/vllm chart
+# at the version `versions:` pins. swissd, behind the console, installs the
+# NEWEST release that meets the catalog entry's constraint, from the chart
+# repository and catalog its site profile names -- GitHub Pages, which an
+# air-gapped cluster cannot reach. So the bundle carries both: the pinned
+# versions and the newest ones go into charts/, and catalog-seed.tar.gz holds the
+# catalog plus those same charts for catalog-mirror to serve in the cluster.
+# catalog_seed.py refuses a seed that leaves a catalog entry with no chart.
+#
+# Measured, for the pinned half: without it README step 8 installed the model
+# from a copy an earlier run had left in ~/.cache/helm, and would have failed on
+# a node without that leftover -- the "works here, breaks in the room with no
+# network" failure a bundle exists to prevent.
+_pins=$(python3 - <<'PY'
+import yaml
+v = (yaml.safe_load(open("environments/default.yaml")) or {}).get("versions") or {}
+print(" ".join("--pin %s=%s" % (n, v[n]) for n in ("sglang", "vllm") if v.get(n)))
 PY
-  [ -z "$_n" ] && continue
-  if [ -f "$OUT/charts/$_n-$_v.tgz" ]; then
-    echo "    engine chart: have $_n-$_v.tgz"
-  elif helm pull "modelsphere/$_n" --version "$_v" --destination "$OUT/charts" >/dev/null 2>&1; then
-    echo "    engine chart: pulled $_n-$_v.tgz"
-  else
-    echo "    engine chart: FAILED to pull $_n $_v -- a cluster that declares" >&2
-    echo "    this engine will have no chart for it and cannot fetch one" >&2
-  fi
-done
+)
+# shellcheck disable=SC2086  # _pins is a list of flags
+if ! python3 "$REPO_ROOT/script/catalog_seed.py" "$OUT/catalog-seed.tar.gz" $_pins \
+       --charts-dir "$OUT/charts" --models "${CATALOG_MODELS:-}" --images-out "$OUT/.catalog-images"; then
+  echo "could not build the catalog seed: swissd on the far side would have no" >&2
+  echo "catalog and no engine chart to deploy from. Refusing to continue." >&2
+  exit 1
+fi
 
 img_failed=0
 # Inference engine images. They are not helmfile releases -- each workload
@@ -647,6 +657,26 @@ else
   echo "    no $ENGINE_LIST -- no engine images in this bundle"
   echo "      (the platform stack only; copy engine-images.txt.example to add them)"
 fi
+
+# The engine images CATALOG_MODELS asked for, as the catalog spells them -- the
+# address swissd composes from. Their basenames are pushed once more by
+# offline_load.sh, because that is where swiss's image mirror looks.
+CAT_COUNT=0
+while read -r eimg; do
+  [ -n "$eimg" ] || continue
+  if ! grep -qxF "$eimg" "$OUT/images.txt"; then
+    echo "$eimg" >> "$OUT/images.txt"
+    COUNT=$((COUNT+1)); CAT_COUNT=$((CAT_COUNT+1))
+  fi
+done < "$OUT/.catalog-images"
+[ "$CAT_COUNT" -gt 0 ] && echo "    + $CAT_COUNT engine image(s) from the catalog (CATALOG_MODELS=${CATALOG_MODELS:-})"
+# Every engine image in the bundle, by whichever list named it: offline_load.sh
+# reads this to push them a second time under the name swiss's mirror asks for.
+# Not engine-images.txt: a bundle built into offline/ would overwrite the
+# hand-written list there.
+{ [ -f "$ENGINE_LIST" ] && grep -vE '^[[:space:]]*(#|$)' "$ENGINE_LIST"; cat "$OUT/.catalog-images"; } \
+  | sed 's/[[:space:]]*$//' | sort -u > "$OUT/swiss-engine-images.txt" || true
+rm -f "$OUT/.catalog-images"
 
 # The address in engine-images.txt has to be the one a `models:` entry gives the
 # chart -- the same string, not the same image. A bundle carrying an engine
@@ -685,12 +715,6 @@ for addr, files in sorted(missing.items()):
 PY
 fi
 
-# The `helm test` probe for alert-webhook. The render is made with --skip-tests,
-# on purpose -- test hooks are not part of what a cluster runs -- so this
-# address is in the list today only because grafana's initChownData happens to
-# want the same tag. Naming it here makes that deliberate.
-# helmfile.yaml.gotmpl points the hook at this exact image when offline; the two
-# are the same decision written twice, so change them together.
 # The images a model's chart pins INSIDE ITSELF: the hang-watcher, CART, and
 # CART's two sidecars. No render here names them -- a model release comes from a
 # MODELS file on the command line, and a bundle is built before anyone knows
@@ -782,11 +806,6 @@ PY
   rm -f "$OUT/.sidecars"
 done
 
-if ! grep -q '^docker.io/library/busybox:1.38.0$' "$OUT/images.txt"; then
-  echo 'docker.io/library/busybox:1.38.0' >> "$OUT/images.txt"
-  COUNT=$((COUNT+1))
-  echo "    + docker.io/library/busybox:1.38.0 (alert-webhook's helm test probe)"
-fi
 
 # ───────────────────────────────────────── where each image lands in the mirror
 # Both modes put an image at the same place in the registry -- host stripped,
@@ -979,7 +998,10 @@ fi
 # The tools are fetched by their own command, into the repo's offline/tools
 # unless told otherwise, so a bundle built with -o <dir> has an empty tools/
 # and nothing says so until the target host has no containerd to install.
-TOOL_COUNT=$(find "$OUT/tools" -type f ! -name '.gitkeep' 2>/dev/null | wc -l | tr -d ' ')
+# `|| true` inside: with no tools/ at all, find fails, pipefail carries that
+# out of the substitution and set -e ended the run right here -- silently,
+# with every chart and image on disk and no MANIFEST written.
+TOOL_COUNT=$( { find "$OUT/tools" -type f ! -name '.gitkeep' 2>/dev/null || true; } | wc -l | tr -d ' ')
 
 # Which commit this bundle came from. A build host that received the repo as
 # files rather than as a clone has no .git, and the line then read "unknown" --
@@ -999,7 +1021,8 @@ image_format: oci            # crane OCI layouts, one directory per image.
                              # cannot read those and says so by name.
 charts:      $(ls "$OUT/charts" | wc -l | tr -d ' ')
 images:      $COUNT ($( [ "$SKIP_IMAGES" = true ] && echo "list only" || echo "saved"))
-engines:     $ENGINE_COUNT (named in engine-images.txt, not derived)
+engines:     $ENGINE_COUNT (named in engine-images.txt, not derived) + ${CAT_COUNT:-0} from the catalog
+catalog_seed: catalog-seed.tar.gz ($(wc -c < "$OUT/catalog-seed.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})
 tools:       $TOOL_COUNT (binaries and units for the isolated side)
 EOF
 rm -f "$RENDER" "$OUT/.render.err" "$OUT/.releases.json" \

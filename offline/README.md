@@ -18,6 +18,10 @@ offline/
   images/   one OCI layout per image, copied with crane so the manifest, and
             the digest a chart pins, survive the trip
   charts/   chart tarballs (.tgz), ours and upstream's
+  catalog-seed.tar.gz  the model catalog and the engine charts, served to
+            swissd in the cluster by catalog-mirror (catalogSeed)
+  swiss-engine-images.txt  every engine image in the bundle, which
+            offline_load.sh pushes again under the name swiss asks for
   tools/    binaries and their images: registry, helm, helmfile, kubectl,
             kubeadm, kubelet, containerd, runc, the CNI plugins, helm-diff,
             and the kubeadm control-plane images

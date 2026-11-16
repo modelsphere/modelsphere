@@ -104,6 +104,10 @@ environments:
        Deliberately FALSE under mirror: there the addresses stay upstream and
        the redirect happens on the node, in /etc/containerd/certs.d. */}}
 {{- $rewrite := eq $mode "rewrite" }}
+{{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
+       the console it serves. */}}
+{{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
+{{- $catalogMirrorURL := printf "http://catalog-mirror.%s.svc" .Values.namespaces.console }}
 
 {{- /*
      Charts from local .tgz files when they are there, from a repository when
@@ -829,6 +833,75 @@ releases:
       tier: portal
     values:
       - console/swiss-overrides.yaml.gotmpl
+{{- if $catalogMirror }}
+    hooks:
+      # The site profile, written once if there is none: catalogs and chartRepo
+      # on catalog-mirror, and under `rewrite` the engine images and a model
+      # release's four sidecars under `registry` -- the same addresses
+      # models/images.yaml.gotmpl gives a `models:` entry. swiss's image mirror
+      # keeps only the last path segment (lmsysorg/sglang -> <registry>/sglang),
+      # which is why offline_load.sh pushes engine images under that name too.
+      # No nodes.gpus: swissd adds the well-known entries itself, and swiss
+      # 0.7.2 rejects the field.
+      - events: ["postsync"]
+        showlogs: true
+        command: "sh"
+        args:
+          - console/swiss-profile.sh
+          - {{ .Values.namespaces.console | quote }}
+          - swissd-profile
+          - |
+            name: {{ dig "swiss" "siteName" "this-cluster" .Values }}
+            namespace: {{ dig "swiss" "modelNamespace" "models" .Values }}
+            catalogs:
+              - name: default
+                url: {{ $catalogMirrorURL }}/model-catalog/index-v2.json
+                schemaVersion: v2
+                default: true
+            chartRepo: {{ $catalogMirrorURL }}/helm-charts
+            registry:
+              mirror: {{ if $rewrite }}{{ .Values.registry | quote }}{{ else }}""{{ end }}
+            model:
+              pathTemplate: {{ dig "swiss" "modelPathTemplate" "/mnt/disk0/models/{{name}}" .Values | quote }}
+{{- if $rewrite }}
+            extra:
+              hangWatcher:
+                image:
+                  repository: {{ .Values.registry }}/hang-watcher
+              cart:
+                image:
+                  repository: {{ .Values.registry }}/cache_aware_router
+                ha:
+                  image: {{ printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote }}
+                reload:
+                  image: {{ printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote }}
+{{- end }}
+{{- end }}
+
+  # The model catalog and the engine charts, served in the cluster for swissd
+  # where GitHub cannot be reached (enabled.catalogMirror; the offline
+  # environments turn it on). Filled from the bundle's catalog-seed.tar.gz
+  # when catalogSeed names it, synced from GitHub Pages otherwise -- see
+  # console/catalog-mirror.yaml.gotmpl.
+  - name: catalog-mirror
+    namespace: {{ .Values.namespaces.console }}
+    chart: {{ template "chartref" (dict "local" $local "name" "catalog-mirror" "ver" .Values.versions.catalogMirror "fallback" "modelsphere/catalog-mirror") }}
+    version: {{ .Values.versions.catalogMirror | quote }}
+    installed: {{ $catalogMirror }}
+    labels:
+      tier: portal
+    values:
+      - console/catalog-mirror.yaml.gotmpl
+{{- if $rewrite }}
+      - console/catalog-mirror-offline-images.yaml.gotmpl
+{{- end }}
+{{- if .Values.catalogSeed }}
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "sh"
+        args: ["console/catalog-seed.sh", {{ .Values.namespaces.console | quote }}, {{ .Values.catalogSeed | quote }}]
+{{- end }}
 
   - name: console
     namespace: {{ .Values.namespaces.console }}

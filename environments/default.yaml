@@ -30,6 +30,12 @@ chartRepo: https://modelsphere.github.io/helm-charts
 #     helmfile -e <cluster> --state-values-set chartsDir=/root/bundle/charts ...
 chartsDir: offline/charts
 
+# The bundle's catalog-seed.tar.gz: the model catalog and the engine charts that
+# catalog-mirror serves to swissd on a cluster with no route to GitHub. Set, it
+# is handed over as a ConfigMap and catalog-mirror stops syncing; empty, it
+# syncs from GitHub Pages. Only read when enabled.catalogMirror is true.
+catalogSeed: ""
+
 # Where charts and images are taken from.
 #
 #   upstream  each chart and image from its own source: our charts from
@@ -153,6 +159,9 @@ versions:
   console: "0.2.1"
   # swissd, the model deployment backend behind the portal. Same deal.
   swiss: "0.7.2"
+  # The in-cluster catalog and engine chart repository swissd deploys from
+  # where GitHub cannot be reached (enabled.catalogMirror).
+  catalogMirror: "0.2.0"
 
   volcano: "1.15.1"
   mindCluster: "26.1.0"           # == ascend/mindcluster-deploy-tool-26.1.0.tgz
@@ -259,6 +268,10 @@ enabled:
   llmCanaryOperator: false
   # The portal: console plus swissd as its own release (see the helmfile).
   console: true
+  # swissd reads the model catalog and the engine charts from catalog-mirror
+  # in the cluster rather than GitHub Pages. Off here, where GitHub is
+  # reachable; the offline environments turn it on.
+  catalogMirror: false
 
   condition2taint: false
   alertWebhook: false
@@ -438,6 +451,15 @@ llmGateway:
 #               console/swiss-overrides.yaml.gotmpl). The tighter opt-in.
 swiss:
   rbacScope: cluster
+  # The site profile written for swissd once, when catalog-mirror is on and no
+  # profile exists yet (console/swiss-profile.sh). swissd owns it afterwards.
+  #   siteName           the profile's name, shown in the console
+  #   modelNamespace     where a model release lands unless a deploy says
+  #   modelPathTemplate  model.localPath from the catalog's source.hf; {{name}},
+  #                      {{org}}, {{hf}} and {{model}} expand
+  # siteName: this-cluster
+  # modelNamespace: models
+  # modelPathTemplate: /mnt/disk0/models/{{name}}
 
 # Cluster label put in front of every alert message by alert-webhook.
 # Required when enabled.alertWebhook is true; each environment sets its own.
