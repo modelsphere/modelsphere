@@ -205,7 +205,7 @@ with Docker Hub unreachable too:
 ```bash
 BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc docker.io=docker.m.daocloud.io registry.k8s.io=k8s.m.daocloud.io" \
   ARCH=arm64 make offline-tools
-BUNDLE_PLATFORMS=linux/arm64 BUNDLE_FETCH_MIRRORS="..." make offline-bundle ...
+ARCH=arm64 BUNDLE_FETCH_MIRRORS="..." make offline-bundle ...
 ```
 
 **The engine is the one image no render can name.** Everything else in the
@@ -266,10 +266,12 @@ dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or openEuler
 20.03 (2.28), let alone CentOS 7 (2.17). The three systemd files ship in the repo
 (`script/offline-units/`).
 
-**For an arm64 target** (Kunpeng, Ascend), name it when fetching: `ARCH=arm64
-make offline-tools`. Nothing detects it -- the build host need not be the target
--- and the default is amd64. The same goes for the images:
-`BUNDLE_PLATFORMS=linux/arm64` for `make offline-bundle`.
+**For an arm64 target** (Kunpeng, Ascend), name it when fetching:
+`ARCH=arm64 make offline-tools` and `ARCH=arm64 make offline-bundle`. Nothing
+detects it -- the build host need not be the target -- and the default is amd64.
+`ARCH` sets the binaries and, unless `BUNDLE_PLATFORMS` says otherwise, the
+platform of every image too. `make offline-tools` checks what it pulled: an
+image of the wrong architecture is not kept, and `verify` reports it.
 
 **2. Registry, and load it.** Both read `offline/site.env`:
 
@@ -686,8 +688,8 @@ tarball a few KB in size for a 143 MB image -- valid tar, and silently useless.
 The full index is what preserves the digest, and it is expensive: `pause:3.10`
 is 553 MB as an index against roughly 700 KB for one platform. So an image a
 chart pins BY DIGEST keeps its index, and everything else is fetched for
-`BUNDLE_PLATFORMS` only -- one platform by default, `"linux/amd64,linux/arm64"`
-for a cluster with arm64 nodes.
+`BUNDLE_PLATFORMS` only -- one platform by default (`linux/$ARCH`),
+`"linux/amd64,linux/arm64"` for a cluster with both kinds of nodes.
 
 ## One build per output directory
 

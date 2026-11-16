@@ -159,8 +159,8 @@ case "${1:-}" in
     # every kubeadm image "COPY FAILED" while the registry image, already
     # mirrored, came through. The name the bundle stores is always the
     # canonical one; only the source changes.
-    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "${BUNDLE_PLATFORMS:-linux/$ARCH}" ]; then
-      echo "    registry.tar is $(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable), not ${BUNDLE_PLATFORMS:-linux/$ARCH}: fetching it again"
+    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "linux/$ARCH" ]; then
+      echo "    registry.tar is $(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable), not linux/$ARCH: fetching it again"
       rm -f "$TOOLS/registry.tar"
     fi
     if [ ! -s "$TOOLS/registry.tar" ]; then
@@ -177,7 +177,10 @@ case "${1:-}" in
         # The registry runs on the target, so its image follows ARCH unless
         # told otherwise -- not linux/amd64, which left an arm64 bundle with
         # arm64 binaries and an amd64 registry nothing could start.
-        _plat=${BUNDLE_PLATFORMS:-linux/$ARCH}
+        # linux/$ARCH, not BUNDLE_PLATFORMS: that may list several (a mixed
+        # cluster), and crane pulls one; the registry and the control plane
+        # run on the target, whose architecture ARCH names.
+        _plat=linux/$ARCH
         _ins=""; [ "${BUNDLE_FETCH_INSECURE:-}" = true ] && _ins="--insecure"
         if crane pull --platform "${_plat%%,*}" $_ins "$_src" "$TOOLS/registry.tar.part"; then
           # The tarball carries the name it was fetched under, and a mirror's
@@ -250,19 +253,24 @@ RETAG
           while read -r img; do
             [ -z "$img" ] && continue
             d="$TOOLS/images/$(echo "$img" | tr '/:@' '___')"
-            [ -f "$d/oci-layout" ] && { ka_saved=$((ka_saved+1)); continue; }
+            # Already there AND the right arch: keep. A layout from an earlier
+            # run for another arch is fetched again, not counted as saved.
+            if [ -f "$d/oci-layout" ]; then
+              if layout_has "$d" "linux/$ARCH"; then ka_saved=$((ka_saved+1)); continue; fi
+              echo "      $img is $(layout_arch "$d" 2>/dev/null || echo unreadable), not linux/$ARCH: fetching it again"
+            fi
             rm -rf "$d.part"
-            # The control plane runs on the target: linux/$ARCH unless told
-            # otherwise, as for the registry image. linux/amd64 here left an
-            # arm64 bundle with an apiserver that cannot start.
+            # The control plane runs on the target: linux/$ARCH, as for the
+            # registry image. linux/amd64 here left an arm64 bundle with an
+            # apiserver that cannot start.
             _from=$(fetch_via "$img")
             [ "$_from" = "$img" ] || echo "      $img via $_from"
-            if crane pull --format=oci --platform "${BUNDLE_PLATFORMS:-linux/$ARCH}" $_ins "$_from" "$d.part" >/dev/null 2>&1; then
-              if layout_has "$d.part" "${BUNDLE_PLATFORMS:-linux/$ARCH}"; then
+            if crane pull --format=oci --platform "linux/$ARCH" $_ins "$_from" "$d.part" >/dev/null 2>&1; then
+              if layout_has "$d.part" "linux/$ARCH"; then
                 rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
               else
                 rm -rf "$d.part"; ka_failed=$((ka_failed+1))
-                echo "      WRONG PLATFORM: $img is $(layout_arch "$d.part" 2>/dev/null || echo unreadable), wanted ${BUNDLE_PLATFORMS:-linux/$ARCH}" >&2
+                echo "      WRONG PLATFORM: $img is $(layout_arch "$d.part" 2>/dev/null || echo unreadable), wanted linux/$ARCH" >&2
               fi
             else
               rm -rf "$d.part"; ka_failed=$((ka_failed+1))
@@ -295,7 +303,7 @@ RETAG
     done
     # Present is not enough: an amd64 registry in an arm64 bundle is present,
     # and nothing on site can start it.
-    want=${BUNDLE_PLATFORMS:-linux/$ARCH}; want=${want%%,*}
+    want=linux/$ARCH
     if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "$want" ]; then
       printf '  WRONG registry.tar is %s, not %s\n' "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable)" "$want"; miss=$((miss+1))
     fi

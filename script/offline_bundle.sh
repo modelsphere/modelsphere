@@ -82,7 +82,8 @@ Produces:
                          that leaves image addresses alone
 
 Environment:
-  BUNDLE_PLATFORMS       platforms to fetch for, default linux/amd64. An image
+  BUNDLE_PLATFORMS       platforms to fetch for, default linux/$ARCH (ARCH
+                         defaults to amd64; ARCH=arm64 for Kunpeng/Ascend). An image
                          the charts pin by digest ignores this and keeps its
                          full index -- stripping it would change the digest.
   BUNDLE_FETCH_MIRRORS   space-separated upstream=replacement pairs, used ONLY
@@ -983,7 +984,7 @@ if [ "$SKIP_IMAGES" = false ]; then
     # check above would otherwise accept as finished.
     case "$img" in
       *@sha256:*) _plat="" ;;
-      *)          _plat="--platform ${BUNDLE_PLATFORMS:-linux/amd64}" ;;
+      *)          _plat="--platform ${BUNDLE_PLATFORMS:-linux/${ARCH:-amd64}}" ;;
     esac
     # Fetch through a mirror where the build host needs one. crane does NOT
     # read /etc/docker/daemon.json, so a host that reaches docker.io only
