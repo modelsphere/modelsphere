@@ -25,8 +25,9 @@ cannot deploy some model fails here, not in the room with no network.
 
 --charts-dir also writes the chart archives there (the bundle's charts/, where
 the images a model's chart pins inside itself are read from). --models names
-catalog models whose engine images -- every variant's -- go to --images-out,
-one address per line, exactly as the catalog spells them.
+catalog models whose engine images go to --images-out, one address per line,
+exactly as the catalog spells them: `model` for every variant's, or
+`model:variant` for that one variant's.
 Environment: CATALOG_URL, CHARTS_URL (defaults: the public GitHub Pages sites).
 """
 import argparse, hashlib, io, json, os, re, sys, tarfile, urllib.request
@@ -106,7 +107,10 @@ def main():
                     constraints.append((ch["name"], ch.get("version", ""), rel, "v1"))
 
     # v2: index-v2.json, each variant's current file and its history.
-    want_models = {m for m in a.models.split(",") if m}
+    picks = [p.strip() for p in a.models.split(",") if p.strip()]
+    want_models = {p.partition(":")[0] for p in picks}
+    want_variants = {p for p in picks if ":" in p}   # model:variant
+    found = set()
     images = {}  # address -> the models naming it
     raw = get(CATALOG_URL + "index-v2.json")
     files["model-catalog/index-v2.json"] = raw
@@ -117,8 +121,11 @@ def main():
             files[f"model-catalog/{rel}"] = data
             doc = yaml.safe_load(data) or {}
             img = doc.get("image") or {}
-            if m["name"] in want_models and img.get("repository") and img.get("tag"):
-                images.setdefault(f'{img["repository"]}:{img["tag"]}', set()).add(m["name"])
+            whole = m["name"] in picks
+            one = f'{m["name"]}:{v["id"]}' in want_variants
+            if (whole or one) and img.get("repository") and img.get("tag"):
+                images.setdefault(f'{img["repository"]}:{img["tag"]}', set()).add(f'{m["name"]}:{v["id"]}')
+                found.add(m["name"] if whole else f'{m["name"]}:{v["id"]}')
             ch = doc.get("chart") or {}
             if ch.get("name"):
                 constraints.append((ch["name"], ch.get("version", ""), rel, "v2"))
@@ -126,9 +133,9 @@ def main():
                 h = safe_rel(v["history"])
                 files[f"model-catalog/{h}"] = get(CATALOG_URL + h)
 
-    missing = want_models - {m["name"] for m in json.loads(raw).get("models", [])}
+    missing = set(picks) - found
     if missing:
-        raise SystemExit(f"--models: no such model in the v2 catalog: {', '.join(sorted(missing))}")
+        raise SystemExit(f"--models: not in the v2 catalog, or naming no image: {', '.join(sorted(missing))}")
     if a.images_out:
         with open(a.images_out, "w") as f:
             f.write("".join(i + "\n" for i in sorted(images)))

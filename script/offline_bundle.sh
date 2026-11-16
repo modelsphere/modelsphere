@@ -91,9 +91,10 @@ Environment:
                          pull-through cache, since crane does not read
                          /etc/docker/daemon.json. e.g.
                              BUNDLE_FETCH_MIRRORS="docker.io=docker.1ms.run"
-  CATALOG_MODELS         comma-separated catalog model names whose engine
-                         images go into the bundle (every variant of each),
-                         e.g. CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b.
+  CATALOG_MODELS         comma-separated catalog models whose engine images go
+                         into the bundle: `model` for every variant, or
+                         `model:variant` for one, e.g.
+                         CATALOG_MODELS=glm-5.3-flash,qwen3-8b:vllm-tp1-a100.
                          Unset: none -- one engine image is ~20 GB.
   BUNDLE_FETCH_INSECURE  true to allow plain HTTP when fetching through a
                          mirror above. Never applied to an upstream address.

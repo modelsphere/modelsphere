@@ -423,7 +423,8 @@ is bundled unless asked for:
 CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
 ```
 
-Every variant's image of each named model goes into `images.txt`, exactly as
+`model:variant` (`qwen3-8b:vllm-tp1-a100`) takes one variant's image instead
+of every variant's. The images go into `images.txt`, exactly as
 the catalog spells it, and into the bundle's `swiss-engine-images.txt` together
 with the hand-written list. `offline_load.sh` pushes those once more under the name
 swiss's image mirror asks for: swiss keeps only the last path segment, so
