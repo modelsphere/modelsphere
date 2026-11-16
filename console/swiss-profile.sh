@@ -13,6 +13,15 @@ set -eu
 NS=$1; CM=$2; PROFILE=$3
 if kubectl -n "$NS" get configmap "$CM" >/dev/null 2>&1; then
   echo "site profile $NS/$CM exists -- left as it is (swissd owns it; edit it from the web)"
+  # Left alone, but not silently: lines this environment would write that the
+  # stored profile does not have -- a profile saved before catalog-mirror was
+  # on, a registry that moved, an autoconfig upgrade the sidecars did not follow.
+  HAVE=$(kubectl -n "$NS" get configmap "$CM" -o jsonpath='{.data.profile\.yaml}')
+  printf '%s\n' "$PROFILE" | grep -E 'chartRepo:|url:|mirror:|autoconfig-(hagate|reload)|repository:' \
+    | while IFS= read -r line; do
+        printf '%s\n' "$HAVE" | grep -qF -- "$(echo "$line" | sed 's/^ *//')" \
+          || echo "  WARNING: the profile lacks \"$(echo "$line" | sed 's/^ *//')\" -- update it from the console if this environment is right"
+      done
   exit 0
 fi
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT

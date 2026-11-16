@@ -175,6 +175,7 @@ render_with() {
     --state-values-set registryMode=upstream \
     --state-values-set cilium.serviceMonitors=false \
     --state-values-set enabled.catalogMirror=true \
+    --state-values-set catalogSnapshot= \
     "${RENDER_PLACEHOLDERS[@]}" \
     ${EXTRA[@]+"${EXTRA[@]}"} \
     ${1:+"$1"} template --skip-tests
@@ -509,6 +510,7 @@ if ! helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
        --state-values-set enabled.cilium=true \
        --state-values-set cilium.serviceMonitors=false \
        --state-values-set enabled.catalogMirror=true \
+       --state-values-set catalogSnapshot= \
        ${EXTRA[@]+"${EXTRA[@]}"} \
        list --output json > "$OUT/.releases.json" 2>"$OUT/.releases.err"; then
   echo "could not list releases -- charts cannot be pulled:" >&2
@@ -553,25 +555,37 @@ for r in releases:
     if r in off:
         continue
     seen.add((chart, version))
-    # A chart that is a file or directory in this repo, not a repository
-    # reference: copied, not pulled. `helm pull ./x.tgz` reads the path as
-    # repo "." and fails ("repo . not found").
-    if os.path.exists(chart):
-        import shutil
-        if os.path.isdir(chart):
-            subprocess.check_call(["helm", "package", chart, "--destination", dest],
-                                  stdout=subprocess.DEVNULL)
-        else:
-            shutil.copy2(chart, dest)
-        copied += 1
-        continue
     # A chart already in the directory is left alone. That makes a re-run cheap,
     # and it is the only way to finish a bundle whose last chart cannot be
     # reached from this host: fetch that one .tgz elsewhere, drop it in, run
     # again. Without this the re-run pulls it afresh, fails again, and the
     # advice to "drop it in" is simply untrue.
-    if version and os.path.exists(os.path.join(dest, "%s-%s.tgz" % (chart.split("/")[-1], version))):
+    #
+    # Checked BEFORE the local-path case below: with the default bundle
+    # directory (offline/, whose charts/ is also the default chartsDir) a
+    # re-run sees each chart as the path of the very file it would write, and
+    # copying a file onto itself fails.
+    local = os.path.exists(chart)
+    name = os.path.basename(chart) if local and not os.path.isdir(chart) \
+        else "%s-%s.tgz" % (chart.rstrip("/").split("/")[-1], version)
+    if version and os.path.exists(os.path.join(dest, name)):
         have += 1
+        continue
+    # A chart that is a file or directory in this repo, not a repository
+    # reference: copied (or packaged), not pulled. `helm pull ./x.tgz` reads
+    # the path as repo "." and fails ("repo . not found").
+    if local:
+        import shutil
+        try:
+            if os.path.isdir(chart):
+                subprocess.check_call(["helm", "package", chart, "--destination", dest],
+                                      stdout=subprocess.DEVNULL)
+            else:
+                shutil.copy2(chart, dest)
+            copied += 1
+        except Exception as e:  # noqa: BLE001 -- reported with the pulls
+            print("    could not copy %s: %s" % (chart, e))
+            failed.append("%s@%s" % (chart, version))
         continue
     cmd = ["helm", "pull", chart, "--destination", dest]
     if version:
@@ -599,6 +613,7 @@ fi
 # version of this that computed it only at the end left that second spelling
 # empty and the bundle silently short.
 SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
+                    --state-values-set catalogSnapshot= \
                     ${EXTRA[@]+"${EXTRA[@]}"} build 2>/dev/null \
                   | awk '/^ +registry: /{print $2; exit}' || true)
 [ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
@@ -619,10 +634,18 @@ SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT
 # from a copy an earlier run had left in ~/.cache/helm, and would have failed on
 # a node without that leftover -- the "works here, breaks in the room with no
 # network" failure a bundle exists to prevent.
-_pins=$(python3 - <<'PY'
-import yaml
-v = (yaml.safe_load(open("environments/default.yaml")) or {}).get("versions") or {}
-print(" ".join("--pin %s=%s" % (n, v[n]) for n in ("sglang", "vllm") if v.get(n)))
+# The pins as this environment renders them: its own file over default.yaml,
+# the way helmfile layers them.
+_pins=$(python3 - "environments/$ENVIRONMENT.yaml" environments/default.yaml <<'PY'
+import sys, yaml
+pins = {}
+for f in reversed(sys.argv[1:]):
+    try:
+        v = (yaml.safe_load(open(f)) or {}).get("versions") or {}
+    except FileNotFoundError:
+        continue
+    pins.update({n: v[n] for n in ("sglang", "vllm") if v.get(n)})
+print(" ".join("--pin %s=%s" % kv for kv in sorted(pins.items())))
 PY
 )
 # shellcheck disable=SC2086  # _pins is a list of flags
@@ -663,9 +686,12 @@ fi
 # address swissd composes from. Their basenames are pushed once more by
 # offline_load.sh, because that is where swiss's image mirror looks.
 CAT_COUNT=0
+# One image, two spellings: docker.io/lmsysorg/sglang:t and lmsysorg/sglang:t
+# are the same ~20 GB, so compare them with docker.io/ and library/ taken off.
+_norm() { sed -E 's#^docker\.io/##; s#^library/##'; }
 while read -r eimg; do
   [ -n "$eimg" ] || continue
-  if ! grep -qxF "$eimg" "$OUT/images.txt"; then
+  if ! _norm < "$OUT/images.txt" | grep -qxF "$(echo "$eimg" | _norm)"; then
     echo "$eimg" >> "$OUT/images.txt"
     COUNT=$((COUNT+1)); CAT_COUNT=$((CAT_COUNT+1))
   fi

@@ -413,7 +413,11 @@ serves it in the cluster:
   `versions.autoconfig` -- and under `registryMode: rewrite` also
   `registry.mirror`. swissd owns the profile
   from then on -- edit it from the console; a later helmfile run leaves it
-  alone. `swiss.siteName`, `swiss.modelNamespace` and `swiss.modelPathTemplate`
+  alone, and says so, printing each line this environment would have written
+  that the stored profile lacks. Those are the cases to fix by hand: a profile
+  saved before catalog-mirror was turned on (it still names GitHub), a
+  `registry` that moved, and an autoconfig upgrade (CART's sidecars carry its
+  version). `swiss.siteName`, `swiss.modelNamespace` and `swiss.modelPathTemplate`
   in the environment fill in its other fields.
 
 **Engine images come from the catalog by model name.** One is ~20 GB, so none

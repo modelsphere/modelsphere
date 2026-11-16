@@ -47,9 +47,8 @@ rbac:
 {{- range $m := (dig "models" (list) .Values) }}
 {{-   $swissNs = append $swissNs (dig "namespace" "llm-demo" $m) }}
 {{- end }}
-{{- if not $swissNs }}
-{{-   $swissNs = list "llm-demo" }}
-{{- end }}
+{{- /* and where swissd itself deploys by default (the site profile's namespace) */}}
+{{- $swissNs = append $swissNs (dig "swiss" "modelNamespace" "llm-demo" .Values) }}
 {{- range $ns := $swissNs | uniq }}
       - {{ $ns | quote }}
 {{- end }}

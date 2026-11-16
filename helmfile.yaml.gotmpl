@@ -851,8 +851,8 @@ releases:
           - {{ .Values.namespaces.console | quote }}
           - swissd-profile
           - |
-            name: {{ dig "swiss" "siteName" "this-cluster" .Values }}
-            namespace: {{ dig "swiss" "modelNamespace" "models" .Values }}
+            name: {{ dig "swiss" "siteName" "this-cluster" .Values | quote }}
+            namespace: {{ dig "swiss" "modelNamespace" "llm-demo" .Values | quote }}
             catalogs:
               - name: default
                 url: {{ $catalogMirrorURL }}/model-catalog/index-v2.json
@@ -898,7 +898,7 @@ releases:
 {{- if $rewrite }}
       - console/catalog-mirror-offline-images.yaml.gotmpl
 {{- end }}
-{{- if .Values.catalogSnapshot }}
+{{- if and $catalogMirror .Values.catalogSnapshot }}
     hooks:
       - events: ["presync"]
         showlogs: true

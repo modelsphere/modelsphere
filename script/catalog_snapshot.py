@@ -16,7 +16,8 @@ tar with the two trees nginx serves.
                   version passed with --pin, and an index.yaml naming the
                   archives by bare file name so helm fetches them from the mirror.
 
-Every file is checked against the digest its index pins, and every chart
+Every version and variant file is checked against the digest its index pins
+(histories have none and are copied as published), and every chart
 constraint in the catalog has to be met by an archive in the snapshot -- a snapshot that
 cannot deploy some model fails here, not in the room with no network.
 
@@ -66,18 +67,28 @@ def pinned(rel, want):
 
 def vkey(v):
     """A release version's sort key; None for a pre-release, which is never picked."""
-    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", str(v).strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def bound(v):
+    """The x.y.z of a lower bound, a pre-release one included (>=0.8.0-rc1)."""
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", str(v).strip())
     return tuple(int(x) for x in m.groups()) if m else None
 
 
 def satisfies(version, constraint):
-    """The two spellings the catalog uses: an exact version and `>=x.y.z`."""
-    c = str(constraint).strip()
+    """True/False for the spellings the catalog uses -- an exact version,
+    `>=x.y.z`, or none at all (any release) -- and None for anything else."""
+    c = str(constraint or "").strip()
+    if not c:
+        return vkey(version) is not None
     if c.startswith(">="):
-        return vkey(version) is not None and vkey(version) >= vkey(c[2:].strip())
+        b = bound(c[2:])
+        return None if b is None else (vkey(version) is not None and vkey(version) >= b)
     if vkey(c):
         return version == c
-    raise SystemExit(f"chart constraint {constraint!r}: only an exact version or >=x.y.z is understood here")
+    return None
 
 
 def main():
@@ -125,7 +136,10 @@ def main():
             one = f'{m["name"]}:{v["id"]}' in want_variants
             if (whole or one) and img.get("repository") and img.get("tag"):
                 images.setdefault(f'{img["repository"]}:{img["tag"]}', set()).add(f'{m["name"]}:{v["id"]}')
-                found.add(m["name"] if whole else f'{m["name"]}:{v["id"]}')
+                if whole:
+                    found.add(m["name"])
+                if one:
+                    found.add(f'{m["name"]}:{v["id"]}')
             ch = doc.get("chart") or {}
             if ch.get("name"):
                 constraints.append((ch["name"], ch.get("version", ""), rel, "v2"))
@@ -148,7 +162,10 @@ def main():
     for name in sorted({c[0] for c in constraints}):
         if name not in index:
             raise SystemExit(f"the catalog names chart {name!r}, which {CHARTS_URL} does not publish")
-        newest = max((e for e in index[name] if vkey(e["version"])), key=lambda e: vkey(e["version"]))
+        releases = [e for e in index[name] if vkey(e["version"])]
+        if not releases:
+            raise SystemExit(f"{CHARTS_URL} publishes only pre-releases of {name}; --pin one to bundle it")
+        newest = max(releases, key=lambda e: vkey(e["version"]))
         want[(name, newest["version"])] = newest
     for p in a.pin:
         name, _, ver = p.partition("=")
@@ -179,10 +196,15 @@ def main():
     # swiss at. v1 rides along because catalog-mirror's readiness and its
     # `helm test` read index.json, and its oldest files pin exact chart versions
     # nobody needs offline -- so those are reported, not refused.
-    unmet = [(n, c, w, s) for n, c, w, s in constraints if not any(satisfies(v, c) for v in have.get(n, []))]
-    for n, c, w, s in unmet:
-        print(f"    {'' if s == 'v2' else '(v1, not used offline) '}no {n} chart in the snapshot meets {c!r}: {w}",
-              file=sys.stderr)
+    unmet = []
+    for n, c, w, s in constraints:
+        verdicts = [satisfies(v, c) for v in have.get(n, [])]
+        if any(verdicts):
+            continue
+        why = (f"chart constraint {c!r} is not a spelling this script reads (exact or >=x.y.z)"
+               if None in verdicts else f"no {n} chart in the snapshot meets {c!r}")
+        unmet.append((n, c, w, s))
+        print(f"    {'' if s == 'v2' else '(v1, not used offline) '}{why}: {w}", file=sys.stderr)
     if any(s == "v2" for *_, s in unmet):
         raise SystemExit("a v2 catalog entry would find no chart offline; --pin a version that meets it")
 

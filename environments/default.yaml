@@ -454,11 +454,12 @@ swiss:
   # The site profile written for swissd once, when catalog-mirror is on and no
   # profile exists yet (console/swiss-profile.sh). swissd owns it afterwards.
   #   siteName           the profile's name, shown in the console
-  #   modelNamespace     where a model release lands unless a deploy says
+  #   modelNamespace     where a model release lands unless a deploy says;
+  #                      granted under rbacScope namespaced like models[]'s
   #   modelPathTemplate  model.localPath from the catalog's source.hf; {{name}},
   #                      {{org}}, {{hf}} and {{model}} expand
   # siteName: this-cluster
-  # modelNamespace: models
+  # modelNamespace: llm-demo
   # modelPathTemplate: /mnt/disk0/models/{{name}}
 
 # Cluster label put in front of every alert message by alert-webhook.

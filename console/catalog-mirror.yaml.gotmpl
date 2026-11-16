@@ -10,6 +10,9 @@
 #           own sync copies GitHub Pages every five minutes, onto a PVC when
 #           storage.persistence is on.
 {{- $snapshot := .Values.catalogSnapshot | default "" }}
+{{- if and $snapshot (not (isFile $snapshot)) }}
+{{-   fail (printf "catalogSnapshot: %s is not a file on this machine. It is the bundle's catalog-snapshot.tar.gz, read where helmfile runs -- point catalogSnapshot at it, or set it empty to sync from GitHub instead." $snapshot) }}
+{{- end }}
 {{- if $snapshot }}
 sync:
   enabled: false

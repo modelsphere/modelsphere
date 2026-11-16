@@ -292,7 +292,8 @@ if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
     _short="$REGISTRY/${_ref##*/}"
     _prev=$(awk -v k="$_short" '$1==k {print $2; exit}' "$_seen")
     if [ -n "$_prev" ]; then
-      if [ "$_prev" != "$img" ]; then
+      # docker.io/x/y:t and x/y:t are one image spelled twice, not a collision.
+      if [ "$(echo "$_prev" | sed -E 's#^docker\.io/##')" != "$(echo "$img" | sed -E 's#^docker\.io/##')" ]; then
         echo "    COLLISION: $_prev and $img both become $_short -- the second is NOT pushed" >&2
         failed=$((failed+1))
       fi
