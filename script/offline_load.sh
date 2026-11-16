@@ -457,8 +457,11 @@ A. registryMode: rewrite -- helm writes every address under the registry.
     catalogSnapshot: $BUNDLE/catalog-snapshot.tar.gz
     registryMode: rewrite
 
-    # creating the cluster: the control-plane images are not helm's to rewrite
-    kubeadm init --image-repository $REGISTRY          # or imageRepository: in
+    # creating the cluster: the control-plane images are not helm's to rewrite.
+    # The version the bundle carries, and no proxy variables in this shell
+    # (kubeadm copies them into the control-plane manifests).
+    kubeadm init --kubernetes-version "\$(kubeadm version -o short)" \\
+                 --image-repository $REGISTRY          # or imageRepository: in
                                                        # the kubeadm config file
     k3s server --system-default-registry $REGISTRY
 

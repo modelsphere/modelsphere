@@ -304,10 +304,24 @@ the directory already has.
 
 ```bash
 # what the distribution pulls for itself -- kube-apiserver belongs to no chart
-kubeadm init --image-repository <host>:5000     # or imageRepository: in the
+kubeadm init --kubernetes-version "$(kubeadm version -o short)" \
+             --image-repository <host>:5000     # or imageRepository: and
+                                                # kubernetesVersion: in the
                                                 # kubeadm config file
 k3s server --system-default-registry <host>:5000
 ```
+
+Two things kubeadm does that the bundle cannot see, both met in a rehearsal:
+
+- **Without `--kubernetes-version` it asks dl.k8s.io for the latest stable
+  release.** A host with no route falls back to kubeadm's own version after a
+  timeout; a host that *can* reach it gets a newer version than the bundle
+  carries images for, and preflight fails on every control-plane image. The
+  bundle's images are those of the kubeadm it carries, so name that version.
+- **It copies `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` from its own environment
+  into every control-plane manifest.** kubeadm talks only to the node and the
+  registry, so run it without them; a proxy left in the shell otherwise ends
+  up in kube-apiserver.
 
 ⚠️ **Every node needs to trust that registry**, not just the one running it.
 The addresses are all `<host>:5000/...` in this mode, and a plain-HTTP registry
