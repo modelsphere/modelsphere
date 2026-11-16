@@ -836,9 +836,9 @@ releases:
 {{- if $catalogMirror }}
     hooks:
       # The site profile, written once if there is none: catalogs and chartRepo
-      # on catalog-mirror, and under `rewrite` the engine images and a model
-      # release's four sidecars under `registry` -- the same addresses
-      # models/images.yaml.gotmpl gives a `models:` entry. swiss's image mirror
+      # on catalog-mirror, a model release's four sidecars under `registry` --
+      # the addresses models/images.yaml.gotmpl gives a `models:` entry -- and
+      # under `rewrite` the engine image mirror. swiss's image mirror
       # keeps only the last path segment (lmsysorg/sglang -> <registry>/sglang),
       # which is why offline_load.sh pushes engine images under that name too.
       # No nodes.gpus: swissd adds the well-known entries itself, and swiss
@@ -863,7 +863,11 @@ releases:
               mirror: {{ if $rewrite }}{{ .Values.registry | quote }}{{ else }}""{{ end }}
             model:
               pathTemplate: {{ dig "swiss" "modelPathTemplate" "/mnt/disk0/models/{{name}}" .Values | quote }}
-{{- if $rewrite }}
+            # Every mode, not just rewrite: the chart's own pins for CART's ha and
+            # reload sidecars are an old autoconfig build, linux/amd64 only, and
+            # they belong at the autoconfig version the cluster runs anyway.
+            # Under mirror `registry` is the public prefix, so these are the
+            # public addresses.
             extra:
               hangWatcher:
                 image:
@@ -875,7 +879,6 @@ releases:
                   image: {{ printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote }}
                 reload:
                   image: {{ printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote }}
-{{- end }}
 {{- end }}
 
   # The model catalog and the engine charts, served in the cluster for swissd

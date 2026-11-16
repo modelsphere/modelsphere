@@ -408,9 +408,10 @@ serves it in the cluster:
   points at the copy.
 - **The site profile is written once**, by a postsync hook on the swissd
   release, and only if none exists: the catalog (v2) and `chartRepo` on
-  catalog-mirror; under `registryMode: rewrite` also `registry.mirror` and the
-  four sidecar images under `registry`, the addresses
-  `models/images.yaml.gotmpl` gives a `models:` entry. swissd owns the profile
+  catalog-mirror, the four sidecar images under `registry` -- the addresses
+  `models/images.yaml.gotmpl` gives a `models:` entry, CART's two at
+  `versions.autoconfig` -- and under `registryMode: rewrite` also
+  `registry.mirror`. swissd owns the profile
   from then on -- edit it from the console; a later helmfile run leaves it
   alone. `swiss.siteName`, `swiss.modelNamespace` and `swiss.modelPathTemplate`
   in the environment fill in its other fields.
