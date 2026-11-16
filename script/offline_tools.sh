@@ -102,6 +102,29 @@ case "${1:-}" in
     # docker when the fetch host has it, as before; otherwise crane, whose
     # default tarball is the same docker-archive shape and loads with either
     # `docker load` or `nerdctl load`. The fetch host no longer needs docker.
+    # Where to fetch an image from under BUNDLE_FETCH_MIRRORS (prefix=replacement,
+    # first match wins): the registry image and kubeadm's control-plane images
+    # both need it. A host that cannot reach registry.k8s.io's blob store got
+    # every kubeadm image "COPY FAILED" while the registry image, already
+    # mirrored, came through. The name the bundle stores is always the
+    # canonical one; only the source changes.
+    fetch_via() {
+      local img=$1 m
+      for m in ${BUNDLE_FETCH_MIRRORS:-}; do
+        case "$img" in
+          "${m%%=*}"/*) echo "${m#*=}/${img#"${m%%=*}"/}"; return ;;
+        esac
+        # An unqualified name is docker.io (`registry:3`, not
+        # `docker.io/library/registry:3`).
+        if [ "${m%%=*}" = docker.io ]; then
+          case "$img" in
+            */*) case "${img%%/*}" in *.*|*:*|localhost) ;; *) echo "${m#*=}/$img"; return ;; esac ;;
+            *) echo "${m#*=}/library/$img"; return ;;
+          esac
+        fi
+      done
+      echo "$img"
+    }
     if [ ! -s "$TOOLS/registry.tar" ]; then
       echo "    registry image ($REGISTRY_IMAGE)"
       # BUNDLE_FETCH_MIRRORS, the same variable offline_bundle.sh takes: a build
@@ -110,17 +133,7 @@ case "${1:-}" in
       # direct from Docker Hub on such a host runs at a few KB/s, while the
       # internal cache serves it in seconds -- and a bundle without this image
       # cannot be loaded at all, because there is nothing to load it into.
-      _src=$REGISTRY_IMAGE
-      for _m in ${BUNDLE_FETCH_MIRRORS:-}; do
-        case "$REGISTRY_IMAGE" in
-          "${_m%%=*}"/*) _src="${_m#*=}/${REGISTRY_IMAGE#"${_m%%=*}"/}"; break ;;
-          # An unqualified name is docker.io, which is how REGISTRY_IMAGE is
-          # written (`registry:3`, not `docker.io/library/registry:3`).
-          *) case "${_m%%=*}" in
-               docker.io) case "$REGISTRY_IMAGE" in */*) ;; *) _src="${_m#*=}/library/$REGISTRY_IMAGE"; break ;; esac ;;
-             esac ;;
-        esac
-      done
+      _src=$(fetch_via "$REGISTRY_IMAGE")
       [ "$_src" = "$REGISTRY_IMAGE" ] || echo "      via $_src"
       if command -v crane >/dev/null 2>&1; then
         # The registry runs on the target, so its image follows ARCH unless
@@ -184,13 +197,19 @@ RETAG
         # pull -- which is the one thing the tool bundle exists to prevent.
         if command -v crane >/dev/null 2>&1; then
           mkdir -p "$TOOLS/images"
+          _ins=""; [ "${BUNDLE_FETCH_INSECURE:-}" = true ] && _ins="--insecure"
           ka_saved=0; ka_failed=0
           while read -r img; do
             [ -z "$img" ] && continue
             d="$TOOLS/images/$(echo "$img" | tr '/:@' '___')"
             [ -f "$d/oci-layout" ] && { ka_saved=$((ka_saved+1)); continue; }
             rm -rf "$d.part"
-            if crane pull --format=oci --platform "${BUNDLE_PLATFORMS:-linux/amd64}" "$img" "$d.part" >/dev/null 2>&1; then
+            # The control plane runs on the target: linux/$ARCH unless told
+            # otherwise, as for the registry image. linux/amd64 here left an
+            # arm64 bundle with an apiserver that cannot start.
+            _from=$(fetch_via "$img")
+            [ "$_from" = "$img" ] || echo "      $img via $_from"
+            if crane pull --format=oci --platform "${BUNDLE_PLATFORMS:-linux/$ARCH}" $_ins "$_from" "$d.part" >/dev/null 2>&1; then
               rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
             else
               rm -rf "$d.part"; ka_failed=$((ka_failed+1))
