@@ -435,6 +435,11 @@ llmGateway:
   # chart's, not a measurement of yours.
   victorialogsSize: 100Gi
   victorialogsRetention: 14d
+  # VictoriaLogs and Vector keep their data on PVCs when storage.persistence is
+  # true, emptyDirs when it is false. Set this to override it for that release
+  # alone -- true on a cluster that ran with persistence false but whose claims
+  # bound anyway (a default StorageClass), so upgrading keeps the volumes.
+  # victorialogsPersistence: true
   # The Grafana datasource ConfigMap. Empty follows enabled.kubePrometheusStack;
   # a cluster with its own Grafana sets it true, one that wants none sets false.
   grafanaDatasource: ""

@@ -682,13 +682,25 @@ releases:
     chart: {{ template "chartref" (dict "local" $local "name" "bodylog-victorialogs" "ver" .Values.versions.bodylogVictorialogs "fallback" "modelsphere/bodylog-victorialogs") }}
     version: {{ .Values.versions.bodylogVictorialogs | quote }}
     installed: {{ .Values.enabled.bodylogVictorialogs }}
-{{- if .Values.enabled.bodylog }}
-    # Vector's podAffinity on the bodylog pod is `required`, so without bodylog
-    # the pod is Pending rather than failed -- ordering keeps that from being the
-    # first thing a new cluster sees. The values file refuses to render when
-    # bodylog is switched off entirely.
+{{- if or .Values.enabled.bodylog .Values.enabled.kubePrometheusStack }}
     needs:
+{{- end }}
+{{- if .Values.enabled.bodylog }}
+      # Vector's podAffinity on the bodylog pod is `required`, so without bodylog
+      # the pod is Pending rather than failed -- ordering keeps that from being
+      # the first thing a new cluster sees. The values file refuses to render
+      # when bodylog is switched off entirely.
       - {{ .Values.namespaces.llmRoute }}/bodylog
+{{- end }}
+{{- if .Values.enabled.kubePrometheusStack }}
+      # The Grafana datasource ConfigMap goes into the monitoring namespace,
+      # which kube-prometheus-stack creates. Unordered, a first apply can run
+      # this release first and fail on `namespaces "monitoring" not found` --
+      # and helmfile then skips every later batch, so releases go missing from
+      # the run without appearing in its failure list. Measured on a fresh
+      # cluster: autoconfig, bodylog-exporter, gpu-operator and
+      # node-problem-detector were never installed.
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
 {{- end }}
     labels:
       tier: llmgate
