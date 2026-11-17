@@ -253,8 +253,9 @@ tar -xzf cpython-*-aarch64-unknown-linux-gnu-install_only.tar.gz -C /opt/ansible
 ### 4.2 Put the weights in place
 
 The weights go to the same path on all four servers,
-`/data/share/models/GLM-5.3-Flash-w8a8`. That is the path the variant expects
-by default, so nothing else needs configuring.
+`/data/models/zai-org/GLM-5.3-Flash`. When the console deploys the model it
+looks for the weights by the path template set in 6.1, `/data/models/{{name}}`,
+where `{{name}}` is the model's weights name, `zai-org/GLM-5.3-Flash`.
 
 ### 4.3 Control machine: write the Ansible inventory
 
@@ -480,6 +481,7 @@ llmGateway:
 
 swiss:
   siteName: ascend
+  modelPathTemplate: /data/models/{{name}}
 ```
 
 - `registry` and `registryMode`: every image from the local registry, matching `MODE=rewrite` in 4.6
@@ -488,6 +490,7 @@ swiss:
 - `ascendDevicePlugin: true`: installs the Ascend device plugin
 - `gpuOperator` / `dcgmCustomMetrics` `false` (`networkOperator` and `nicClusterPolicy` are already `false` in the example): no NVIDIA components on an all-Ascend cluster, as when the bundle was built (3.4)
 - `cilium.k8sServiceHost`: the control-plane address, as in the kubeadm config; `operatorReplicas` 2 (the example has 1, for a single node)
+- `swiss.modelPathTemplate`: where the console expects a model's weights on the nodes. `{{name}}` becomes the model's weights name, so GLM-5.3-Flash is at `/data/models/zai-org/GLM-5.3-Flash` (4.2). Unset, it is `/mnt/disk0/models/{{name}}`
 
 `offline-rewrite` is already registered under `environments:` in
 `helmfile.yaml.gotmpl`, so this file is read as it is.
@@ -584,9 +587,13 @@ for a new password; set one, the default is public. See
    `glm-5-3-flash`: it names the Helm release, the route, the scaler and the SLO,
    and cannot be changed after deploying. Set the namespace to `models` and turn
    on **Create namespace**
-5. **Resources and scheduling**: set both minimum and maximum replicas to `4`,
-   one per server, and pick `Ascend-910B4` as the GPU product
+5. **Resources and scheduling**: pick `Ascend-910B4` as the GPU product. There
+   is no replica count here: the SLO decides it, set in steps 7 and 8
 6. Click **Generate plan**, review the resources it will create, and confirm
+7. Once deployed, open `glm-5-3-flash`'s **Details** from the inference services
+   list and click **Edit SLO** at the top right
+8. In the **Bounds** row, keep the type `replica`, set both the minimum and the
+   maximum to `4` (one replica per server), and click **Save**
 
 Behind this, the console reads the variant from the catalog in the cluster,
 rewrites the engine image address to the local registry, makes a plan, and
@@ -649,7 +656,7 @@ deployed.
 | A node reports 0 NPUs | the device plugin is not scheduled there | check the `workerselector` label (5.3) and that `ascend-docker-runtime` is installed |
 | The console's model library is empty | the catalog service is off, or the snapshot path is wrong | check `catalogMirror` and `catalogSnapshot` in 6.1 (an absolute path) |
 | Model pods stay `Pending` | not enough NPUs or memory: each replica takes 8 NPUs and requests 64 GB | `kubectl describe pod` says which |
-| A model pod cannot find its weights | that server has no weights, or a different path | check `/data/share/models/GLM-5.3-Flash-w8a8` on all four servers |
+| A model pod cannot find its weights | that server has no weights, or a different path | check `/data/models/zai-org/GLM-5.3-Flash` on all four servers, and `swiss.modelPathTemplate` in 6.1 |
 
 ## 11. Summary
 
