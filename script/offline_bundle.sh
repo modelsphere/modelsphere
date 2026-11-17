@@ -123,6 +123,8 @@ done
 [ -n "$OUT" ] || { usage >&2; exit 2; }
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=script/fetch_via.sh
+. "$REPO_ROOT/script/fetch_via.sh"
 cd "$REPO_ROOT"
 
 # One build per output directory -- two concurrent runs corrupt each other
@@ -228,11 +230,8 @@ for r in json.load(sys.stdin):
         print(r["chart"][len("oci://"):], r.get("version",""))' || true)
   while read -r _ref _ver; do
     [ -n "$_ref" ] || continue
-    _via=""
-    for _m in ${BUNDLE_FETCH_MIRRORS}; do
-      case "$_ref" in "${_m%%=*}"/*) _via="${_m#*=}/${_ref#"${_m%%=*}"/}"; break ;; esac
-    done
-    [ -n "$_via" ] || continue
+    _via=$(fetch_via "$_ref")
+    [ "$_via" != "$_ref" ] || continue
     _f="$OUT/charts/${_ref##*/}-$_ver.tgz"
     if [ -s "$_f" ]; then CHARTS_FROM_MIRROR=true; continue; fi
     if helm pull "oci://$_via" --version "$_ver" --destination "$OUT/charts" >/dev/null 2>&1; then
@@ -1101,26 +1100,8 @@ ARCHPY
     # with the same digest a host with direct access reads, and a tag nobody
     # published failed through both. A mirror that rebuilt manifests would
     # change the digest, so check that before adding one here.
-    _fetch="$img"
-    # Match against the FULLY QUALIFIED name. A docker.io short name has no
-    # host at all (`4pdosc/hang-watcher:0.1.22`, as the sglang chart writes its
-    # sidecars), and matching that literally meant a path-prefix entry like
-    # docker.io/4pdosc=<private>... could never win -- the bare name fell through
-    # to the plain docker.io entry and was fetched from a mirror that has no
-    # 4pdosc. The symptom is not an error: the pull fails, the fallback goes to
-    # docker.io through the proxy, and the build sits there.
-    case "${img%%/*}" in
-      *.*|*:*|localhost) _full="$img" ;;
-      *)                 _full="docker.io/$img" ;;
-    esac
-    for _m in ${BUNDLE_FETCH_MIRRORS:-}; do
-      case "$_m" in *=*) ;; *) echo "      ignoring BUNDLE_FETCH_MIRRORS entry $_m (want upstream=replacement)" >&2; continue ;; esac
-      _up=${_m%%=*}; _via=${_m#*=}
-      case "$_full" in
-        "$_up"/*) _fetch="$_via/${_full#"$_up"/}" ;;
-      esac
-      [ "$_fetch" != "$img" ] && break
-    done
+    # Matched fully qualified, longest rule first: script/fetch_via.sh.
+    _fetch=$(fetch_via "$img")
     # A pull-through cache on the internal network is plain HTTP, and crane
     # refuses that by default ("server gave HTTP response to HTTPS client").
     # Only applied to a mirrored fetch: an upstream must stay on TLS.

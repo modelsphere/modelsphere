@@ -97,23 +97,8 @@ TA
 }
 layout_has() { case ",$(layout_arch "$1")," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
 
-fetch_via() {
-  local img=$1 m
-  for m in ${BUNDLE_FETCH_MIRRORS:-}; do
-    case "$img" in
-      "${m%%=*}"/*) echo "${m#*=}/${img#"${m%%=*}"/}"; return ;;
-    esac
-    # An unqualified name is docker.io (`registry:3`, not
-    # `docker.io/library/registry:3`).
-    if [ "${m%%=*}" = docker.io ]; then
-      case "$img" in
-        */*) case "${img%%/*}" in *.*|*:*|localhost) ;; *) echo "${m#*=}/$img"; return ;; esac ;;
-        *) echo "${m#*=}/library/$img"; return ;;
-      esac
-    fi
-  done
-  echo "$img"
-}
+# fetch_via: shared with offline_bundle.sh
+. "$REPO_ROOT/script/fetch_via.sh"
 
 case "${1:-}" in
   fetch)
