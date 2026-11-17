@@ -201,16 +201,20 @@ service is not in any environment -- it comes in from a `MODELS=` file or from
 the console, and a bundle is built before anyone knows which models the site
 will run. **One engine image is ~20 GB compressed**, larger than everything
 else in the bundle put together, so none is bundled unless asked for. Two ways
-to ask:
+to bring one:
 
-- **By catalog model**, for models deployed from the console:
+- **For a model deployed from the console**, download the image its catalog
+  variant names and push it on site under the name swiss asks for (5.1):
 
   ```bash
-  CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle ARGS=...
+  crane pull --format=oci quay.io/ascend/vllm-ascend@sha256:7859b75177884252d2b703eff727831ccab4e33a8bde0a9b4ac7563facc98b33 offline/engine/vllm-ascend
+  # on site
+  crane push offline/engine/vllm-ascend <registry>/vllm-ascend:<any tag> --insecure
   ```
 
-  `model:variant` (`qwen3-8b:vllm-tp1-a100`) takes one variant's image instead
-  of every variant's.
+  No `--platform` for an image pinned by digest: on a multi-arch index it would
+  save one platform under a different digest, which the deploy then cannot
+  find.
 - **By address, in `offline/engine-images.txt`** (copy
   `offline/engine-images.txt.example`), for an engine a `models:` entry names --
   a site runs its own build of sglang or vllm, at whatever address that entry
@@ -223,8 +227,8 @@ to ask:
   `vllm/vllm-openai:latest-cu129-ubuntu2404`, floating tags that match nothing a
   cluster actually runs.
 
-Both lists go into the bundle's `swiss-engine-images.txt`, and the
-`CATALOG_MODELS` ones into `images.txt` too, exactly as the catalog spells them.
+`engine-images.txt` also goes into the bundle's `swiss-engine-images.txt`, so
+`offline-load` pushes those under swiss's name as well.
 
 **A model's four sidecars need nothing from you.** hang-watcher, CART and
 CART's two sidecars (`ha` and `reload`) are read out of the engine chart's own
@@ -470,11 +474,12 @@ serves it in the cluster:
   GitHub), a `registry` that moved, and an autoconfig upgrade (CART's sidecars
   carry its version).
 
-The engine image has to be in the bundle (`CATALOG_MODELS`, 3.5).
-`offline_load.sh` pushes each one in `swiss-engine-images.txt` once more under
-the name swiss's image mirror asks for: swiss keeps only the last path segment,
-so `lmsysorg/sglang:v0.5.20` is asked for as `<registry>/sglang:v0.5.20`, not
-`<registry>/lmsysorg/sglang:v0.5.20`. Two engines whose last segment and tag
+The engine image has to be in the registry under the name swiss's image mirror
+asks for (3.5): swiss keeps only the last path segment, so
+`lmsysorg/sglang:v0.5.20` is asked for as `<registry>/sglang:v0.5.20`, not
+`<registry>/lmsysorg/sglang:v0.5.20`; an address pinned by digest is pulled by
+that digest, whatever the tag. For the engines in `swiss-engine-images.txt`,
+`offline_load.sh` does this push itself. Two engines whose last segment and tag
 agree would land on one name; the load refuses that rather than overwrite one
 with the other. Under `registryMode: mirror` nothing is rewritten, and the
 nodes redirect the catalog's addresses like any other.
@@ -655,7 +660,7 @@ than a wrong pull, but "no fallback" describes the config, not the network.
 ### 7.1 What the bundle does not cover
 
 - **Images referenced by workloads rather than by this helmfile** -- inference
-  engines (named in `engine-images.txt` or through `CATALOG_MODELS`, see 3.5),
+  engines (named in `engine-images.txt` or downloaded by hand, see 3.5),
   anything under `gateway-api/`.
 - **Components whose flags are off.** The image list is derived from a render,
   and a render only sees what is switched on: a release that is off renders no

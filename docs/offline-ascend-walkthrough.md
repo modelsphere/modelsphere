@@ -182,27 +182,23 @@ It checks itself at the end: `missing=0` on the last line means nothing is
 missing. The architecture of every image is checked too: one that is not arm64
 is not kept, and the check lists it.
 
-### 3.4 Pack the images, charts and model catalog
+### 3.4 Pack the component images, charts and model catalog
 
 ```bash
-ARCH=arm64 CATALOG_MODELS=glm-5.3-flash:vllm-tp8-910b4-baseline \
-  make offline-bundle \
+ARCH=arm64 make offline-bundle \
   ARGS="--set llmGateway.node=ascend-11 --set llmGateway.hostPath=/data/bodylog-sinks --set enabled.ascendDevicePlugin=true \
        --set enabled.gpuOperator=false --set enabled.dcgmCustomMetrics=false \
        --set enabled.networkOperator=false --set enabled.nicClusterPolicy=false"
 ```
 
-- `CATALOG_MODELS`: the engine images to pack, as `model:variant`. Here only
-  GLM-5.3-Flash's 910B4 variant, which runs the vLLM-Ascend image
 - `llmGateway.node` / `llmGateway.hostPath`: the node and directory the request log is written to
 - `enabled.ascendDevicePlugin=true`: packs the Ascend device plugin, which is how the cluster sees the NPUs
 - the four `=false`: the NVIDIA GPU Operator, DCGM metrics, Network Operator
   and NicClusterPolicy. An all-Ascend cluster has no use for them, and some of
   their images are amd64-only, which fails an arm64 bundle
 
-This fetches about 40 images, the vLLM-Ascend engine image among them, and
-usually takes over an hour depending on the network. Afterwards `offline/`
-holds:
+This fetches about 40 component images and usually takes over an hour
+depending on the network. Afterwards `offline/` holds:
 
 ```
 offline/
@@ -210,17 +206,33 @@ offline/
   images/                   every component's image
   charts/                   every Helm chart
   catalog-snapshot.tar.gz   the model catalog and engine charts, for the console in the cluster
-  swiss-engine-images.txt   the engine images
   MANIFEST                  what was built, and from what
 ```
 
-### 3.5 Model weights
+### 3.5 Download the vLLM-Ascend engine image
+
+The bundle holds ModelSphere's own components. The inference engine that runs
+the model is a separate download: here the vLLM-Ascend image for 910B4
+(arm64, about 9 GB):
+
+```bash
+mkdir -p offline/engine
+crane pull --format=oci \
+  quay.io/ascend/vllm-ascend@sha256:7859b75177884252d2b703eff727831ccab4e33a8bde0a9b4ac7563facc98b33 \
+  offline/engine/vllm-ascend
+```
+
+It is fetched by digest, pushed into the local registry unchanged on site
+(4.5), and pulled by that same digest when the console deploys. Under
+`offline/`, it travels with the repository.
+
+### 3.6 Model weights
 
 The weights are not in the bundle. GLM-5.3-Flash W8A8
 (`Eco-Tech/GLM-5.3-Flash-w8a8`) is about 311 GB, from ModelScope or Hugging
 Face.
 
-### 3.6 Carry it in
+### 3.7 Carry it in
 
 Copy to a disk:
 
@@ -236,10 +248,11 @@ Take the **whole repository**, not just `offline/`: every step below is a
 ### 4.1 Copy the files
 
 Copy the repository to `/root/modelsphere` on all four servers. Servers 2 to 4
-do not need the images, so their copies can leave out `offline/images`.
+do not need the images, so their copies can leave out `offline/images` and
+`offline/engine`.
 
-The control machine needs a copy of the repository as well (also without
-`offline/images`), to run Ansible from.
+The control machine needs a copy of the repository as well (also without those
+two), to run Ansible from.
 
 On each of the four servers, unpack the standalone Python (skip it when the
 system Python is 3.8 or later):
@@ -252,7 +265,7 @@ tar -xzf cpython-*-aarch64-unknown-linux-gnu-install_only.tar.gz -C /opt/ansible
 
 ### 4.2 Put the weights in place
 
-The weights downloaded in 3.5 go to the same path on all four servers,
+The weights downloaded in 3.6 go to the same path on all four servers,
 `/data/models/zai-org/GLM-5.3-Flash` (this path, not the download's
 `GLM-5.3-Flash-w8a8` directory name). When the console deploys the model it
 looks for the weights by the path template set in 6.1, `/data/models/{{name}}`,
@@ -321,6 +334,7 @@ On server 1:
 cd /root/modelsphere
 DATA=/data/offline-registry make offline-registry REGISTRY=10.0.0.11:5000
 make offline-load REGISTRY=10.0.0.11:5000
+crane push offline/engine/vllm-ascend 10.0.0.11:5000/vllm-ascend:v0.30.0rc2 --insecure
 ```
 
 - `offline-registry` starts a registry container from the image in the bundle,
@@ -328,6 +342,9 @@ make offline-load REGISTRY=10.0.0.11:5000
   `/var/lib/offline-registry`; here, on the data disk
 - `offline-load` pushes every image in the bundle into it, the Kubernetes
   control-plane images included
+- `crane push` puts the vLLM-Ascend image from 3.5 in. The repository has to be
+  `vllm-ascend`: the console's deploy pulls it from `vllm-ascend` in the local
+  registry, by digest, so the tag can be anything
 
 [`offline-install.md`](offline-install.md) writes the registry address once
 into `offline/site.env` instead, for every step to read; passing `REGISTRY` on
@@ -648,7 +665,7 @@ not needed; with keys configured, add `-H 'Authorization: Bearer <key>'`
 | Change replicas | **Edit SLO** at the top right of the service's details page; change the **Bounds** minimum and maximum |
 | Upgrade the variant, change deploy settings | **Upgrade** at the top right of the details page; change it, regenerate the plan and confirm |
 | Remove the model | **Uninstall** at the top right of the details page |
-| Deploy another model | on the build host, pack its engine image with `CATALOG_MODELS`; on site, `make offline-load`; then deploy it from the console |
+| Deploy another model | on the build host, `crane pull` the engine image its variant names in the model library; on site, `crane push` it to the local registry under the last segment of its address; then deploy it from the console |
 | Upgrade ModelSphere | on the build host, rebuild the bundle from the new repository version; on site, `make offline-load`, then `make helm-apply ENV=offline-rewrite MODELS= SKIP_DEPS=1` |
 | Engine logs | `kubectl -n models logs <pod>` |
 | Monitoring | Grafana is in the `monitoring` namespace, reachable with `kubectl port-forward` |
