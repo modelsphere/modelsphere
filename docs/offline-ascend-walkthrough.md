@@ -178,20 +178,15 @@ fetched for arm64. This fetches kubeadm, kubelet, kubectl, containerd, runc, the
 CNI plugins, helm, helmfile, crane, nerdctl, the registry image, and the 7
 Kubernetes control-plane images: about 400 MB.
 
-It checks itself at the end. This line means nothing is missing:
-
-```
-  missing=0
-```
-
-The architecture of every image is checked too: one that is not arm64 is not
-kept, and the check lists it.
+It checks itself at the end: `missing=0` on the last line means nothing is
+missing. The architecture of every image is checked too: one that is not arm64
+is not kept, and the check lists it.
 
 ### 3.4 Pack the images, charts and model catalog
 
 ```bash
 ARCH=arm64 CATALOG_MODELS=glm-5.3-flash:vllm-tp8-910b4-baseline \
-  make offline-bundle BUNDLE=offline ENV=default \
+  make offline-bundle \
   ARGS="--set llmGateway.node=ascend-11 --set llmGateway.hostPath=/data/bodylog-sinks --set enabled.ascendDevicePlugin=true \
        --set enabled.gpuOperator=false --set enabled.dcgmCustomMetrics=false \
        --set enabled.networkOperator=false --set enabled.nicClusterPolicy=false"
@@ -266,10 +261,10 @@ by default, so nothing else needs configuring.
 On the control machine, start from the repository's Ascend example:
 
 ```bash
-cp inventory-ascend.ini.example inventory-ascend.ini
+cp inventory-ascend.ini.example inventory.ini
 ```
 
-Edit `inventory-ascend.ini`: list the four servers, and delete the two
+Edit `inventory.ini`: list the four servers, and delete the two
 `http_proxy` lines at the end (there is no proxy on site; if you skipped the
 standalone Python, delete the `ansible_python_interpreter` line too):
 
@@ -297,8 +292,8 @@ First the base tools on all four servers. 4.1 put the repository at
 runs it on all of them:
 
 ```bash
-ansible -i inventory-ascend.ini ascend -m shell \
-  -a 'cd /root/modelsphere && make offline-install-tools BUNDLE=offline'
+ansible -i inventory.ini ascend -m shell \
+  -a 'cd /root/modelsphere && make offline-install-tools'
 ```
 
 It installs kubeadm, kubelet, kubectl, containerd (a static build, independent
@@ -309,7 +304,7 @@ ignored: containerd's pause image is pointed at the local registry in 4.6.
 Then prepare the nodes:
 
 ```bash
-make setup-k8s-offline INVENTORY=inventory-ascend.ini
+make setup-k8s-offline
 ```
 
 This downloads nothing; it only configures: `/etc/hosts`, swap off, kernel
@@ -322,8 +317,8 @@ On server 1:
 
 ```bash
 cd /root/modelsphere
-DATA=/data/offline-registry make offline-registry BUNDLE=offline REGISTRY=10.0.0.11:5000
-make offline-load BUNDLE=offline REGISTRY=10.0.0.11:5000
+DATA=/data/offline-registry make offline-registry REGISTRY=10.0.0.11:5000
+make offline-load REGISTRY=10.0.0.11:5000
 ```
 
 - `offline-registry` starts a registry container from the image in the bundle,
@@ -342,15 +337,12 @@ The local registry speaks plain HTTP, which containerd refuses by default. On
 the control machine:
 
 ```bash
-make setup-offline-node INVENTORY=inventory-ascend.ini \
-  REGISTRY=10.0.0.11:5000 MODE=rewrite BUNDLE=./offline
+make setup-offline-node REGISTRY=10.0.0.11:5000 MODE=rewrite
 ```
 
-On every node, it:
-
-- makes containerd trust `10.0.0.11:5000`
-- points containerd's pause image at the local registry
-- pulls the pause image from it once, to prove the node can pull
+On every node it makes containerd trust `10.0.0.11:5000`, points containerd's
+pause image at the local registry, and pulls that image once to prove the node
+can pull.
 
 `MODE=rewrite` means every image address in the cluster is rewritten to the
 local registry; the environment file in section 6 uses the same mode. The other
@@ -367,10 +359,8 @@ apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
   advertiseAddress: 10.0.0.11
-  bindPort: 6443
 nodeRegistration:
   name: ascend-11
-  criSocket: unix:///run/containerd/containerd.sock
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
@@ -379,11 +369,9 @@ controlPlaneEndpoint: "10.0.0.11:6443"
 imageRepository: 10.0.0.11:5000
 networking:
   podSubnet: 10.244.0.0/16
-  serviceSubnet: 10.96.0.0/12
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
-cgroupDriver: systemd
 resolvConf: /etc/resolv.conf
 ```
 
@@ -395,11 +383,9 @@ resolvConf: /etc/resolv.conf
 - `resolvConf`: Kylin V10 has no systemd-resolved. Without this line every pod
   fails to start, looking for `/run/systemd/resolve/resolv.conf`
 
-Then initialise, with the proxy variables cleared first; kubeadm would otherwise
-write them into the control-plane components:
+Then initialise:
 
 ```bash
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 kubeadm init --config /root/kubeadm-init.yaml --skip-phases=addon/kube-proxy
 
 mkdir -p $HOME/.kube && cp /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -443,21 +429,14 @@ left out and the printed line run as it is.
 ### 5.3 Label the nodes
 
 Back on server 1, label the four nodes. The Ascend device plugin selects nodes
-by `workerselector`; the `nvidia.com/gpu.deploy.*` labels keep the NVIDIA
-components off them:
+by `workerselector`:
 
 ```bash
 for n in ascend-11 ascend-12 ascend-13 ascend-14; do
   kubectl label node $n --overwrite \
     accelerator=huawei-Ascend910 \
     workerselector=dls-worker-node \
-    node.modelsphere.dev/accelerator=ascend-910b \
-    nvidia.com/gpu.deploy.operator-validator=false \
-    nvidia.com/gpu.deploy.container-toolkit=false \
-    nvidia.com/gpu.deploy.device-plugin=false \
-    nvidia.com/gpu.deploy.gpu-feature-discovery=false \
-    nvidia.com/gpu.deploy.dcgm-exporter=false \
-    nvidia.com/gpu.deploy.mig-manager=false
+    node.modelsphere.dev/accelerator=ascend-910b
 done
 ```
 
@@ -487,29 +466,17 @@ catalogSnapshot: /root/modelsphere/offline/catalog-snapshot.tar.gz
 name: "ASCEND"
 
 enabled:
-  cilium: true
   gpuOperator: false
   dcgmCustomMetrics: false
-  networkOperator: false
-  nicClusterPolicy: false
-  catalogMirror: true
   ascendDevicePlugin: true
 
 cilium:
-  clusterName: ascend
-  clusterId: 1
   k8sServiceHost: 10.0.0.11
-  k8sServicePort: 6443
-  podCIDR: 10.244.0.0/16
   operatorReplicas: 2
-  serviceMonitors: false
-  gatewayAPI: true
 
 llmGateway:
   node: ascend-11
   hostPath: /data/bodylog-sinks
-  memoryLimit: 8Gi
-  serviceMonitor: false
 
 swiss:
   siteName: ascend
@@ -517,10 +484,10 @@ swiss:
 
 - `registry` and `registryMode`: every image from the local registry, matching `MODE=rewrite` in 4.6
 - `chartsDir` / `catalogSnapshot`: the bundle's charts and model catalog snapshot; absolute paths are required
-- `catalogMirror: true`: runs a model catalog service in the cluster, which the console reads the deployable models from instead of GitHub
+- `catalogMirror` is already on in the example: it runs a model catalog service in the cluster, which the console reads the deployable models from instead of GitHub
 - `ascendDevicePlugin: true`: installs the Ascend device plugin
-- `gpuOperator` / `dcgmCustomMetrics` / `networkOperator` / `nicClusterPolicy` `false`: no NVIDIA components on an all-Ascend cluster, as when the bundle was built (3.4)
-- `cilium.k8sServiceHost`: the control-plane address, as in the kubeadm config; `podCIDR` matches kubeadm's `podSubnet`
+- `gpuOperator` / `dcgmCustomMetrics` `false` (`networkOperator` and `nicClusterPolicy` are already `false` in the example): no NVIDIA components on an all-Ascend cluster, as when the bundle was built (3.4)
+- `cilium.k8sServiceHost`: the control-plane address, as in the kubeadm config; `operatorReplicas` 2 (the example has 1, for a single node)
 
 `offline-rewrite` is already registered under `environments:` in
 `helmfile.yaml.gotmpl`, so this file is read as it is.
@@ -528,7 +495,7 @@ swiss:
 ### 6.2 Install the prerequisites
 
 ```bash
-make helm-deps BUNDLE=offline
+make helm-deps
 make helm-bootstrap
 ```
 
