@@ -21,7 +21,7 @@ var _ = Describe("stack", Ordered, func() {
 		}
 	})
 
-	// The releases environments/gpu.yaml leaves installed (default.yaml's
+	// The releases environments/test-gpu.yaml leaves installed (default.yaml's
 	// product set; llm-canary-operator stays off). part=infra is not checked
 	// here beyond the GPU nodes BeforeSuite already required.
 	DescribeTable("has the release deployed",

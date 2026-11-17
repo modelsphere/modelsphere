@@ -183,7 +183,7 @@ func loadConfig() suiteConfig {
 		kubectlBin:   envOr("KUBECTL", "kubectl"),
 		helmBin:      envOr("HELM", "helm"),
 		helmfileBin:  envOr("HELMFILE", "helmfile"),
-		helmEnv:      envOr("E2E_HELM_ENV", "gpu"),
+		helmEnv:      envOr("E2E_HELM_ENV", "test-gpu"),
 		namespace:    envOr("E2E_NAMESPACE", "llm-demo"),
 		release:      envOr("E2E_RELEASE", "e2e-gpu"),
 		model:        envOr("E2E_MODEL", "qwen3-8b"),
@@ -255,7 +255,7 @@ func isolateKubeconfig() {
 	By("using kube context " + cfg.context)
 }
 
-// installProduct applies helmfile -e gpu -l part=product. --skip-needs is the
+// installProduct applies helmfile -e test-gpu -l part=product. --skip-needs is the
 // default and is passed anyway: needs edges point at kube-prometheus-stack,
 // which is part=infra and must not be pulled into a per-run apply.
 func installProduct() {

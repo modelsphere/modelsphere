@@ -1,20 +1,22 @@
-# A real cluster with Cilium as the CNI and NVIDIA GPUs: what test/e2e/gpu
-# targets (make test-e2e-gpu). Layered over default.yaml.
+# test-gpu: the helmfile environment for test/e2e/gpu (make test-e2e-gpu).
+# The test- prefix is the point: this is not a site cluster. A real cluster
+# copies environments/private.yaml.example and registers its own name.
+# Layered over default.yaml.
 #
 # Two install sets, by the `part` label in helmfile.yaml.gotmpl:
 #   part=infra    the cluster base. Installed once
-#                 (`make helm-apply-infra ENV=gpu`) and never by the per-run
+#                 (`make helm-apply-infra ENV=test-gpu`) and never by the per-run
 #                 suite. Uninstalling it takes the CNI, the drivers or the
 #                 volcano webhook with it. There is no destroy target for it.
 #   part=product  openresty, bodylog, autoconfig, the operators, swissd and
 #                 console. The suite installs and uninstalls only these
 #                 (`make helm-apply-product` / `make helm-destroy-product`).
 #
-# Every REPLACE_ME below is a value this file cannot know. `helmfile -e gpu
+# Every REPLACE_ME below is a value this file cannot know. `helmfile -e test-gpu
 # template` accepts them; an apply against the real cluster will not work
 # until they are filled in. Search for REPLACE_ME.
 #
-# A full `helmfile -e gpu apply` (no selector) installs both sets. Prefer the
+# A full `helmfile -e test-gpu apply` (no selector) installs both sets. Prefer the
 # two make targets: the suite's promise is that a test run never selects
 # part=infra. Rook stays off, so that full apply would also uninstall a
 # rook-ceph this helmfile had previously installed.
@@ -46,7 +48,7 @@ cilium:
   # false until kube-prometheus-stack's CRDs exist. The chart will not render
   # a ServiceMonitor unless monitoring.coreos.com/v1 is already in the API,
   # and cilium is installed before that release (it needs the CNI, not the
-  # other way around). After the first `make helm-apply-infra ENV=gpu`, set
+  # other way around). After the first `make helm-apply-infra ENV=test-gpu`, set
   # this true and apply infra once more.
   serviceMonitors: false
 

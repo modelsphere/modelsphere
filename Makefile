@@ -83,7 +83,7 @@ help:
 	@echo "  make cleanup-test-e2e-kind - Delete the kind cluster"
 	@echo ""
 	@echo "End-to-end test on an existing GPU cluster (see test/e2e/gpu/README.md):"
-	@echo "  make test-e2e-gpu       - helmfile -e gpu -l part=product, then test/e2e/gpu"
+	@echo "  make test-e2e-gpu       - helmfile -e test-gpu -l part=product, then test/e2e/gpu"
 	@echo "                            Does not create or delete a cluster. Needs KUBECONFIG."
 	@echo ""
 	@echo "Options:"

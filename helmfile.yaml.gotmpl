@@ -76,14 +76,14 @@ environments:
     values:
       - environments/default.yaml
       - environments/offline-rewrite.yaml
-  # A real Cilium + NVIDIA cluster: what test/e2e/gpu targets. The file is
-  # placeholders until a maintainer fills them in (environments/gpu.yaml).
+  # test/e2e/gpu. Named test-gpu so it is not a site cluster. The file is
+  # placeholders until a maintainer fills them in (environments/test-gpu.yaml).
   # The per-run suite selects part=product only; it does not apply this whole
   # environment.
-  gpu:
+  test-gpu:
     values:
       - environments/default.yaml
-      - environments/gpu.yaml
+      - environments/test-gpu.yaml
 
 ---
 

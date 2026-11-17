@@ -1,6 +1,6 @@
 # test/e2e/gpu
 
-End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-gpu` does not create a cluster and does not delete one. It installs `part=product` with `helmfile -e gpu`, runs the specs, and uninstalls `part=product` again. `part=infra` (the CNI, Ceph, monitoring, the GPU and NIC operators, lws, volcano) is assumed to be already installed and is never selected.
+End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-gpu` does not create a cluster and does not delete one. It installs `part=product` with `helmfile -e test-gpu`, runs the specs, and uninstalls `part=product` again. `part=infra` (the CNI, Ceph, monitoring, the GPU and NIC operators, lws, volcano) is assumed to be already installed and is never selected.
 
 ## Infra and product
 
@@ -22,7 +22,7 @@ End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-
 
 ## Prerequisites
 
-- A cluster that already has `part=infra` installed (`make helm-apply-infra ENV=gpu` once the placeholders below are filled in), with at least one node advertising allocatable `nvidia.com/gpu`.
+- A cluster that already has `part=infra` installed (`make helm-apply-infra ENV=test-gpu` once the placeholders below are filled in), with at least one node advertising allocatable `nvidia.com/gpu`.
 - `KUBECONFIG` pointing at that cluster, or the current kubectl context. `E2E_KUBE_CONTEXT` selects one context. The suite copies it to a mode-0600 file and never prints it.
 - kubectl, helm, helm-diff (`make helm-deps`), helmfile and Go.
 - The chart repositories reachable from the machine that runs the suite. The cluster pulls engine images and model weights itself.
@@ -31,7 +31,7 @@ End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-
 
 ## What a maintainer still has to fill in
 
-`environments/gpu.yaml`, search for `REPLACE_ME`:
+`environments/test-gpu.yaml`, search for `REPLACE_ME`:
 
 | Key | What it is |
 |---|---|
@@ -70,13 +70,13 @@ The releases the gpu environment installs (the same product set as `environments
 ## Run
 
 ```sh
-make helm-apply-infra ENV=gpu INTERACTIVE=false     # once, after filling gpu.yaml in
+make helm-apply-infra ENV=test-gpu INTERACTIVE=false # once, after filling test-gpu.yaml in
 make test-e2e-gpu                                   # install product, test, uninstall product
 make test-e2e-gpu KEEP_INSTALL=1                    # leave part=product installed
 E2E_SKIP_INSTALL=1 make test-e2e-gpu                # specs only; does not uninstall either
 make test-e2e-gpu E2E_VERBOSE=true
 make test-e2e-gpu E2E_ARGS='-ginkgo.focus=catalog'
-make helm-destroy-product ENV=gpu INTERACTIVE=false # uninstall part=product by hand
+make helm-destroy-product ENV=test-gpu INTERACTIVE=false # uninstall part=product by hand
 ```
 
 `E2E_TIMEOUT` defaults to 45m for the kind suite and is left there. `make test-e2e-gpu` uses 210m unless `E2E_TIMEOUT` was set on the command line or in the environment.
@@ -87,7 +87,7 @@ make helm-destroy-product ENV=gpu INTERACTIVE=false # uninstall part=product by 
 |---|---|---|
 | `KUBECONFIG` | kubectl's default | Cluster to use. Copied to a 0600 file for the run. |
 | `E2E_KUBE_CONTEXT` | current context | Context to minify into that file. |
-| `E2E_HELM_ENV` | `gpu` | Helmfile environment. |
+| `E2E_HELM_ENV` | `test-gpu` | Helmfile environment. |
 | `E2E_CATALOG` | `https://modelsphere.github.io/model-catalog/` | Catalog base URL. schemaVersion v2 is in the profile. |
 | `E2E_MODEL` | `qwen3-8b` | Catalog model name. |
 | `E2E_VARIANT` | `vllm-tp1-a100` | Variant. 1 GPU, vendor nvidia, product `NVIDIA-A100-SXM4-80GB`. |
@@ -112,4 +112,4 @@ make helm-destroy-product ENV=gpu INTERACTIVE=false # uninstall part=product by 
 
 Durations accept a Go duration (`90m`) or a bare number of seconds.
 
-`helmfile -e gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.node` and `hostPath` have to be non-empty for the product set to render at all; `REPLACE_ME` is enough for a template and not enough for an apply.
+`helmfile -e test-gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.node` and `hostPath` have to be non-empty for the product set to render at all; `REPLACE_ME` is enough for a template and not enough for an apply.
