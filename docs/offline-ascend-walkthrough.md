@@ -217,14 +217,13 @@ the model is a separate download: here the vLLM-Ascend image for 910B4
 
 ```bash
 mkdir -p offline/engine
-crane pull --format=oci \
-  quay.io/ascend/vllm-ascend@sha256:7859b75177884252d2b703eff727831ccab4e33a8bde0a9b4ac7563facc98b33 \
+crane pull --format=oci --platform linux/arm64 \
+  quay.io/ascend/vllm-ascend:v0.30.0rc2 \
   offline/engine/vllm-ascend
 ```
 
-It is fetched by digest, pushed into the local registry unchanged on site
-(4.5), and pulled by that same digest when the console deploys. Under
-`offline/`, it travels with the repository.
+`--platform linux/arm64` keeps the arm64 image only, without the amd64 one.
+Under `offline/`, it travels with the repository.
 
 ### 3.6 Model weights
 
@@ -344,7 +343,7 @@ crane push offline/engine/vllm-ascend 10.0.0.11:5000/vllm-ascend:v0.30.0rc2 --in
   control-plane images included
 - `crane push` puts the vLLM-Ascend image from 3.5 in. The repository has to be
   `vllm-ascend`: the console's deploy pulls it from `vllm-ascend` in the local
-  registry, by digest, so the tag can be anything
+  registry
 
 [`offline-install.md`](offline-install.md) writes the registry address once
 into `offline/site.env` instead, for every step to read; passing `REGISTRY` on

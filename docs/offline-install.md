@@ -207,14 +207,15 @@ to bring one:
   variant names and push it on site under the name swiss asks for (5.1):
 
   ```bash
-  crane pull --format=oci quay.io/ascend/vllm-ascend@sha256:7859b75177884252d2b703eff727831ccab4e33a8bde0a9b4ac7563facc98b33 offline/engine/vllm-ascend
+  crane pull --format=oci --platform linux/arm64 quay.io/ascend/vllm-ascend:v0.30.0rc2 offline/engine/vllm-ascend
   # on site
-  crane push offline/engine/vllm-ascend <registry>/vllm-ascend:<any tag> --insecure
+  crane push offline/engine/vllm-ascend <registry>/vllm-ascend:v0.30.0rc2 --insecure
   ```
 
-  No `--platform` for an image pinned by digest: on a multi-arch index it would
-  save one platform under a different digest, which the deploy then cannot
-  find.
+  A variant that pins its image by digest is pulled by that digest on site, so
+  the tag downloaded has to resolve to it for the target platform:
+  `--platform` saves that platform's own manifest, digest unchanged
+  (`v0.30.0rc2`'s arm64 image is the one the 910B4 variants pin).
 - **By address, in `offline/engine-images.txt`** (copy
   `offline/engine-images.txt.example`), for an engine a `models:` entry names --
   a site runs its own build of sglang or vllm, at whatever address that entry
