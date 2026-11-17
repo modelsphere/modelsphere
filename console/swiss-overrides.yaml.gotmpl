@@ -47,11 +47,16 @@ rbac:
 {{- range $m := (dig "models" (list) .Values) }}
 {{-   $swissNs = append $swissNs (dig "namespace" "llm-demo" $m) }}
 {{- end }}
-{{- /* and where swissd deploys by default, when this repo writes the site
-       profile (catalog-mirror on) or the environment names it. Only then: a
-       cluster with no such namespace would otherwise fail on the Role. */}}
-{{- if or (dig "enabled" "catalogMirror" false .Values) (hasKey (dig "swiss" (dict) .Values) "modelNamespace") }}
-{{-   $swissNs = append $swissNs (dig "swiss" "modelNamespace" "llm-demo" .Values) }}
+{{- /* and where swissd deploys by default: the namespace the environment
+       names, which the site profile this repo writes (catalog-mirror on) also
+       points at. Never a guessed default: a Role in a namespace the cluster
+       does not have fails the install. With catalog-mirror on and models[]
+       elsewhere, the profile would send deploys to llm-demo, which is not
+       granted -- say so now instead of a forbidden error at the first deploy. */}}
+{{- if hasKey (dig "swiss" (dict) .Values) "modelNamespace" }}
+{{-   $swissNs = append $swissNs .Values.swiss.modelNamespace }}
+{{- else if and (dig "enabled" "catalogMirror" false .Values) $swissNs (not (has "llm-demo" $swissNs)) }}
+{{-   fail "swiss.rbacScope is namespaced and catalog-mirror is on: set swiss.modelNamespace to the namespace swissd should deploy models into (one that exists, e.g. one of models[]'s), so it is both granted and written into the site profile" }}
 {{- end }}
 {{- if not $swissNs }}
 {{-   $swissNs = list "llm-demo" }}

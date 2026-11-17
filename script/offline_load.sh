@@ -291,7 +291,8 @@ if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
   # Seeded with what the pass above pushed: 4pdosc/sglang:t lands on
   # <registry>/sglang:t there, and lmsysorg/sglang:t would land on it here.
   _seen=$(mktemp); cp "$_targets" "$_seen"
-  _norm() { echo "$1" | sed -E 's#^docker\.io/##; s#@sha256:.*##'; }
+  # As offline_bundle.sh compares spellings: docker.io/ and library/ off.
+  _norm() { echo "$1" | sed -E 's#^docker\.io/##; s#^library/##; s#@sha256:.*##'; }
   while read -r img; do
     [ -n "$img" ] || continue
     _ref=${img%@sha256:*}
@@ -306,7 +307,15 @@ if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
       fi
       continue
     fi
-    dir="$BUNDLE/images/$(echo "$img" | tr '/:@' '___')"
+    # The bundle keeps one layout per image, under whichever spelling it met
+    # first (docker.io/x/y:t or x/y:t): look for any of them.
+    dir=""
+    _bare=$(echo "$img" | sed -E 's#^docker\.io/##; s#^library/##')
+    for _sp in "$img" "$_bare" "docker.io/$_bare" "docker.io/library/$_bare" "library/$_bare"; do
+      _d="$BUNDLE/images/$(echo "$_sp" | tr '/:@' '___')"
+      if [ -f "$_d/oci-layout" ]; then dir=$_d; break; fi
+    done
+    [ -n "$dir" ] || dir="$BUNDLE/images/$(echo "$img" | tr '/:@' '___')"
     if [ "$DRY_RUN" = true ]; then
       echo "    would push: $img -> $_short"
       echo "$_short $img" >> "$_seen"

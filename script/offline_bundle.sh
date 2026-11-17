@@ -173,6 +173,41 @@ RENDER_PLACEHOLDERS=(
   --state-values-set llmGateway.hostPath=/bundle
 )
 
+# This environment's `registry` -- the prefix our own images are named with. It
+# is needed twice: in the MANIFEST, and below, to write the second spelling of
+# the images a model's chart pins. Computed here, before either, because a
+# version of this that computed it only at the end left that second spelling
+# empty and the bundle silently short.
+#
+# Read from `helmfile build`, i.e. the values as this environment resolves them:
+# every environment file it layers plus any --set in ARGS. The same output gives
+# the chart pins and chartRepo for the catalog snapshot below; reading the
+# environment files by hand missed intermediate layers and --set.
+helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
+  --state-values-set catalogSnapshot= \
+  ${EXTRA[@]+"${EXTRA[@]}"} build > "$OUT/.build.yaml" 2>/dev/null || : > "$OUT/.build.yaml"
+_rendered() {   # _rendered <dotted.key>: one value of renderedvalues, empty if absent
+  python3 - "$OUT/.build.yaml" "$1" <<'PY' 2>/dev/null || true
+import sys, yaml
+v = next((d["renderedvalues"] for d in yaml.safe_load_all(open(sys.argv[1]))
+          if isinstance(d, dict) and "renderedvalues" in d), {})
+for k in sys.argv[2].split("."):
+    v = v.get(k) if isinstance(v, dict) else None
+print("" if v is None else v)
+PY
+}
+SOURCE_REGISTRY=$(_rendered registry)
+[ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
+[ -n "$SOURCE_REGISTRY" ] || echo "       and offline_load.sh will need --source-registry" >&2
+
+# catalog-mirror is what swissd deploys from offline, so it is carried
+# whenever the console is: an environment that installs the console without it
+# can still turn it on at the site. Without the console nothing reads it, and
+# forcing it in would make every bundle fetch a chart such an environment's
+# chartRepo may not carry.
+_with_cm=false
+case "$(_rendered enabled.console)$(_rendered enabled.catalogMirror)" in *True*|*true*) _with_cm=true ;; esac
+
 # OCI charts through BUNDLE_FETCH_MIRRORS, before anything renders. Three charts
 # come straight from OCI registries (kube-prometheus-stack and
 # node-problem-detector on ghcr.io, lws on registry.k8s.io), and the render
@@ -184,7 +219,7 @@ RENDER_PLACEHOLDERS=(
 CHARTS_FROM_MIRROR=false
 if [ -n "${BUNDLE_FETCH_MIRRORS:-}" ]; then
   _oci=$(helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
-           --state-values-set registryMode=upstream --state-values-set enabled.catalogMirror=true \
+           --state-values-set registryMode=upstream --state-values-set enabled.catalogMirror="$_with_cm" \
            --state-values-set catalogSnapshot= "${RENDER_PLACEHOLDERS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} \
            list --output json 2>/dev/null \
          | python3 -c 'import json,sys
@@ -213,15 +248,15 @@ fi
 CHARTSDIR_ARGS=()
 [ "$CHARTS_FROM_MIRROR" = true ] && CHARTSDIR_ARGS=(--state-values-set "chartsDir=$OUT/charts")
 
-# enabled.catalogMirror=true on both the render and the release list below: it
-# is how swissd deploys a model on a cluster with no route to GitHub, and so it
-# belongs in every bundle -- off in default.yaml, where an online cluster reads
+# enabled.catalogMirror on (with the console, see _with_cm) on both the render
+# and the release list below: it is how swissd deploys a model on a cluster
+# with no route to GitHub -- off in default.yaml, where an online cluster reads
 # GitHub directly, and switched on by the offline environments.
 render_with() {
   helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
     --state-values-set registryMode=upstream \
     --state-values-set cilium.serviceMonitors=false \
-    --state-values-set enabled.catalogMirror=true \
+    --state-values-set enabled.catalogMirror="$_with_cm" \
     --state-values-set catalogSnapshot= \
     "${RENDER_PLACEHOLDERS[@]}" \
     ${CHARTSDIR_ARGS[@]+"${CHARTSDIR_ARGS[@]}"} \
@@ -541,6 +576,7 @@ PY
 COUNT=$(grep -c . "$OUT/images.txt" || true)
 [ "$COUNT" -gt 0 ] || exit 1
 
+
 echo "==> pulling charts"
 # Same versions the environment pins: ask helmfile rather than re-deriving them.
 #
@@ -557,7 +593,7 @@ if ! helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
        --state-values-set registryMode=upstream \
        --state-values-set enabled.cilium=true \
        --state-values-set cilium.serviceMonitors=false \
-       --state-values-set enabled.catalogMirror=true \
+       --state-values-set enabled.catalogMirror="$_with_cm" \
        --state-values-set catalogSnapshot= \
        ${EXTRA[@]+"${EXTRA[@]}"} \
        list --output json > "$OUT/.releases.json" 2>"$OUT/.releases.err"; then
@@ -655,17 +691,6 @@ then
   exit 1
 fi
 
-# This environment's `registry` -- the prefix our own images are named with. It
-# is needed twice: in the MANIFEST, and above, to write the second spelling of
-# the images a model's chart pins. Computed here, before either, because a
-# version of this that computed it only at the end left that second spelling
-# empty and the bundle silently short.
-SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
-                    --state-values-set catalogSnapshot= \
-                    ${EXTRA[@]+"${EXTRA[@]}"} build 2>/dev/null \
-                  | awk '/^ +registry: /{print $2; exit}' || true)
-[ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
-[ -n "$SOURCE_REGISTRY" ] || echo "       and offline_load.sh will need --source-registry" >&2
 
 # The engine charts and the model catalog, for both ways a model gets deployed.
 #
@@ -682,20 +707,21 @@ SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT
 # from a copy an earlier run had left in ~/.cache/helm, and would have failed on
 # a node without that leftover -- the "works here, breaks in the room with no
 # network" failure a bundle exists to prevent.
-# The pins as this environment renders them: its own file over default.yaml,
-# the way helmfile layers them.
-_pins=$(python3 - "environments/$ENVIRONMENT.yaml" environments/default.yaml <<'PY'
-import sys, yaml
-pins = {}
-for f in reversed(sys.argv[1:]):
-    try:
-        v = (yaml.safe_load(open(f)) or {}).get("versions") or {}
-    except FileNotFoundError:
-        continue
-    pins.update({n: v[n] for n in ("sglang", "vllm") if v.get(n)})
-print(" ".join("--pin %s=%s" % kv for kv in sorted(pins.items())))
-PY
-)
+# The pins as this environment renders them (see SOURCE_REGISTRY above).
+_pins=""
+for _c in sglang vllm; do
+  _v=$(_rendered "versions.$_c")
+  [ -n "$_v" ] && _pins="$_pins --pin $_c=$_v"
+done
+# Engine charts come from the environment's chartRepo, as a `models:` release
+# would pull them, when it is an HTTP chart repository; an OCI one has no
+# index.yaml to read, so the public repository is used and that is said.
+_chart_repo=$(_rendered chartRepo)
+case "$_chart_repo" in
+  http://*|https://*) export CHARTS_URL="$_chart_repo" ;;
+  "") ;;
+  *) echo "    ⚠️  chartRepo $_chart_repo is not an HTTP chart repository; engine charts come from ${CHARTS_URL:-https://modelsphere.github.io/helm-charts}" >&2 ;;
+esac
 # shellcheck disable=SC2086  # _pins is a list of flags
 # Fatal only where something reads it: catalog-mirror is installed with the
 # console. Without the console a failure here (GitHub Pages unreachable, say)
@@ -812,7 +838,7 @@ fi
 #     asked for 0.1.22 against a registry that only had 0.1.25.
 #   - cart.image.tag is empty on purpose and means "the CART subchart's
 #     appVersion", which is inside the archive too.
-rm -f "$OUT/.pinned-only"
+rm -f "$OUT/.pinned-only" "$OUT/.build.yaml"
 for _ec in "$OUT"/charts/sglang-*.tgz "$OUT"/charts/vllm-*.tgz; do
   [ -f "$_ec" ] || continue
   # The list goes through a file, not a pipe: the right side of a pipe is a
@@ -1000,11 +1026,10 @@ for m in json.load(open(os.path.join(p, "index.json"))).get("manifests", []):
 print(" ".join(sorted(out)))
 ARCHPY
   }
-  # Returns 1 for a layout of the wrong architecture, after removing it. The
-  # image is then skipped if only an engine chart pins it (no render names it,
-  # so nothing on this platform asks for it), and counted as failed otherwise.
+  # 0 when the layout at $2 carries every platform this bundle is for (or is
+  # one of the exceptions below); sets _has to what it does carry.
   arch_skipped=0; : > "$OUT/.arch-skipped"
-  _check_arch() {
+  _arch_matches() {
     case "$1" in *@sha256:*) return 0 ;; esac      # full index kept on purpose
     _has=$(_layout_archs "$2" 2>/dev/null || echo "?")
     _miss=""
@@ -1015,6 +1040,12 @@ ARCHPY
     case " $BUNDLE_ARCH_MISLABELED " in
       *" $1 "*) echo "      config says $_has; kept, listed in BUNDLE_ARCH_MISLABELED"; return 0 ;;
     esac
+    return 1
+  }
+  # A freshly fetched layout of the wrong architecture: removed, then skipped
+  # if only an engine chart pins the image (no render names it, so nothing on
+  # this platform asks for it), and counted as failed otherwise.
+  _reject_arch() {
     rm -rf "$2"
     if [ -f "$OUT/.pinned-only" ] && grep -qxF "$1" "$OUT/.pinned-only"; then
       echo "      SKIPPED: only $_has is published; an engine chart pins it, no render names it" >&2
@@ -1023,7 +1054,8 @@ ARCHPY
       echo "      WRONG ARCHITECTURE: $1 has $_has, this bundle is for $_want" >&2
       img_failed=$((img_failed+1))
     fi
-    return 1
+    # 0: the outcome is in the counters, and `a || _reject_arch` runs under set -e.
+    return 0
   }
 
   echo "==> copying images into OCI layouts"
@@ -1037,10 +1069,14 @@ ARCHPY
     # and 12 GB, measured, and a first run here was cut off at 51. Without this
     # a resume re-fetches everything.
     if [ -f "$dir/oci-layout" ] && [ -s "$dir/index.json" ]; then
-      printf '    [%d/%d] have %s\n' "$n" "$COUNT" "$img"
-      # A layout an earlier run saved for another platform is not "have".
-      _check_arch "$img" "$dir" || true
-      continue
+      # A layout an earlier run saved for another platform is not "have":
+      # it is fetched again below, and judged on what that fetch brings.
+      if _arch_matches "$img" "$dir"; then
+        printf '    [%d/%d] have %s\n' "$n" "$COUNT" "$img"
+        continue
+      fi
+      printf '    [%d/%d] have %s, but for %s: fetching again\n' "$n" "$COUNT" "$img" "$_has"
+      rm -rf "$dir"
     fi
     printf '    [%d/%d] %s\n' "$n" "$COUNT" "$img"
     # A digest-pinned image keeps its full index; everything else is fetched
@@ -1111,7 +1147,7 @@ ARCHPY
     fi
     if [ "$_ok" = true ] && [ -f "$dir.part/oci-layout" ] && [ -s "$dir.part/index.json" ]; then
       rm -rf "$dir"; mv "$dir.part" "$dir"
-      _check_arch "$img" "$dir" || true
+      _arch_matches "$img" "$dir" || _reject_arch "$img" "$dir"
     else
       rm -rf "$dir.part"
       if [ "$_fetch" != "$img" ]; then
@@ -1140,7 +1176,7 @@ ARCHPY
     rm -f "$OUT/.arch-skipped" "$OUT/images-skipped.txt"
   fi
 fi
-rm -f "$OUT/.pinned-only"
+rm -f "$OUT/.pinned-only" "$OUT/.build.yaml"
 
 # source_registry is not decoration: offline_load.sh renames our own images by
 # replacing this exact prefix, because the charts render them as

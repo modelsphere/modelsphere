@@ -97,6 +97,8 @@ def satisfies(version, constraint):
     """True/False for the spellings the catalog uses -- an exact version,
     `>=x.y.z`, or none at all (any release) -- and None for anything else."""
     c = str(constraint or "").strip()
+    if c and c == str(version).strip():
+        return True                                  # an exact version, pre-releases included
     if not c:
         return vkey(version) is not None
     if c.startswith(">="):
@@ -135,7 +137,6 @@ def main():
 
     # v2: index-v2.json, each variant's current file and its history.
     picks = [p.strip() for p in a.models.split(",") if p.strip()]
-    want_models = {p.partition(":")[0] for p in picks}
     want_variants = {p for p in picks if ":" in p}   # model:variant
     found = set()
     images = {}  # address -> the models naming it
@@ -172,7 +173,10 @@ def main():
         for i, ms in sorted(images.items()):
             print(f"    engine image {i} ({', '.join(sorted(ms))})")
 
-    # Charts: the newest release of every chart named, plus the pins.
+    # Charts: the newest release of every chart named, plus the pins, plus --
+    # for a v2 entry the newest one does not meet (an exact older version, an
+    # exact pre-release) -- the release swissd would pick for it: the newest
+    # that meets the constraint.
     index = yaml.safe_load(get(CHARTS_URL + "index.yaml"))["entries"]
     want = {}
     for name in sorted({c[0] for c in constraints}):
@@ -183,6 +187,13 @@ def main():
             raise SystemExit(f"{CHARTS_URL} publishes only pre-releases of {name}; --pin one to bundle it")
         newest = max(releases, key=lambda e: vkey(e["version"]))
         want[(name, newest["version"])] = newest
+    for name, c, _w, s in constraints:
+        if s != "v2" or name not in index or any(satisfies(v, c) for n, v in want if n == name):
+            continue
+        fits = [e for e in index[name] if satisfies(e["version"], c)]
+        if fits:
+            best = max(fits, key=lambda e: vkey(e["version"]) or bound(e["version"]) or ())
+            want[(name, best["version"])] = best
     for p in a.pin:
         name, _, ver = p.partition("=")
         e = next((e for e in index.get(name, []) if e["version"] == ver), None)
