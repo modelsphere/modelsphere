@@ -568,6 +568,7 @@ the flag existed -- the offline values are separate files, pulled into
 | `lws` | `nvidia/lws/offline-images.yaml.gotmpl` |
 | `volcano` | `scheduler/volcano/offline-images.yaml.gotmpl` |
 | `catalog-mirror` | `console/catalog-mirror-offline-images.yaml.gotmpl` |
+| `ascend-device-plugin` | `ascend/offline-images.yaml.gotmpl` |
 
 They are separate files rather than blocks appended to each `overrides.yaml`
 because an overrides file may legitimately hold a Go-template expression meant

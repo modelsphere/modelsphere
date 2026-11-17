@@ -623,6 +623,9 @@ releases:
       tier: gpu
     values:
       - ascend/overrides.yaml
+{{- if $rewrite }}
+      - ascend/offline-images.yaml.gotmpl
+{{- end }}
 
   - name: lws
     namespace: {{ .Values.namespaces.lws }}
