@@ -1,8 +1,8 @@
 # test/e2e/gpu
 
-End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-gpu` does not create a cluster and does not delete one. It installs `part=others` with `helmfile -e gpu`, runs the specs, and uninstalls `part=others` again. `part=infra` (the CNI, Ceph, monitoring, the GPU and NIC operators, lws, volcano) is assumed to be already installed and is never selected.
+End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-gpu` does not create a cluster and does not delete one. It installs `part=product` with `helmfile -e gpu`, runs the specs, and uninstalls `part=product` again. `part=infra` (the CNI, Ceph, monitoring, the GPU and NIC operators, lws, volcano) is assumed to be already installed and is never selected.
 
-## Infra and others
+## Infra and product
 
 `helmfile.yaml.gotmpl` labels every release except `tier=model` with `part`. Model releases are what swissd deploys during the run; they are in neither set.
 
@@ -13,12 +13,12 @@ End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-
 | infra | observability | kube-prometheus-stack's CRDs, plus PrometheusRule and Grafana dashboard hooks that helm does not own. The GPU operator and the bodylog exporter need those CRDs. Descheduler is cluster policy; its overrides only evict nodes already tainted for a broken GPU. |
 | infra | gpu | Drivers, device plugins and lws CRDs. Reinstalling gpu-operator drops `nvidia.com/gpu` off the nodes. The Ascend chart keeps its namespaces across an uninstall. |
 | infra | scheduler | Volcano's CRDs and an admission webhook with `failurePolicy: Fail`. PodDisruptionBudgets are applied by a hook helm does not own. |
-| others | llmgate, operator, portal | The product: openresty, bodylog and its exporters, autoconfig, llm-slo, llmscaleoperator, llm-canary-operator, swissd, console. LLMService CRDs belong to this set. `needs:` edges back to kube-prometheus-stack stay in the file and are not selected (`--skip-needs`). |
+| product | llmgate, operator, portal | openresty, bodylog and its exporters, autoconfig, llm-slo, llmscaleoperator, llm-canary-operator, swissd, console. LLMService CRDs belong to this set. `needs:` edges back to kube-prometheus-stack stay in the file and are not selected (`--skip-needs`). |
 | (none) | model | Not installed by either target. |
 
-`make helm-apply-infra`, `make helm-apply-others` and `make helm-destroy-others` ignore `SELECTOR`. helmfile ORs separate `-l` groups, so a caller selector must not be able to widen a destroy. There is no target that uninstalls `part=infra`.
+`make helm-apply-infra`, `make helm-apply-product` and `make helm-destroy-product` ignore `SELECTOR`. helmfile ORs separate `-l` groups, so a caller selector must not be able to widen a destroy. There is no target that uninstalls `part=infra`.
 
-`helmfile destroy` has no `--skip-needs`. The destroy target passes `-l part=others` and nothing else. The suite lists that selector as JSON before apply and before destroy, and refuses to continue if any selected release is not `part=others` or is a known infra name.
+`helmfile destroy` has no `--skip-needs`. The destroy target passes `-l part=product` and nothing else. The suite lists that selector as JSON before apply and before destroy, and refuses to continue if any selected release is not `part=product` or is a known infra name.
 
 ## Prerequisites
 
@@ -71,12 +71,12 @@ The releases the gpu environment installs (the same product set as `environments
 
 ```sh
 make helm-apply-infra ENV=gpu INTERACTIVE=false     # once, after filling gpu.yaml in
-make test-e2e-gpu                                   # install others, test, uninstall others
-make test-e2e-gpu KEEP_INSTALL=1                    # leave part=others installed
+make test-e2e-gpu                                   # install product, test, uninstall product
+make test-e2e-gpu KEEP_INSTALL=1                    # leave part=product installed
 E2E_SKIP_INSTALL=1 make test-e2e-gpu                # specs only; does not uninstall either
 make test-e2e-gpu E2E_VERBOSE=true
 make test-e2e-gpu E2E_ARGS='-ginkgo.focus=catalog'
-make helm-destroy-others ENV=gpu INTERACTIVE=false  # uninstall part=others by hand
+make helm-destroy-product ENV=gpu INTERACTIVE=false # uninstall part=product by hand
 ```
 
 `E2E_TIMEOUT` defaults to 45m for the kind suite and is left there. `make test-e2e-gpu` uses 210m unless `E2E_TIMEOUT` was set on the command line or in the environment.
@@ -107,9 +107,9 @@ make helm-destroy-others ENV=gpu INTERACTIVE=false  # uninstall part=others by h
 | `E2E_GONE_TIMEOUT` | `30m` | Uninstall. The variant's grace period is 1200s. |
 | `E2E_CHAT_TIMEOUT` | `3m` | One chat call. |
 | `E2E_VERBOSE` | false | Print helm releases, pods and chat bodies. |
-| `KEEP_INSTALL` | false | Do not uninstall `part=others` afterwards. |
-| `E2E_SKIP_INSTALL` | false | Do not install or uninstall `part=others`. |
+| `KEEP_INSTALL` | false | Do not uninstall `part=product` afterwards. |
+| `E2E_SKIP_INSTALL` | false | Do not install or uninstall `part=product`. |
 
 Durations accept a Go duration (`90m`) or a bare number of seconds.
 
-`helmfile -e gpu -l part=others template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.node` and `hostPath` have to be non-empty for the others set to render at all; `REPLACE_ME` is enough for a template and not enough for an apply.
+`helmfile -e gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.node` and `hostPath` have to be non-empty for the product set to render at all; `REPLACE_ME` is enough for a template and not enough for an apply.

@@ -115,20 +115,20 @@ make helm-diff                              # everything
 make helm-diff  SELECTOR=tier=gpu           # one tier
 make helm-apply SELECTOR=name=descheduler   # one release
 make helm-apply-infra ENV=<env>             # part=infra, the cluster base
-make helm-apply-others ENV=<env>            # part=others, the product
-make helm-destroy-others ENV=<env>          # uninstall part=others only
+make helm-apply-product ENV=<env>           # part=product, the product stack
+make helm-destroy-product ENV=<env>         # uninstall part=product only
 make helm-list                              # what this repo declares (file only)
 make helm-status                            # declared vs what is really in the cluster
 make helm-template                          # render locally, no cluster
 ```
 
 Labels available to `SELECTOR`: `tier` (`cni`, `storage`, `observability`, `gpu`,
-`llmgate`, `scheduler`), `name`, and `part` (`infra`, `others`). `tier=model`
+`llmgate`, `scheduler`), `name`, and `part` (`infra`, `product`). `tier=model`
 has no `part`.
 
 The three `part` targets ignore `SELECTOR`. helmfile ORs separate `-l` groups,
 so a caller selector cannot be appended without widening the set, and
-`helm-destroy-others` must not be pointable at the CNI. There is no target
+`helm-destroy-product` must not be pointable at the CNI. There is no target
 that uninstalls `part=infra`. What goes in which set, and why, is in
 [`test/e2e/gpu`](../test/e2e/gpu/README.md).
 

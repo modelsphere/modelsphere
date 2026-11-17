@@ -114,7 +114,7 @@ var (
 	forwards  = []*forward{swissd, openresty}
 
 	// installStarted is set immediately before helmfile apply. AfterSuite
-	// destroys part=others only when this suite started that apply.
+	// destroys part=product only when this suite started that apply.
 	installStarted bool
 	beforeSuiteOK  bool
 	kubeconfigDir  string
@@ -142,9 +142,9 @@ var _ = BeforeSuite(func() {
 	mustKubectl("get", "nodes")
 
 	if cfg.skipInstall {
-		_, _ = fmt.Fprintln(GinkgoWriter, "E2E_SKIP_INSTALL set: not installing or uninstalling part=others")
+		_, _ = fmt.Fprintln(GinkgoWriter, "E2E_SKIP_INSTALL set: not installing or uninstalling part=product")
 	} else {
-		installOthers()
+		installProduct()
 	}
 	waitStackReady()
 	if verbose {
@@ -171,7 +171,7 @@ var _ = AfterSuite(func() {
 	// E2E_SKIP_INSTALL leaves a stack this suite did not install.
 	// KEEP_INSTALL keeps one it did, for a look at a failure.
 	if installStarted && !cfg.skipInstall && !cfg.keepInstall {
-		destroyOthers()
+		destroyProduct()
 	}
 	if kubeconfigDir != "" {
 		_ = os.RemoveAll(kubeconfigDir)
@@ -255,12 +255,12 @@ func isolateKubeconfig() {
 	By("using kube context " + cfg.context)
 }
 
-// installOthers applies helmfile -e gpu -l part=others. --skip-needs is the
+// installProduct applies helmfile -e gpu -l part=product. --skip-needs is the
 // default and is passed anyway: needs edges point at kube-prometheus-stack,
 // which is part=infra and must not be pulled into a per-run apply.
-func installOthers() {
-	rows := listOthers()
-	By(fmt.Sprintf("installing part=others (%d releases): helmfile -e %s apply", len(rows), cfg.helmEnv))
+func installProduct() {
+	rows := listProduct()
+	By(fmt.Sprintf("installing part=product (%d releases): helmfile -e %s apply", len(rows), cfg.helmEnv))
 	installStarted = true
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.installTO)
 	defer cancel()
@@ -271,11 +271,11 @@ func installOthers() {
 	Expect(err).NotTo(HaveOccurred(), tail(out, 80))
 }
 
-// destroyOthers uninstalls part=others only. destroy has no --skip-needs;
-// the selector is what keeps infra out, and listOthers checks it first.
-func destroyOthers() {
-	rows := listOthers()
-	By(fmt.Sprintf("uninstalling part=others (%d releases)", len(rows)))
+// destroyProduct uninstalls part=product only. destroy has no --skip-needs;
+// the selector is what keeps infra out, and listProduct checks it first.
+func destroyProduct() {
+	rows := listProduct()
+	By(fmt.Sprintf("uninstalling part=product (%d releases)", len(rows)))
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.installTO)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cfg.helmfileBin, helmfileArgs(
@@ -290,13 +290,13 @@ func helmfileArgs(extra ...string) []string {
 		"-f", "helmfile.yaml.gotmpl",
 		"-e", cfg.helmEnv,
 		"--kube-context", cfg.context,
-		"-l", "part=others",
+		"-l", "part=product",
 	}
 	return append(args, extra...)
 }
 
-// listOthers is the fail-closed check in front of apply and destroy.
-func listOthers() []listedRelease {
+// listProduct is the fail-closed check in front of apply and destroy.
+func listProduct() []listedRelease {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cfg.helmfileBin, helmfileArgs("list", "--output", "json", "--skip-deps")...)
@@ -305,11 +305,11 @@ func listOthers() []listedRelease {
 	Expect(err).NotTo(HaveOccurred(), stderr)
 	var rows []listedRelease
 	Expect(json.Unmarshal([]byte(stdout), &rows)).To(Succeed(), stdout)
-	Expect(rows).NotTo(BeEmpty(), "part=others selected no releases")
+	Expect(rows).NotTo(BeEmpty(), "part=product selected no releases")
 	installed := 0
 	for _, r := range rows {
 		labels := parseLabels(r.Labels)
-		Expect(labels["part"]).To(Equal("others"),
+		Expect(labels["part"]).To(Equal("product"),
 			"refusing to touch %s/%s: labels %q", r.Namespace, r.Name, r.Labels)
 		Expect(infraReleaseNames).NotTo(HaveKey(r.Name),
 			"refusing to touch infra release %s", r.Name)
@@ -318,7 +318,7 @@ func listOthers() []listedRelease {
 		}
 	}
 	Expect(installed).To(BeNumerically(">", 0),
-		"part=others has no installed: true release in environment %s", cfg.helmEnv)
+		"part=product has no installed: true release in environment %s", cfg.helmEnv)
 	return rows
 }
 

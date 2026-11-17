@@ -6,9 +6,9 @@
 #                 (`make helm-apply-infra ENV=gpu`) and never by the per-run
 #                 suite. Uninstalling it takes the CNI, the drivers or the
 #                 volcano webhook with it. There is no destroy target for it.
-#   part=others   openresty, bodylog, autoconfig, the operators, swissd and
+#   part=product  openresty, bodylog, autoconfig, the operators, swissd and
 #                 console. The suite installs and uninstalls only these
-#                 (`make helm-apply-others` / `make helm-destroy-others`).
+#                 (`make helm-apply-product` / `make helm-destroy-product`).
 #
 # Every REPLACE_ME below is a value this file cannot know. `helmfile -e gpu
 # template` accepts them; an apply against the real cluster will not work

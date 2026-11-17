@@ -1,6 +1,6 @@
 .PHONY: help setup-k8s-online setup-k8s-offline setup-disk setup-mirror setup-offline-node audit-gpu gpu-prep setup-all \
         helm-deps helm-bootstrap helm-diff helm-apply helm-template helm-list helm-status \
-        helm-apply-infra helm-apply-others helm-destroy-others \
+        helm-apply-infra helm-apply-product helm-destroy-product \
         offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind \
         test-e2e-gpu
 
@@ -43,7 +43,7 @@ SETUP_DISK ?=
 SETUP_MIRROR ?=
 HELMFILE_ARGS = -f helmfile.yaml.gotmpl -e $(ENV) $(if $(filter true 1 yes,$(INTERACTIVE)),--interactive,) $(if $(SELECTOR),-l $(SELECTOR),) $(if $(SKIP_REFRESH),--skip-refresh,) $(if $(SKIP_DEPS),--skip-deps,) $(foreach f,$(MODELS),--state-values-file $(f))
 # Same as HELMFILE_ARGS with no SELECTOR. The part targets below hardcode
-# their label: helmfile ORs separate -l groups, so appending -l part=others
+# their label: helmfile ORs separate -l groups, so appending -l part=product
 # to a caller's -l part=infra would select both, and a destroy must not be
 # widenable that way.
 HELMFILE_PART_ARGS = -f helmfile.yaml.gotmpl -e $(ENV) $(if $(filter true 1 yes,$(INTERACTIVE)),--interactive,) $(if $(SKIP_REFRESH),--skip-refresh,) $(if $(SKIP_DEPS),--skip-deps,) $(foreach f,$(MODELS),--state-values-file $(f))
@@ -67,8 +67,8 @@ help:
 	@echo "  make helm-list          - List the releases this repo declares (file only, no cluster)"
 	@echo "  make helm-status        - Compare that list with the releases helm has in the cluster"
 	@echo "  make helm-apply-infra ENV=<env>    - Apply part=infra only (the cluster base)"
-	@echo "  make helm-apply-others ENV=<env>   - Apply part=others only (the product)"
-	@echo "  make helm-destroy-others ENV=<env> - Uninstall part=others only; ignores SELECTOR"
+	@echo "  make helm-apply-product ENV=<env>   - Apply part=product only (the product stack)"
+	@echo "  make helm-destroy-product ENV=<env> - Uninstall part=product only; ignores SELECTOR"
 	@echo ""
 	@echo "Air-gapped install (see docs/offline-install.md), in order:"
 	@echo "  make offline-tools      - Fetch the binaries and the registry image (where the internet is)"
@@ -83,7 +83,7 @@ help:
 	@echo "  make cleanup-test-e2e-kind - Delete the kind cluster"
 	@echo ""
 	@echo "End-to-end test on an existing GPU cluster (see test/e2e/gpu/README.md):"
-	@echo "  make test-e2e-gpu       - helmfile -e gpu -l part=others, then test/e2e/gpu"
+	@echo "  make test-e2e-gpu       - helmfile -e gpu -l part=product, then test/e2e/gpu"
 	@echo "                            Does not create or delete a cluster. Needs KUBECONFIG."
 	@echo ""
 	@echo "Options:"
@@ -203,17 +203,17 @@ helm-apply:
 	helmfile $(HELMFILE_ARGS) apply --skip-diff-on-install
 
 # part=infra is the cluster base (CNI, storage, monitoring, GPU operators,
-# lws, volcano). part=others is the product. tier=model is in neither.
+# lws, volcano). part=product is the product stack. tier=model is in neither.
 # SELECTOR is ignored here on purpose; see HELMFILE_PART_ARGS. There is no
 # helm-destroy-infra: uninstalling that set takes the cluster down.
 helm-apply-infra:
 	helmfile $(HELMFILE_PART_ARGS) -l part=infra apply --skip-diff-on-install
 
-helm-apply-others:
-	helmfile $(HELMFILE_PART_ARGS) -l part=others apply --skip-diff-on-install
+helm-apply-product:
+	helmfile $(HELMFILE_PART_ARGS) -l part=product apply --skip-diff-on-install
 
-helm-destroy-others:
-	helmfile $(HELMFILE_PART_ARGS) -l part=others destroy
+helm-destroy-product:
+	helmfile $(HELMFILE_PART_ARGS) -l part=product destroy
 
 helm-template:
 	helmfile $(HELMFILE_ARGS) template --skip-tests

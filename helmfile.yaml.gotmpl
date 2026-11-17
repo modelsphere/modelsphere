@@ -78,7 +78,7 @@ environments:
       - environments/offline-rewrite.yaml
   # A real Cilium + NVIDIA cluster: what test/e2e/gpu targets. The file is
   # placeholders until a maintainer fills them in (environments/gpu.yaml).
-  # The per-run suite selects part=others only; it does not apply this whole
+  # The per-run suite selects part=product only; it does not apply this whole
   # environment.
   gpu:
     values:
@@ -245,7 +245,7 @@ helmDefaults:
   historyMax: 10
 
 # `part` is which install set a release belongs to. test/e2e/gpu installs and
-# uninstalls `part=others` on every run and never selects `part=infra`.
+# uninstalls `part=product` on every run and never selects `part=infra`.
 #
 # infra is the cluster base, rebuilt rarely and never by that suite: the CNI,
 # Ceph, the monitoring CRDs and the PrometheusRule/dashboard hooks, the GPU
@@ -253,11 +253,11 @@ helmDefaults:
 # last two are CRDs plus, for volcano, an admission webhook with
 # failurePolicy: Fail and PodDisruptionBudgets applied by a hook helm does not
 # own. Uninstalling any of them on a daily run flaps cluster-scoped state or
-# takes the nodes down. `needs:` edges from others back to infra are not
+# takes the nodes down. `needs:` edges from product back to infra are not
 # pulled in: helmfile's --skip-needs is the default, and the suite passes it
 # on apply anyway.
 #
-# others is the product: the routing layer, the operators, swissd and console.
+# product is the routing layer, the operators, swissd and console.
 # tier=model has no part. Those releases are not in either set.
 releases:
 
@@ -676,7 +676,7 @@ releases:
     installed: {{ .Values.enabled.openresty }}
     labels:
       tier: llmgate
-      part: others
+      part: product
     values:
       - llmgateway/openresty.yaml.gotmpl
 {{- with dig "llmGateway" "openrestyOverrides" nil .Values }}
@@ -692,7 +692,7 @@ releases:
     installed: {{ .Values.enabled.bodylog }}
     labels:
       tier: llmgate
-      part: others
+      part: product
     values:
       - llmgateway/bodylog-overrides.yaml.gotmpl
 
@@ -708,7 +708,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
-      part: others
+      part: product
     values:
       - llmgateway/bodylog-exporter.yaml.gotmpl
 
@@ -727,7 +727,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
-      part: others
+      part: product
     values:
       - llmgateway/bodylog-victorialogs.yaml.gotmpl
 {{- if $rewrite }}
@@ -749,7 +749,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
-      part: others
+      part: product
     values:
       # Repository only. The chart's own values say why, in as many words:
       # `tag: ""` means Chart.appVersion, which its CI rewrites on every
@@ -809,7 +809,7 @@ releases:
     installed: {{ .Values.enabled.llmslo }}
     labels:
       tier: operator
-      part: others
+      part: product
     values:
       - llm-operator/llmslo-images.yaml.gotmpl
 
@@ -820,7 +820,7 @@ releases:
     installed: {{ .Values.enabled.llmOperator }}
     labels:
       tier: operator
-      part: others
+      part: product
     values:
       - llm-operator/overrides.yaml.gotmpl
 
@@ -831,7 +831,7 @@ releases:
     installed: {{ .Values.enabled.llmCanaryOperator }}
     labels:
       tier: operator
-      part: others
+      part: product
     values:
       # `manager.*`, not top level. The chart reads .Values.manager.args and
       # .Values.manager.image; a top-level `args:`/`image:` is accepted by helm
@@ -871,7 +871,7 @@ releases:
     installed: {{ .Values.enabled.console }}
     labels:
       tier: portal
-      part: others
+      part: product
     values:
       - console/swiss-overrides.yaml.gotmpl
 
@@ -884,7 +884,7 @@ releases:
       - {{ .Values.namespaces.console }}/swissd
     labels:
       tier: portal
-      part: others
+      part: product
     values:
       - console/overrides.yaml.gotmpl
 
