@@ -35,24 +35,70 @@ case "$ARCH" in
 esac
 
 # name|url|kind   kind: bin (chmod +x), tar (unpack on install), image (docker load)
+#
+# containerd is the STATIC build: the dynamic one needs glibc >= 2.32 and does
+# not start on Kylin V10 or openEuler 20.03 (glibc 2.28) -- measured on a
+# Kunpeng 910B host, "GLIBC_2.32 not found". The static build runs on both.
+#
+# The three systemd files come from the repo (offline/units/), not from
+# raw.githubusercontent.com: some build hosts resolve that name to IPv6 only and
+# cannot reach it at all, while the files are fixed text at the pinned
+# versions -- containerd's at v2.3.3, the kubelet's at kubernetes/release
+# v0.16.5 (KUBE_RELEASE_TOOLS). Refresh them from there when bumping those.
 manifest() {
   cat <<EOF
 kubeadm|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubeadm|bin
 kubelet|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubelet|bin
 kubectl|https://dl.k8s.io/release/$KUBE_VERSION/bin/linux/$ARCH/kubectl|bin
 runc|https://github.com/opencontainers/runc/releases/download/$RUNC_VERSION/runc.$ARCH|bin
-containerd.tar.gz|https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-$CONTAINERD_VERSION-linux-$ARCH.tar.gz|tar
+containerd.tar.gz|https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-static-$CONTAINERD_VERSION-linux-$ARCH.tar.gz|tar
 cni-plugins.tgz|https://github.com/containernetworking/plugins/releases/download/$CNI_PLUGINS_VERSION/cni-plugins-linux-$ARCH-$CNI_PLUGINS_VERSION.tgz|tar
 helm.tar.gz|https://get.helm.sh/helm-$HELM_VERSION-linux-$ARCH.tar.gz|tar
 helmfile.tar.gz|https://github.com/helmfile/helmfile/releases/download/v$HELMFILE_VERSION/helmfile_${HELMFILE_VERSION}_linux_$ARCH.tar.gz|tar
 helm-diff.tgz|https://github.com/databus23/helm-diff/releases/download/$HELM_DIFF_VERSION/helm-diff-linux-$ARCH.tgz|tar
 crane.tar.gz|https://github.com/google/go-containerregistry/releases/download/$CRANE_VERSION/go-containerregistry_Linux_$CRANE_ARCH.tar.gz|tar
 nerdctl.tar.gz|https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-$ARCH.tar.gz|tar
-containerd.service|https://raw.githubusercontent.com/containerd/containerd/v$CONTAINERD_VERSION/containerd.service|unit
-kubelet.service|https://raw.githubusercontent.com/kubernetes/release/$KUBE_RELEASE_TOOLS/cmd/krel/templates/latest/kubelet/kubelet.service|unit
-10-kubeadm.conf|https://raw.githubusercontent.com/kubernetes/release/$KUBE_RELEASE_TOOLS/cmd/krel/templates/latest/kubeadm/10-kubeadm.conf|unit
+containerd.service|file://$REPO_ROOT/offline/units/containerd.service|unit
+kubelet.service|file://$REPO_ROOT/offline/units/kubelet.service|unit
+10-kubeadm.conf|file://$REPO_ROOT/offline/units/10-kubeadm.conf|unit
 EOF
 }
+
+# os/arch of a single-platform OCI layout (what `crane pull --platform`
+# writes), or every os/arch it holds when it kept an index.
+layout_arch() {
+  python3 - "$1" <<'LA'
+import json, os, sys
+p = sys.argv[1]
+def blob(d):
+    a, h = d.split(":")
+    return json.load(open(os.path.join(p, "blobs", a, h)))
+out = []
+for m in json.load(open(os.path.join(p, "index.json")))["manifests"]:
+    doc = blob(m["digest"])
+    for e in doc.get("manifests", []) or [None]:
+        try:
+            mm = blob(e["digest"]) if e else doc
+            if "config" in mm:
+                c = blob(mm["config"]["digest"])
+                out.append(f"{c.get('os')}/{c.get('architecture')}")
+        except FileNotFoundError:
+            continue   # an index entry whose platform was not pulled
+print(",".join(sorted(set(out))))
+LA
+}
+tar_arch() {
+  python3 - "$1" <<'TA'
+import json, sys, tarfile
+t = tarfile.open(sys.argv[1])
+print(",".join(sorted({"{}/{}".format(c.get("os"), c.get("architecture")) for c in
+  (json.load(t.extractfile(e["Config"])) for e in json.load(t.extractfile("manifest.json")))})))
+TA
+}
+layout_has() { case ",$(layout_arch "$1")," in *",$2,"*) return 0 ;; *) return 1 ;; esac; }
+
+# fetch_via: shared with offline_bundle.sh
+. "$REPO_ROOT/script/fetch_via.sh"
 
 case "${1:-}" in
   fetch)
@@ -92,6 +138,16 @@ case "${1:-}" in
     # docker when the fetch host has it, as before; otherwise crane, whose
     # default tarball is the same docker-archive shape and loads with either
     # `docker load` or `nerdctl load`. The fetch host no longer needs docker.
+    # Where to fetch an image from under BUNDLE_FETCH_MIRRORS (prefix=replacement,
+    # first match wins): the registry image and kubeadm's control-plane images
+    # both need it. A host that cannot reach registry.k8s.io's blob store got
+    # every kubeadm image "COPY FAILED" while the registry image, already
+    # mirrored, came through. The name the bundle stores is always the
+    # canonical one; only the source changes.
+    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "linux/$ARCH" ]; then
+      echo "    registry.tar is $(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable), not linux/$ARCH: fetching it again"
+      rm -f "$TOOLS/registry.tar"
+    fi
     if [ ! -s "$TOOLS/registry.tar" ]; then
       echo "    registry image ($REGISTRY_IMAGE)"
       # BUNDLE_FETCH_MIRRORS, the same variable offline_bundle.sh takes: a build
@@ -100,32 +156,37 @@ case "${1:-}" in
       # direct from Docker Hub on such a host runs at a few KB/s, while the
       # internal cache serves it in seconds -- and a bundle without this image
       # cannot be loaded at all, because there is nothing to load it into.
-      _src=$REGISTRY_IMAGE
-      for _m in ${BUNDLE_FETCH_MIRRORS:-}; do
-        case "$REGISTRY_IMAGE" in
-          "${_m%%=*}"/*) _src="${_m#*=}/${REGISTRY_IMAGE#"${_m%%=*}"/}"; break ;;
-          # An unqualified name is docker.io, which is how REGISTRY_IMAGE is
-          # written (`registry:3`, not `docker.io/library/registry:3`).
-          *) case "${_m%%=*}" in
-               docker.io) case "$REGISTRY_IMAGE" in */*) ;; *) _src="${_m#*=}/library/$REGISTRY_IMAGE"; break ;; esac ;;
-             esac ;;
-        esac
-      done
+      _src=$(fetch_via "$REGISTRY_IMAGE")
       [ "$_src" = "$REGISTRY_IMAGE" ] || echo "      via $_src"
       if command -v crane >/dev/null 2>&1; then
-        _plat=${BUNDLE_PLATFORMS:-linux/amd64}
+        # The registry runs on the target, so its image follows ARCH unless
+        # told otherwise -- not linux/amd64, which left an arm64 bundle with
+        # arm64 binaries and an amd64 registry nothing could start.
+        # linux/$ARCH, not BUNDLE_PLATFORMS: that may list several (a mixed
+        # cluster), and crane pulls one; the registry and the control plane
+        # run on the target, whose architecture ARCH names.
+        _plat=linux/$ARCH
         _ins=""; [ "${BUNDLE_FETCH_INSECURE:-}" = true ] && _ins="--insecure"
         if crane pull --platform "${_plat%%,*}" $_ins "$_src" "$TOOLS/registry.tar.part"; then
           # The tarball carries the name it was fetched under, and a mirror's
           # name is not the one the target runs: loaded as
           # <cache>/library/registry:3, `docker run registry:3` finds nothing.
           # So put the canonical name back before it leaves this host.
-          python3 - "$TOOLS/registry.tar.part" "$REGISTRY_IMAGE" <<'RETAG'
+          if python3 - "$TOOLS/registry.tar.part" "$REGISTRY_IMAGE" "${_plat%%,*}" <<'RETAG'
 import io, json, os, sys, tarfile
-src, want = sys.argv[1], sys.argv[2]
+src, want, plat = sys.argv[1], sys.argv[2], sys.argv[3]
 tmp = src + ".retag"
 with tarfile.open(src) as t:
     mf = json.loads(t.extractfile("manifest.json").read())
+    # What was asked is not always what comes back: a source that serves a
+    # single manifest instead of an index makes --platform a no-op, and an
+    # arm64 bundle then carries an amd64 registry nobody can start. Check
+    # the config, not the request.
+    os_, arch = plat.split("/")[:2]
+    for e in mf:
+        c = json.loads(t.extractfile(e["Config"]).read())
+        if (c.get("os"), c.get("architecture")) != (os_, arch):
+            sys.exit(f"      registry image is {c.get('os')}/{c.get('architecture')}, wanted {plat}: not saved")
     for e in mf:
         e["RepoTags"] = [want]
     with tarfile.open(tmp, "w") as o:
@@ -138,7 +199,8 @@ with tarfile.open(src) as t:
                 o.addfile(m, t.extractfile(m) if m.isfile() else None)
 os.replace(tmp, src)
 RETAG
-          mv "$TOOLS/registry.tar.part" "$TOOLS/registry.tar"
+          then mv "$TOOLS/registry.tar.part" "$TOOLS/registry.tar"
+          else rm -f "$TOOLS/registry.tar.part" "$TOOLS/registry.tar.part.retag"; fi
         else
           rm -f "$TOOLS/registry.tar.part"
         fi
@@ -171,14 +233,30 @@ RETAG
         # pull -- which is the one thing the tool bundle exists to prevent.
         if command -v crane >/dev/null 2>&1; then
           mkdir -p "$TOOLS/images"
+          _ins=""; [ "${BUNDLE_FETCH_INSECURE:-}" = true ] && _ins="--insecure"
           ka_saved=0; ka_failed=0
           while read -r img; do
             [ -z "$img" ] && continue
             d="$TOOLS/images/$(echo "$img" | tr '/:@' '___')"
-            [ -f "$d/oci-layout" ] && { ka_saved=$((ka_saved+1)); continue; }
+            # Already there AND the right arch: keep. A layout from an earlier
+            # run for another arch is fetched again, not counted as saved.
+            if [ -f "$d/oci-layout" ]; then
+              if layout_has "$d" "linux/$ARCH"; then ka_saved=$((ka_saved+1)); continue; fi
+              echo "      $img is $(layout_arch "$d" 2>/dev/null || echo unreadable), not linux/$ARCH: fetching it again"
+            fi
             rm -rf "$d.part"
-            if crane pull --format=oci --platform "${BUNDLE_PLATFORMS:-linux/amd64}" "$img" "$d.part" >/dev/null 2>&1; then
-              rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
+            # The control plane runs on the target: linux/$ARCH, as for the
+            # registry image. linux/amd64 here left an arm64 bundle with an
+            # apiserver that cannot start.
+            _from=$(fetch_via "$img")
+            [ "$_from" = "$img" ] || echo "      $img via $_from"
+            if crane pull --format=oci --platform "linux/$ARCH" $_ins "$_from" "$d.part" >/dev/null 2>&1; then
+              if layout_has "$d.part" "linux/$ARCH"; then
+                rm -rf "$d"; mv "$d.part" "$d"; ka_saved=$((ka_saved+1))
+              else
+                rm -rf "$d.part"; ka_failed=$((ka_failed+1))
+                echo "      WRONG PLATFORM: $img is $(layout_arch "$d.part" 2>/dev/null || echo unreadable), wanted linux/$ARCH" >&2
+              fi
             else
               rm -rf "$d.part"; ka_failed=$((ka_failed+1))
               echo "      COPY FAILED: $img" >&2
@@ -208,6 +286,12 @@ RETAG
       if [ -s "$TOOLS/$extra" ]; then printf '  OK   %-22s %s\n' "$extra" "$(du -h "$TOOLS/$extra" | cut -f1)"
       else printf '  MISS %s\n' "$extra"; miss=$((miss+1)); fi
     done
+    # Present is not enough: an amd64 registry in an arm64 bundle is present,
+    # and nothing on site can start it.
+    want=linux/$ARCH
+    if [ -s "$TOOLS/registry.tar" ] && [ "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null)" != "$want" ]; then
+      printf '  WRONG registry.tar is %s, not %s\n' "$(tar_arch "$TOOLS/registry.tar" 2>/dev/null || echo unreadable)" "$want"; miss=$((miss+1))
+    fi
     # The kubeadm images themselves, not just the list naming them. verify used
     # to check only the list, and reported missing=0 over an empty images/
     # directory -- the one shape that makes an air-gapped kubeadm init fail.
@@ -215,7 +299,9 @@ RETAG
       while read -r img; do
         [ -z "$img" ] && continue
         d="$TOOLS/images/$(echo "$img" | tr '/:@' '___')"
-        if [ -f "$d/oci-layout" ]; then printf '  OK   %-22s %s\n' "$(basename "$d" | cut -c1-22)" "$(du -sh "$d" | cut -f1)"
+        if [ -f "$d/oci-layout" ] && ! layout_has "$d" "$want"; then
+          printf '  WRONG %s is %s, not %s\n' "$img" "$(layout_arch "$d" 2>/dev/null || echo unreadable)" "$want"; miss=$((miss+1))
+        elif [ -f "$d/oci-layout" ]; then printf '  OK   %-22s %s\n' "$(basename "$d" | cut -c1-22)" "$(du -sh "$d" | cut -f1)"
         else printf '  MISS %s (kubeadm)\n' "$img"; miss=$((miss+1)); fi
       done < "$TOOLS/kubeadm-images.txt"
     fi

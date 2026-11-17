@@ -18,8 +18,29 @@ bodylog:
     # which a second bodylog release in the same namespace would also satisfy.
     app.kubernetes.io/instance: bodylog
 
+{{- /* storage.persistence: false promises a cluster with no StorageClass that
+       nothing asks for a PVC (environments/default.yaml). Both of this
+       release's claims follow it: VictoriaLogs' data volume and Vector's state.
+       Off, both are emptyDirs -- records already shipped are kept by bodylog's
+       own files, and VictoriaLogs loses only what it indexed since its last
+       start. Vector's buffer moves to memory with it: the chart refuses a disk
+       buffer on an emptyDir, which would fill the node's disk.
+
+       llmGateway.victorialogsPersistence overrides it for this release alone:
+       a cluster that ran with persistence false but had a default class (so
+       these claims bound anyway) sets it true before upgrading, or the next
+       apply swaps the bound volumes for emptyDirs and the indexed logs go. */}}
+{{- $persist := .Values.storage.persistence }}
+{{- if kindIs "bool" (dig "victorialogsPersistence" "" $g) }}
+{{-   $persist = dig "victorialogsPersistence" false $g }}
+{{- end }}
 vector:
+{{- if not $persist }}
+  buffer:
+    type: memory
+{{- end }}
   state:
+    enabled: {{ $persist }}
     # Vector's read positions and its disk buffer. A claim, not a node directory:
     # podAffinity follows the bodylog pod, and read positions left behind on the
     # old node are read positions Vector does not have -- it then applies
@@ -41,6 +62,7 @@ victorialogs:
     fullnameOverride: victorialogs
     retentionPeriod: {{ $g.victorialogsRetention | quote }}
     persistentVolume:
+      enabled: {{ $persist }}
       storageClassName: {{ .Values.storage.className | quote }}
       size: {{ $g.victorialogsSize | quote }}
 

@@ -6,6 +6,15 @@
 image:
   repository: {{ .Values.registry }}/swissd
 
+{{- if and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
+
+# The catalog a fresh install reads until a site profile names one, and the
+# one `swiss` on a laptop reads: catalog-mirror's copy, the v2 index by name.
+# The profile the swissd release's postsync hook writes points at the same.
+config:
+  catalog: http://catalog-mirror.{{ .Values.namespaces.console }}.svc/model-catalog/index-v2.json
+{{- end }}
+
 # No PVC by default: sqlite goes on an emptyDir, so the audit log and plan
 # history go when the pod is replaced. Recommended: turn it on (needs a
 # StorageClass or existingClaim), see docs/console.md.
@@ -37,6 +46,17 @@ rbac:
 {{- $swissNs := list }}
 {{- range $m := (dig "models" (list) .Values) }}
 {{-   $swissNs = append $swissNs (dig "namespace" "llm-demo" $m) }}
+{{- end }}
+{{- /* and where swissd deploys by default: the namespace the environment
+       names, which the site profile this repo writes (catalog-mirror on) also
+       points at. Never a guessed default: a Role in a namespace the cluster
+       does not have fails the install. With catalog-mirror on and models[]
+       elsewhere, the profile would send deploys to llm-demo, which is not
+       granted -- say so now instead of a forbidden error at the first deploy. */}}
+{{- if hasKey (dig "swiss" (dict) .Values) "modelNamespace" }}
+{{-   $swissNs = append $swissNs .Values.swiss.modelNamespace }}
+{{- else if and (dig "enabled" "catalogMirror" false .Values) $swissNs (not (has "llm-demo" $swissNs)) }}
+{{-   fail "swiss.rbacScope is namespaced and catalog-mirror is on: set swiss.modelNamespace to the namespace swissd should deploy models into (one that exists, e.g. one of models[]'s), so it is both granted and written into the site profile" }}
 {{- end }}
 {{- if not $swissNs }}
 {{-   $swissNs = list "llm-demo" }}

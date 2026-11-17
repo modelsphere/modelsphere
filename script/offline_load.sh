@@ -170,6 +170,9 @@ _mirror_path() {
 }
 
 loaded=0; pushed=0; skipped=0; failed=0
+# Every name this load pushes, with the image behind it -- the swiss-name pass
+# below must not land on one of them with a different image.
+_targets=$(mktemp); trap 'rm -f "$_targets"' EXIT
 while read -r img; do
   [ -z "$img" ] && continue
   case "$img" in */*:*) ;; *) skipped=$((skipped+1)); continue ;; esac
@@ -230,6 +233,7 @@ while read -r img; do
   esac
 
   mirror_target="$REGISTRY/$(_mirror_path "$src_ref")"
+  printf '%s %s\n%s %s\n' "${target%@sha256:*}" "$img" "${mirror_target%@sha256:*}" "$img" >> "$_targets"
   if [ "$DRY_RUN" = true ]; then
     echo "    would push: $img -> $target"
     [ "$mirror_target" != "$target" ] && echo "    would push: $img -> $mirror_target (mirror name)"
@@ -275,6 +279,62 @@ while read -r img; do
   fi
   rm -f /tmp/.push_out.$$
 done < "$BUNDLE/images.txt"
+
+# Engine images once more, under the name swiss's image mirror asks for. swissd
+# composes an engine address as <registry.mirror>/<last path segment>:<tag> --
+# lmsysorg/sglang:v0.5.20 becomes <registry>/sglang:v0.5.20 -- while the push
+# above put it at <registry>/lmsysorg/sglang. Same blobs, one more manifest.
+# Two engines whose last segment and tag agree would land on one name, the
+# second over the first, so that is refused instead.
+if [ -f "$BUNDLE/swiss-engine-images.txt" ]; then
+  echo "==> engine images under the name swiss's mirror asks for"
+  # Seeded with what the pass above pushed: 4pdosc/sglang:t lands on
+  # <registry>/sglang:t there, and lmsysorg/sglang:t would land on it here.
+  _seen=$(mktemp); cp "$_targets" "$_seen"
+  # As offline_bundle.sh compares spellings: docker.io/ and library/ off.
+  _norm() { echo "$1" | sed -E 's#^docker\.io/##; s#^library/##; s#@sha256:.*##'; }
+  while read -r img; do
+    [ -n "$img" ] || continue
+    _ref=${img%@sha256:*}
+    case "$_ref" in */*:*|*:*) ;; *) continue ;; esac
+    _short="$REGISTRY/${_ref##*/}"
+    _prev=$(awk -v k="$_short" '$1==k {print $2; exit}' "$_seen")
+    if [ -n "$_prev" ]; then
+      # docker.io/x/y:t and x/y:t are one image spelled twice, not a collision.
+      if [ "$(_norm "$_prev")" != "$(_norm "$img")" ]; then
+        echo "    COLLISION: $_prev and $img both become $_short -- $img is NOT pushed there" >&2
+        failed=$((failed+1))
+      fi
+      continue
+    fi
+    # The bundle keeps one layout per image, under whichever spelling it met
+    # first (docker.io/x/y:t or x/y:t): look for any of them.
+    dir=""
+    _bare=$(echo "$img" | sed -E 's#^docker\.io/##; s#^library/##')
+    for _sp in "$img" "$_bare" "docker.io/$_bare" "docker.io/library/$_bare" "library/$_bare"; do
+      _d="$BUNDLE/images/$(echo "$_sp" | tr '/:@' '___')"
+      if [ -f "$_d/oci-layout" ]; then dir=$_d; break; fi
+    done
+    [ -n "$dir" ] || dir="$BUNDLE/images/$(echo "$img" | tr '/:@' '___')"
+    if [ "$DRY_RUN" = true ]; then
+      echo "    would push: $img -> $_short"
+      echo "$_short $img" >> "$_seen"
+    elif [ ! -f "$dir/oci-layout" ]; then
+      # not recorded: another spelling of the same image may still have a layout
+      echo "    MISSING: no OCI layout at $dir -- $_short not pushed" >&2
+      skipped=$((skipped+1))
+    elif crane push "$dir" "$_short" $CRANE_INSECURE > /tmp/.push_out.$$ 2>&1; then
+      echo "$_short $img" >> "$_seen"
+      pushed=$((pushed+1))
+    else
+      echo "    PUSH FAILED: $_short (swiss mirror name)" >&2
+      tail -2 /tmp/.push_out.$$ | sed 's/^/      /' >&2
+      failed=$((failed+1))
+    fi
+    rm -f /tmp/.push_out.$$
+  done < "$BUNDLE/swiss-engine-images.txt"
+  rm -f "$_seen"
+fi
 
 if [ "$DRY_RUN" = false ]; then
   echo "    loaded=$loaded pushed=$pushed skipped=$skipped failed=$failed"
@@ -402,6 +462,9 @@ for _c in "$BUNDLE"/charts/*.tgz; do [ -f "$_c" ] && CHARTS=$((CHARTS+1)); done
 echo "==> charts: $CHARTS tarballs in $BUNDLE/charts, installed from there"
 echo "    (not uploaded anywhere: point chartsDir at that directory)"
 
+# Absolute in what is printed for copying: catalogSnapshot refuses a relative
+# path, and BUNDLE is ./offline by default.
+BUNDLE_ABS=$(cd "$BUNDLE" && pwd)
 cat <<EOF
 
 Everything is in the registry under both names it can be asked for. Pick how
@@ -411,11 +474,16 @@ A. registryMode: rewrite -- helm writes every address under the registry.
 
     # environments/<your-cluster>.yaml
     registry: $REGISTRY
-    chartsDir: $BUNDLE/charts
+    chartsDir: $BUNDLE_ABS/charts
+    catalogSnapshot: $BUNDLE_ABS/catalog-snapshot.tar.gz   # absolute
+    enabled: { catalogMirror: true }   # swissd deploys from the snapshot
     registryMode: rewrite
 
-    # creating the cluster: the control-plane images are not helm's to rewrite
-    kubeadm init --image-repository $REGISTRY          # or imageRepository: in
+    # creating the cluster: the control-plane images are not helm's to rewrite.
+    # The version the bundle carries, and no proxy variables in this shell
+    # (kubeadm copies them into the control-plane manifests).
+    kubeadm init --kubernetes-version "\$(kubeadm version -o short)" \\
+                 --image-repository $REGISTRY          # or imageRepository: in
                                                        # the kubeadm config file
     k3s server --system-default-registry $REGISTRY
 
@@ -424,7 +492,9 @@ B. registryMode: mirror -- addresses stay upstream, the NODES redirect. Leave
    containerd on every node, including the ones kubeadm runs on:
 
     # environments/<your-cluster>.yaml
-    chartsDir: $BUNDLE/charts
+    chartsDir: $BUNDLE_ABS/charts
+    catalogSnapshot: $BUNDLE_ABS/catalog-snapshot.tar.gz   # absolute
+    enabled: { catalogMirror: true }   # swissd deploys from the snapshot
     registryMode: mirror
 
     # every node, before kubeadm init

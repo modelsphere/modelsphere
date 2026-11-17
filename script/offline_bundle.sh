@@ -57,14 +57,6 @@ name each image is pushed under (the one a mirror asks for) would then be
 <registry>/<project>/<name>, which is wrong for any cluster that keeps the
 public `registry` value -- which is the case registryMode: mirror exists for.
 
-⚠️ Three of our charts are not published publicly yet (alert-webhook,
-condition2taint, llm-canary-operator), so the chart half of a `default` render
-needs the internal repo until they are:
-
-  script/offline_bundle.sh -o /tmp/bundle \
-      --set chartRepo=https://charts.example.com/team
-
-That changes where CHARTS come from and nothing about the image addresses.
   --set k=v       passed to helmfile as --state-values-set; repeatable
   --charts-only   skip the image copy, write the image list only
 
@@ -74,18 +66,15 @@ the environment file, while bodylog and bodylog-exporter hard-fail at
 template time without llmGateway.node and llmGateway.hostPath. Rendering is how
 the image list is derived, so a render that stops there produces no bundle:
 
-  script/offline_bundle.sh -o /tmp/bundle -e wlcb \
+  script/offline_bundle.sh -o /tmp/bundle -e <cluster> \
       --set llmGateway.node=<a node in that cluster> \
-      --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks \
-      --set alertWebhook.urls.WEBHOOK_URL=<that cluster's alert target>
-
-alert-webhook is the same shape and was missing from this list: wlcb enables it
-and no environment file carries its urls, so a render without that --set stops
-before any image is collected. Switching it off instead (--set
-enabled.alertWebhook=false) builds a bundle that quietly lacks its two images.
+      --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks
 
 Produces:
-  <dir>/charts/*.tgz     every chart, at the version the environment pins
+  <dir>/charts/*.tgz     every chart of a release this environment installs,
+                         at the version it pins, plus the engine charts
+  <dir>/catalog-snapshot.tar.gz  the model catalog and the engine charts, for the
+                         in-cluster catalog-mirror swissd deploys from
   <dir>/images.txt       one image address per line, derived from the render
   <dir>/images/<name>/   an OCI layout per image, copied with crane so the
                          manifest -- and the digest charts pin -- is unchanged
@@ -93,15 +82,27 @@ Produces:
                          that leaves image addresses alone
 
 Environment:
-  BUNDLE_PLATFORMS       platforms to fetch for, default linux/amd64. An image
+  BUNDLE_PLATFORMS       platforms to fetch for, default linux/$ARCH (ARCH
+                         defaults to amd64; ARCH=arm64 for Kunpeng/Ascend). An image
                          the charts pin by digest ignores this and keeps its
                          full index -- stripping it would change the digest.
   BUNDLE_FETCH_MIRRORS   space-separated upstream=replacement pairs, used ONLY
                          to fetch; images are stored under their real names.
                          For a build host that reaches a registry through a
                          pull-through cache, since crane does not read
-                         /etc/docker/daemon.json. e.g.
+                         /etc/docker/daemon.json. An entry may name a path
+                         prefix, and the longer one wins if listed first, e.g.
                              BUNDLE_FETCH_MIRRORS="docker.io=docker.1ms.run"
+                         or, for our own images from the mainland China copy
+                         of Docker Hub's 4pdosc (same digests, anonymous):
+                             BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc"
+                         An image the mirror does not have is fetched from
+                         its real address instead.
+  CATALOG_MODELS         comma-separated catalog models whose engine images go
+                         into the bundle: `model` for every variant, or
+                         `model:variant` for one, e.g.
+                         CATALOG_MODELS=glm-5.3-flash,qwen3-8b:vllm-tp1-a100.
+                         Unset: none -- one engine image is ~20 GB.
   BUNDLE_FETCH_INSECURE  true to allow plain HTTP when fetching through a
                          mirror above. Never applied to an upstream address.
   DOCKER_CONFIG          where crane looks for registry credentials.
@@ -122,6 +123,8 @@ done
 [ -n "$OUT" ] || { usage >&2; exit 2; }
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=script/fetch_via.sh
+. "$REPO_ROOT/script/fetch_via.sh"
 cd "$REPO_ROOT"
 
 # One build per output directory -- two concurrent runs corrupt each other
@@ -172,11 +175,97 @@ RENDER_PLACEHOLDERS=(
   --state-values-set llmGateway.hostPath=/bundle
 )
 
+# This environment's `registry` -- the prefix our own images are named with. It
+# is needed twice: in the MANIFEST, and below, to write the second spelling of
+# the images a model's chart pins. Computed here, before either, because a
+# version of this that computed it only at the end left that second spelling
+# empty and the bundle silently short.
+#
+# Read from `helmfile build`, i.e. the values as this environment resolves them:
+# every environment file it layers plus any --set in ARGS. The same output gives
+# the chart pins and chartRepo for the catalog snapshot below; reading the
+# environment files by hand missed intermediate layers and --set.
+helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
+  --state-values-set catalogSnapshot= \
+  ${EXTRA[@]+"${EXTRA[@]}"} build > "$OUT/.build.yaml" 2> "$OUT/.build.err" || {
+  # Fatal: the registry, the chart pins, chartRepo and whether catalog-mirror is
+  # bundled all come from this, and an empty answer is a quietly wrong bundle.
+  echo "helmfile build failed for environment $ENVIRONMENT:" >&2
+  cat "$OUT/.build.err" >&2
+  exit 1
+}
+rm -f "$OUT/.build.err"
+_rendered() {   # _rendered <dotted.key>: one value of renderedvalues, empty if absent
+  python3 - "$OUT/.build.yaml" "$1" <<'PY' 2>/dev/null || true
+import sys, yaml
+v = next((d["renderedvalues"] for d in yaml.safe_load_all(open(sys.argv[1]))
+          if isinstance(d, dict) and "renderedvalues" in d), {})
+for k in sys.argv[2].split("."):
+    v = v.get(k) if isinstance(v, dict) else None
+print("" if v is None else v)
+PY
+}
+SOURCE_REGISTRY=$(_rendered registry)
+[ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
+[ -n "$SOURCE_REGISTRY" ] || echo "       and offline_load.sh will need --source-registry" >&2
+
+# catalog-mirror is what swissd deploys from offline, so it is carried
+# whenever the console is: an environment that installs the console without it
+# can still turn it on at the site. Without the console nothing reads it, and
+# forcing it in would make every bundle fetch a chart such an environment's
+# chartRepo may not carry.
+_with_cm=false
+case "$(_rendered enabled.console)$(_rendered enabled.catalogMirror)" in *True*|*true*) _with_cm=true ;; esac
+
+# OCI charts through BUNDLE_FETCH_MIRRORS, before anything renders. Three charts
+# come straight from OCI registries (kube-prometheus-stack and
+# node-problem-detector on ghcr.io, lws on registry.k8s.io), and the render
+# needs them: a host that cannot reach one cannot render at all. Measured on a
+# Kunpeng/Ascend build host: registry.k8s.io answers but hands the download to
+# *.pkg.dev, which does not, so the render stopped on lws. The mirror the images
+# go through (registry.k8s.io=k8s.m.daocloud.io) serves the same chart, same
+# digest; pulled into charts/ and rendered from there via chartsDir.
+CHARTS_FROM_MIRROR=false
+if [ -n "${BUNDLE_FETCH_MIRRORS:-}" ]; then
+  _oci=$(helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
+           --state-values-set registryMode=upstream --state-values-set enabled.catalogMirror="$_with_cm" \
+           --state-values-set catalogSnapshot= "${RENDER_PLACEHOLDERS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} \
+           list --output json 2>/dev/null \
+         | python3 -c 'import json,sys
+for r in json.load(sys.stdin):
+    if str(r.get("installed")).lower()=="true" and str(r.get("chart","")).startswith("oci://"):
+        print(r["chart"][len("oci://"):], r.get("version",""))' || true)
+  while read -r _ref _ver; do
+    [ -n "$_ref" ] || continue
+    _via=$(fetch_via "$_ref")
+    [ "$_via" != "$_ref" ] || continue
+    _f="$OUT/charts/${_ref##*/}-$_ver.tgz"
+    if [ -s "$_f" ]; then CHARTS_FROM_MIRROR=true; continue; fi
+    if helm pull "oci://$_via" --version "$_ver" --destination "$OUT/charts" >/dev/null 2>&1; then
+      echo "    chart ${_ref##*/} $_ver via ${_via%%/*}"; CHARTS_FROM_MIRROR=true
+    else
+      echo "    chart ${_ref##*/} $_ver: not at oci://$_via -- the render will try $_ref" >&2
+    fi
+  done <<< "$_oci"
+fi
+# Render from charts/ when something was put there: a chart found by name and
+# version is used from the file (helmfile.yaml.gotmpl, chartref). The
+# environment's own chartsDir otherwise, as before.
+CHARTSDIR_ARGS=()
+[ "$CHARTS_FROM_MIRROR" = true ] && CHARTSDIR_ARGS=(--state-values-set "chartsDir=$OUT/charts")
+
+# enabled.catalogMirror on (with the console, see _with_cm) on both the render
+# and the release list below: it is how swissd deploys a model on a cluster
+# with no route to GitHub -- off in default.yaml, where an online cluster reads
+# GitHub directly, and switched on by the offline environments.
 render_with() {
   helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
     --state-values-set registryMode=upstream \
     --state-values-set cilium.serviceMonitors=false \
+    --state-values-set enabled.catalogMirror="$_with_cm" \
+    --state-values-set catalogSnapshot= \
     "${RENDER_PLACEHOLDERS[@]}" \
+    ${CHARTSDIR_ARGS[@]+"${CHARTSDIR_ARGS[@]}"} \
     ${EXTRA[@]+"${EXTRA[@]}"} \
     ${1:+"$1"} template --skip-tests
 }
@@ -230,10 +319,8 @@ fi
 
 # ──────────────────────────────────────────────────── what did NOT get rendered
 # A release switched off for this run contributes no objects, so its images are
-# absent from the list -- and nothing said so. alert-webhook is the live
-# example: it hard-fails at template time unless webhook.urls is supplied, so
-# it gets disabled to make the bundle build, and the bundle then quietly lacks
-# its two images. Name them instead of letting the count come up short.
+# absent from the list -- and nothing said so. Name them instead of letting the
+# count come up short.
 echo "==> collecting images from the render"
 # Images do NOT all live on an `image:` key. Measured against a full wlcb
 # render, four shapes carry them, and three of those are not pod specs at all
@@ -277,8 +364,8 @@ def _has_version(tok):
 # single-segment name lives under library/: `busybox:1.37` is
 # `docker.io/library/busybox:1.37`. The ADDR pattern demands a dotted host, so
 # these matched nothing and were dropped without being counted or reported --
-# alert-webhook's init container is exactly that, and it went missing from the
-# list in silence. Expanded here so the bundle holds what a cluster will pull.
+# an init container named that way went missing from the list in silence.
+# Expanded here so the bundle holds what a cluster will pull.
 SHORT = re.compile(r'^[a-z0-9]+(?:[._-][a-z0-9]+)*'
                    r'(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*'
                    r'(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?$')
@@ -495,6 +582,7 @@ PY
 COUNT=$(grep -c . "$OUT/images.txt" || true)
 [ "$COUNT" -gt 0 ] || exit 1
 
+
 echo "==> pulling charts"
 # Same versions the environment pins: ask helmfile rather than re-deriving them.
 #
@@ -511,6 +599,8 @@ if ! helmfile -f helmfile.yaml.gotmpl -e "$ENVIRONMENT" \
        --state-values-set registryMode=upstream \
        --state-values-set enabled.cilium=true \
        --state-values-set cilium.serviceMonitors=false \
+       --state-values-set enabled.catalogMirror="$_with_cm" \
+       --state-values-set catalogSnapshot= \
        ${EXTRA[@]+"${EXTRA[@]}"} \
        list --output json > "$OUT/.releases.json" 2>"$OUT/.releases.err"; then
   echo "could not list releases -- charts cannot be pulled:" >&2
@@ -533,8 +623,7 @@ except Exception as e:
     sys.exit(1)
 # Which releases are switched off, while the list is already open. A disabled
 # release contributes no objects, so its images are absent from the bundle and
-# nothing said so -- alert-webhook is the live example, disabled to make the
-# build run at all.
+# nothing said so.
 off = [r for r in releases if str(r.get("installed")).lower() != "true"
        and r.get("name") != "cilium"]          # cilium is rendered separately
 if off:
@@ -544,10 +633,16 @@ if off:
     for r in off:
         print("      %-24s chart %s" % (r.get("name"), r.get("chart")))
 
-seen, failed, have = set(), [], 0
+seen, failed, have, copied = set(), [], 0, 0
 for r in releases:
     chart, version = r.get("chart"), r.get("version")
     if not chart or (chart, version) in seen:
+        continue
+    # Only the releases this environment installs. A switched-off release has
+    # no images in the bundle (listed above), so its chart alone would install
+    # nothing that runs -- and pulling it anyway made the whole build depend on
+    # charts the cluster never uses being reachable from this host.
+    if r in off:
         continue
     seen.add((chart, version))
     # A chart already in the directory is left alone. That makes a re-run cheap,
@@ -555,16 +650,40 @@ for r in releases:
     # reached from this host: fetch that one .tgz elsewhere, drop it in, run
     # again. Without this the re-run pulls it afresh, fails again, and the
     # advice to "drop it in" is simply untrue.
-    if version and os.path.exists(os.path.join(dest, "%s-%s.tgz" % (chart.split("/")[-1], version))):
+    #
+    # Checked BEFORE the local-path case below: with the default bundle
+    # directory (offline/, whose charts/ is also the default chartsDir) a
+    # re-run sees each chart as the path of the very file it would write, and
+    # copying a file onto itself fails.
+    local = os.path.exists(chart)
+    name = os.path.basename(chart) if local and not os.path.isdir(chart) \
+        else "%s-%s.tgz" % (chart.rstrip("/").split("/")[-1], version)
+    if version and os.path.exists(os.path.join(dest, name)):
         have += 1
+        continue
+    # A chart that is a file or directory in this repo, not a repository
+    # reference: copied (or packaged), not pulled. `helm pull ./x.tgz` reads
+    # the path as repo "." and fails ("repo . not found").
+    if local:
+        import shutil
+        try:
+            if os.path.isdir(chart):
+                subprocess.check_call(["helm", "package", chart, "--destination", dest],
+                                      stdout=subprocess.DEVNULL)
+            else:
+                shutil.copy2(chart, dest)
+            copied += 1
+        except Exception as e:  # noqa: BLE001 -- reported with the pulls
+            print("    could not copy %s: %s" % (chart, e))
+            failed.append("%s@%s" % (chart, version))
         continue
     cmd = ["helm", "pull", chart, "--destination", dest]
     if version:
         cmd += ["--version", version]
     if subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         failed.append("%s@%s" % (chart, version))
-print("    %d charts pulled, %d already present, %d failed" % (
-      len(seen) - len(failed) - have, have, len(failed)))
+print("    %d charts pulled, %d copied from the repo, %d already present, %d failed" % (
+      len(seen) - len(failed) - have - copied, copied, have, len(failed)))
 for f in failed:
     print("      FAILED %s" % f)
 if failed:
@@ -578,49 +697,53 @@ then
   exit 1
 fi
 
-# This environment's `registry` -- the prefix our own images are named with. It
-# is needed twice: in the MANIFEST, and above, to write the second spelling of
-# the images a model's chart pins. Computed here, before either, because a
-# version of this that computed it only at the end left that second spelling
-# empty and the bundle silently short.
-SOURCE_REGISTRY=$(helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
-                    ${EXTRA[@]+"${EXTRA[@]}"} build 2>/dev/null \
-                  | awk '/^ +registry: /{print $2; exit}' || true)
-[ -n "$SOURCE_REGISTRY" ] || echo "    ⚠️  could not read the environment's registry -- MANIFEST will say unknown," >&2
-[ -n "$SOURCE_REGISTRY" ] || echo "       and offline_load.sh will need --source-registry" >&2
 
-# The engine charts. A model release only exists when someone passes a file of
-# `models:` entries on the command line (MODELS=), and a bundle is built before
-# anyone knows which models the site will run -- so pull them at the versions
-# `versions:` pins, like every other chart here.
+# The engine charts and the model catalog, for both ways a model gets deployed.
 #
-# Measured: without them, README step 8 installed the model from a
-# copy an earlier run had left in ~/.cache/helm, and would have failed on a node
-# without that leftover -- the "works here, breaks in the room with no network"
-# failure a bundle exists to prevent.
-python3 - "$OUT/charts" <<'PY' | while read -r _n _v; do
-import sys, yaml
-try:
-    d = yaml.safe_load(open("environments/default.yaml")) or {}
-except Exception as e:
-    sys.exit(0)
-# The engines are pinned in `versions:` with every other chart -- there is no
-# separate list of them to drift from it.
-v = d.get("versions") or {}
-for name in ("sglang", "vllm"):
-    if v.get(name):
-        print("%s %s" % (name, v[name]))
-PY
-  [ -z "$_n" ] && continue
-  if [ -f "$OUT/charts/$_n-$_v.tgz" ]; then
-    echo "    engine chart: have $_n-$_v.tgz"
-  elif helm pull "modelsphere/$_n" --version "$_v" --destination "$OUT/charts" >/dev/null 2>&1; then
-    echo "    engine chart: pulled $_n-$_v.tgz"
-  else
-    echo "    engine chart: FAILED to pull $_n $_v -- a cluster that declares" >&2
-    echo "    this engine will have no chart for it and cannot fetch one" >&2
-  fi
+# A `models:` entry (MODELS= on the command line) installs the sglang/vllm chart
+# at the version `versions:` pins. swissd, behind the console, installs the
+# NEWEST release that meets the catalog entry's constraint, from the chart
+# repository and catalog its site profile names -- GitHub Pages, which an
+# offline cluster cannot reach. So the bundle carries both: the pinned
+# versions and the newest ones go into charts/, and catalog-snapshot.tar.gz holds the
+# catalog plus those same charts for catalog-mirror to serve in the cluster.
+# catalog_snapshot.py refuses a snapshot that leaves a catalog entry with no chart.
+#
+# Measured, for the pinned half: without it README step 8 installed the model
+# from a copy an earlier run had left in ~/.cache/helm, and would have failed on
+# a node without that leftover -- the "works here, breaks in the room with no
+# network" failure a bundle exists to prevent.
+# The pins as this environment renders them (see SOURCE_REGISTRY above).
+_pins=""
+for _c in sglang vllm; do
+  _v=$(_rendered "versions.$_c")
+  [ -n "$_v" ] && _pins="$_pins --pin $_c=$_v"
 done
+# Engine charts come from the environment's chartRepo, as a `models:` release
+# would pull them, when it is an HTTP chart repository; an OCI one has no
+# index.yaml to read, so the public repository is used and that is said.
+_chart_repo=$(_rendered chartRepo)
+case "$_chart_repo" in
+  http://*|https://*) export CHARTS_URL="$_chart_repo" ;;
+  "") ;;
+  *) echo "    ⚠️  chartRepo $_chart_repo is not an HTTP chart repository; engine charts come from ${CHARTS_URL:-https://modelsphere.github.io/helm-charts}" >&2 ;;
+esac
+# shellcheck disable=SC2086  # _pins is a list of flags
+# Fatal only where something reads it: catalog-mirror is installed with the
+# console. Without the console a failure here (GitHub Pages unreachable, say)
+# costs the engine charts of `models:` entries, which was a warning before.
+_cm=$(python3 -c 'import json,sys; print(any(r.get("name")=="catalog-mirror" and str(r.get("installed")).lower()=="true" for r in json.load(open(sys.argv[1]))))' "$OUT/.releases.json" 2>/dev/null || echo True)
+: > "$OUT/.catalog-images"
+if ! python3 "$REPO_ROOT/script/catalog_snapshot.py" "$OUT/catalog-snapshot.tar.gz" $_pins \
+       --charts-dir "$OUT/charts" --models "${CATALOG_MODELS:-}" --images-out "$OUT/.catalog-images"; then
+  if [ "$_cm" = True ]; then
+    echo "could not build the catalog snapshot: swissd on the far side would have no" >&2
+    echo "catalog and no engine chart to deploy from. Refusing to continue." >&2
+    exit 1
+  fi
+  echo "    ⚠️  no catalog snapshot (the console is off here, so nothing reads one);" >&2
+  echo "       the engine charts a models: entry installs are missing from charts/" >&2
+fi
 
 img_failed=0
 # Inference engine images. They are not helmfile releases -- each workload
@@ -647,6 +770,29 @@ else
   echo "    no $ENGINE_LIST -- no engine images in this bundle"
   echo "      (the platform stack only; copy engine-images.txt.example to add them)"
 fi
+
+# The engine images CATALOG_MODELS asked for, as the catalog spells them -- the
+# address swissd composes from. Their basenames are pushed once more by
+# offline_load.sh, because that is where swiss's image mirror looks.
+CAT_COUNT=0
+# One image, two spellings: docker.io/lmsysorg/sglang:t and lmsysorg/sglang:t
+# are the same ~20 GB, so compare them with docker.io/ and library/ taken off.
+_norm() { sed -E 's#^docker\.io/##; s#^library/##'; }
+while read -r eimg; do
+  [ -n "$eimg" ] || continue
+  if ! _norm < "$OUT/images.txt" | grep -qxF "$(echo "$eimg" | _norm)"; then
+    echo "$eimg" >> "$OUT/images.txt"
+    COUNT=$((COUNT+1)); CAT_COUNT=$((CAT_COUNT+1))
+  fi
+done < "$OUT/.catalog-images"
+[ "$CAT_COUNT" -gt 0 ] && echo "    + $CAT_COUNT engine image(s) from the catalog (CATALOG_MODELS=${CATALOG_MODELS:-})"
+# Every engine image in the bundle, by whichever list named it: offline_load.sh
+# reads this to push them a second time under the name swiss's mirror asks for.
+# Not engine-images.txt: a bundle built into offline/ would overwrite the
+# hand-written list there.
+{ [ -f "$ENGINE_LIST" ] && grep -vE '^[[:space:]]*(#|$)' "$ENGINE_LIST"; cat "$OUT/.catalog-images"; } \
+  | sed 's/[[:space:]]*$//' | sort -u > "$OUT/swiss-engine-images.txt" || true
+rm -f "$OUT/.catalog-images"
 
 # The address in engine-images.txt has to be the one a `models:` entry gives the
 # chart -- the same string, not the same image. A bundle carrying an engine
@@ -685,12 +831,6 @@ for addr, files in sorted(missing.items()):
 PY
 fi
 
-# The `helm test` probe for alert-webhook. The render is made with --skip-tests,
-# on purpose -- test hooks are not part of what a cluster runs -- so this
-# address is in the list today only because grafana's initChownData happens to
-# want the same tag. Naming it here makes that deliberate.
-# helmfile.yaml.gotmpl points the hook at this exact image when offline; the two
-# are the same decision written twice, so change them together.
 # The images a model's chart pins INSIDE ITSELF: the hang-watcher, CART, and
 # CART's two sidecars. No render here names them -- a model release comes from a
 # MODELS file on the command line, and a bundle is built before anyone knows
@@ -704,6 +844,7 @@ fi
 #     asked for 0.1.22 against a registry that only had 0.1.25.
 #   - cart.image.tag is empty on purpose and means "the CART subchart's
 #     appVersion", which is inside the archive too.
+rm -f "$OUT/.pinned-only" "$OUT/.build.yaml"
 for _ec in "$OUT"/charts/sglang-*.tgz "$OUT"/charts/vllm-*.tgz; do
   [ -f "$_ec" ] || continue
   # The list goes through a file, not a pipe: the right side of a pipe is a
@@ -775,6 +916,7 @@ PY
     _a="$SOURCE_REGISTRY/$_img"
     if [ -n "$SOURCE_REGISTRY" ] && ! grep -qxF "$_a" "$OUT/images.txt"; then
       echo "$_a" >> "$OUT/images.txt"
+      echo "$_a" >> "$OUT/.pinned-only"
       COUNT=$((COUNT+1))
       echo "    + $_a ($(basename "$_ec") pins this; no render names it)"
     fi
@@ -782,11 +924,6 @@ PY
   rm -f "$OUT/.sidecars"
 done
 
-if ! grep -q '^docker.io/library/busybox:1.38.0$' "$OUT/images.txt"; then
-  echo 'docker.io/library/busybox:1.38.0' >> "$OUT/images.txt"
-  COUNT=$((COUNT+1))
-  echo "    + docker.io/library/busybox:1.38.0 (alert-webhook's helm test probe)"
-fi
 
 # ───────────────────────────────────────── where each image lands in the mirror
 # Both modes put an image at the same place in the registry -- host stripped,
@@ -859,6 +996,74 @@ if [ "$SKIP_IMAGES" = false ]; then
     exit 1
   fi
 
+  # What a saved layout actually runs on. `crane pull --platform` filters an
+  # image INDEX; for an image published as a single manifest the flag is
+  # ignored and whatever was published is saved. Measured on an arm64 build:
+  # 4pdosc/hang-watcher:0.1.22 exists for amd64 only and went into the bundle
+  # without a word -- its pod would have died with "exec format error" on the
+  # far side. So every saved layout is checked against its config.
+  _want=${BUNDLE_PLATFORMS:-linux/${ARCH:-amd64}}
+  # Images whose config names the wrong architecture although the binary is
+  # right, verified by exporting the image and running `file` on the binary.
+  # They are kept: containerd does not compare a single manifest's config with
+  # the node. Upstream registry.k8s.io/descheduler/descheduler:v0.36.0 labels
+  # its arm64 image linux/amd64, and its bin/descheduler is ARM aarch64.
+  BUNDLE_ARCH_MISLABELED=${BUNDLE_ARCH_MISLABELED-registry.k8s.io/descheduler/descheduler:v0.36.0}
+  _layout_archs() {
+    python3 - "$1" <<'ARCHPY'
+import json, os, sys
+p = sys.argv[1]
+def blob(d):
+    f = os.path.join(p, "blobs", *d.split(":"))
+    return json.load(open(f)) if os.path.exists(f) else None
+out = set()
+for m in json.load(open(os.path.join(p, "index.json"))).get("manifests", []):
+    d = blob(m["digest"])
+    if d is None:
+        continue
+    if "manifests" in d:
+        for e in d["manifests"]:
+            pl = e.get("platform") or {}
+            if pl.get("architecture") not in (None, "unknown") and blob(e["digest"]) is not None:
+                out.add(pl.get("os", "") + "/" + pl["architecture"])
+    else:
+        c = blob(d["config"]["digest"]) or {}
+        out.add(c.get("os", "?") + "/" + c.get("architecture", "?"))
+print(" ".join(sorted(out)))
+ARCHPY
+  }
+  # 0 when the layout at $2 carries every platform this bundle is for (or is
+  # one of the exceptions below); sets _has to what it does carry.
+  arch_skipped=0; : > "$OUT/.arch-skipped"
+  _arch_matches() {
+    case "$1" in *@sha256:*) return 0 ;; esac      # full index kept on purpose
+    _has=$(_layout_archs "$2" 2>/dev/null || echo "?")
+    _miss=""
+    for _w in $(echo "$_want" | tr ',' ' '); do
+      case " $_has " in *" $_w "*) ;; *) _miss="$_miss $_w" ;; esac
+    done
+    [ -z "$_miss" ] && return 0
+    case " $BUNDLE_ARCH_MISLABELED " in
+      *" $1 "*) echo "      config says $_has; kept, listed in BUNDLE_ARCH_MISLABELED"; return 0 ;;
+    esac
+    return 1
+  }
+  # A freshly fetched layout of the wrong architecture: removed, then skipped
+  # if only an engine chart pins the image (no render names it, so nothing on
+  # this platform asks for it), and counted as failed otherwise.
+  _reject_arch() {
+    rm -rf "$2"
+    if [ -f "$OUT/.pinned-only" ] && grep -qxF "$1" "$OUT/.pinned-only"; then
+      echo "      SKIPPED: only $_has is published; an engine chart pins it, no render names it" >&2
+      echo "$1" >> "$OUT/.arch-skipped"; arch_skipped=$((arch_skipped+1))
+    else
+      echo "      WRONG ARCHITECTURE: $1 has $_has, this bundle is for $_want" >&2
+      img_failed=$((img_failed+1))
+    fi
+    # 0: the outcome is in the counters, and `a || _reject_arch` runs under set -e.
+    return 0
+  }
+
   echo "==> copying images into OCI layouts"
   n=0
   while read -r img; do
@@ -870,8 +1075,14 @@ if [ "$SKIP_IMAGES" = false ]; then
     # and 12 GB, measured, and a first run here was cut off at 51. Without this
     # a resume re-fetches everything.
     if [ -f "$dir/oci-layout" ] && [ -s "$dir/index.json" ]; then
-      printf '    [%d/%d] have %s\n' "$n" "$COUNT" "$img"
-      continue
+      # A layout an earlier run saved for another platform is not "have":
+      # it is fetched again below, and judged on what that fetch brings.
+      if _arch_matches "$img" "$dir"; then
+        printf '    [%d/%d] have %s\n' "$n" "$COUNT" "$img"
+        continue
+      fi
+      printf '    [%d/%d] have %s, but for %s: fetching again\n' "$n" "$COUNT" "$img" "$_has"
+      rm -rf "$dir"
     fi
     printf '    [%d/%d] %s\n' "$n" "$COUNT" "$img"
     # A digest-pinned image keeps its full index; everything else is fetched
@@ -881,7 +1092,11 @@ if [ "$SKIP_IMAGES" = false ]; then
     # check above would otherwise accept as finished.
     case "$img" in
       *@sha256:*) _plat="" ;;
-      *)          _plat="--platform ${BUNDLE_PLATFORMS:-linux/amd64}" ;;
+      # crane's --platform takes ONE platform ("no child with platform
+      # linux/amd64,linux/arm64", crane 0.22.1). Several: keep the full index,
+      # and _arch_matches below checks every listed platform is in it.
+      *,*)        _plat="" ;;
+      *)          _plat="--platform ${BUNDLE_PLATFORMS:-linux/${ARCH:-amd64}}" ;;
     esac
     # Fetch through a mirror where the build host needs one. crane does NOT
     # read /etc/docker/daemon.json, so a host that reaches docker.io only
@@ -896,26 +1111,8 @@ if [ "$SKIP_IMAGES" = false ]; then
     # with the same digest a host with direct access reads, and a tag nobody
     # published failed through both. A mirror that rebuilt manifests would
     # change the digest, so check that before adding one here.
-    _fetch="$img"
-    # Match against the FULLY QUALIFIED name. A docker.io short name has no
-    # host at all (`4pdosc/hang-watcher:0.1.22`, as the sglang chart writes its
-    # sidecars), and matching that literally meant a path-prefix entry like
-    # docker.io/4pdosc=<private>... could never win -- the bare name fell through
-    # to the plain docker.io entry and was fetched from a mirror that has no
-    # 4pdosc. The symptom is not an error: the pull fails, the fallback goes to
-    # docker.io through the proxy, and the build sits there.
-    case "${img%%/*}" in
-      *.*|*:*|localhost) _full="$img" ;;
-      *)                 _full="docker.io/$img" ;;
-    esac
-    for _m in ${BUNDLE_FETCH_MIRRORS:-}; do
-      case "$_m" in *=*) ;; *) echo "      ignoring BUNDLE_FETCH_MIRRORS entry $_m (want upstream=replacement)" >&2; continue ;; esac
-      _up=${_m%%=*}; _via=${_m#*=}
-      case "$_full" in
-        "$_up"/*) _fetch="$_via/${_full#"$_up"/}" ;;
-      esac
-      [ "$_fetch" != "$img" ] && break
-    done
+    # Matched fully qualified, longest rule first: script/fetch_via.sh.
+    _fetch=$(fetch_via "$img")
     # A pull-through cache on the internal network is plain HTTP, and crane
     # refuses that by default ("server gave HTTP response to HTTPS client").
     # Only applied to a mirrored fetch: an upstream must stay on TLS.
@@ -942,6 +1139,7 @@ if [ "$SKIP_IMAGES" = false ]; then
     fi
     if [ "$_ok" = true ] && [ -f "$dir.part/oci-layout" ] && [ -s "$dir.part/index.json" ]; then
       rm -rf "$dir"; mv "$dir.part" "$dir"
+      _arch_matches "$img" "$dir" || _reject_arch "$img" "$dir"
     else
       rm -rf "$dir.part"
       if [ "$_fetch" != "$img" ]; then
@@ -958,7 +1156,19 @@ if [ "$SKIP_IMAGES" = false ]; then
   # That is precisely the ImagePullBackOff-in-an-air-gapped-room this script
   # exists to prevent.
   [ "$img_failed" -eq 0 ] || echo "    $img_failed image(s) could not be saved" >&2
+  # Skipped images leave images.txt, or offline_load.sh would report them
+  # MISSING on the far side; the list stays beside it so the gap is visible.
+  if [ "$arch_skipped" -gt 0 ]; then
+    grep -vxF -f "$OUT/.arch-skipped" "$OUT/images.txt" > "$OUT/.images.tmp" || true
+    mv "$OUT/.images.tmp" "$OUT/images.txt"
+    mv "$OUT/.arch-skipped" "$OUT/images-skipped.txt"
+    COUNT=$((COUNT-arch_skipped))
+    echo "    $arch_skipped image(s) skipped, not published for $_want: see images-skipped.txt"
+  else
+    rm -f "$OUT/.arch-skipped" "$OUT/images-skipped.txt"
+  fi
 fi
+rm -f "$OUT/.pinned-only" "$OUT/.build.yaml"
 
 # source_registry is not decoration: offline_load.sh renames our own images by
 # replacing this exact prefix, because the charts render them as
@@ -979,7 +1189,10 @@ fi
 # The tools are fetched by their own command, into the repo's offline/tools
 # unless told otherwise, so a bundle built with -o <dir> has an empty tools/
 # and nothing says so until the target host has no containerd to install.
-TOOL_COUNT=$(find "$OUT/tools" -type f ! -name '.gitkeep' 2>/dev/null | wc -l | tr -d ' ')
+# `|| true` inside: with no tools/ at all, find fails, pipefail carries that
+# out of the substitution and set -e ended the run right here -- silently,
+# with every chart and image on disk and no MANIFEST written.
+TOOL_COUNT=$( { find "$OUT/tools" -type f ! -name '.gitkeep' 2>/dev/null || true; } | wc -l | tr -d ' ')
 
 # Which commit this bundle came from. A build host that received the repo as
 # files rather than as a clone has no .git, and the line then read "unknown" --
@@ -999,7 +1212,8 @@ image_format: oci            # crane OCI layouts, one directory per image.
                              # cannot read those and says so by name.
 charts:      $(ls "$OUT/charts" | wc -l | tr -d ' ')
 images:      $COUNT ($( [ "$SKIP_IMAGES" = true ] && echo "list only" || echo "saved"))
-engines:     $ENGINE_COUNT (named in engine-images.txt, not derived)
+engines:     $ENGINE_COUNT (named in engine-images.txt, not derived) + ${CAT_COUNT:-0} from the catalog
+catalog_snapshot: $( [ -f "$OUT/catalog-snapshot.tar.gz" ] && echo "catalog-snapshot.tar.gz ($(wc -c < "$OUT/catalog-snapshot.tar.gz" | tr -d ' ') bytes; CATALOG_MODELS=${CATALOG_MODELS:-none})" || echo none)
 tools:       $TOOL_COUNT (binaries and units for the isolated side)
 EOF
 rm -f "$RENDER" "$OUT/.render.err" "$OUT/.releases.json" \

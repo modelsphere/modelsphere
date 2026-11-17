@@ -123,6 +123,7 @@ curl http://127.0.0.1:8080/qwen/v1/chat/completions \
 | 文档 | 内容 |
 |---|---|
 | [`docs/install.md`](docs/install.md) | 完整的安装流程：准备机器、创建 Kubernetes 集群并在其上安装服务栈 —— 离线（air-gapped）安装方式及各步骤的详细说明均可从这里找到 |
+| [`docs/offline-ascend-walkthrough.md`](docs/offline-ascend-walkthrough.md) | 一次完整的离线安装，逐步操作：4 台昇腾 910B4 服务器，从裸机到在控制台部署 GLM-5.3-Flash |
 | [`docs/configuration.md`](docs/configuration.md) | 运行起来之后需要修改什么、在哪里修改：集群环境文件与模型 values 文件的区别，以及模型、路由与限流、CART、自动伸缩和滚动更新等指南的入口 |
 | [`docs/console.md`](docs/console.md) | 首次打开门户：访问地址、首次登录，以及 Model Serving 页面所需的前提条件 |
 

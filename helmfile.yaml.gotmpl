@@ -104,6 +104,10 @@ environments:
        Deliberately FALSE under mirror: there the addresses stay upstream and
        the redirect happens on the node, in /etc/containerd/certs.d. */}}
 {{- $rewrite := eq $mode "rewrite" }}
+{{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
+       the console it serves. */}}
+{{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
+{{- $catalogMirrorURL := printf "http://catalog-mirror.%s.svc" .Values.namespaces.console }}
 
 {{- /*
      Charts from local .tgz files when they are there, from a repository when
@@ -678,13 +682,25 @@ releases:
     chart: {{ template "chartref" (dict "local" $local "name" "bodylog-victorialogs" "ver" .Values.versions.bodylogVictorialogs "fallback" "modelsphere/bodylog-victorialogs") }}
     version: {{ .Values.versions.bodylogVictorialogs | quote }}
     installed: {{ .Values.enabled.bodylogVictorialogs }}
-{{- if .Values.enabled.bodylog }}
-    # Vector's podAffinity on the bodylog pod is `required`, so without bodylog
-    # the pod is Pending rather than failed -- ordering keeps that from being the
-    # first thing a new cluster sees. The values file refuses to render when
-    # bodylog is switched off entirely.
+{{- if or .Values.enabled.bodylog .Values.enabled.kubePrometheusStack }}
     needs:
+{{- end }}
+{{- if .Values.enabled.bodylog }}
+      # Vector's podAffinity on the bodylog pod is `required`, so without bodylog
+      # the pod is Pending rather than failed -- ordering keeps that from being
+      # the first thing a new cluster sees. The values file refuses to render
+      # when bodylog is switched off entirely.
       - {{ .Values.namespaces.llmRoute }}/bodylog
+{{- end }}
+{{- if .Values.enabled.kubePrometheusStack }}
+      # The Grafana datasource ConfigMap goes into the monitoring namespace,
+      # which kube-prometheus-stack creates. Unordered, a first apply can run
+      # this release first and fail on `namespaces "monitoring" not found` --
+      # and helmfile then skips every later batch, so releases go missing from
+      # the run without appearing in its failure list. Measured on a fresh
+      # cluster: autoconfig, bodylog-exporter, gpu-operator and
+      # node-problem-detector were never installed.
+      - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
 {{- end }}
     labels:
       tier: llmgate
@@ -820,6 +836,36 @@ releases:
   # Both charts come from chartRepo like the other charts of ours, so this
   # needs modelsphere/helm-charts to have published the pinned versions
   # (versions.console and versions.swiss below).
+{{- /* The site profile the swissd release's postsync hook writes once (see
+       there). Every mode sets the sidecars, not just rewrite: the chart's own
+       pins for CART's ha and reload are an old autoconfig build, linux/amd64
+       only, and belong at the autoconfig version the cluster runs anyway; under
+       mirror `registry` is the public prefix, so these are public addresses. */}}
+{{- $swissProfile := list
+      (printf "name: %s" (dig "swiss" "siteName" "this-cluster" .Values | quote))
+      (printf "namespace: %s" (dig "swiss" "modelNamespace" "llm-demo" .Values | quote))
+      "catalogs:"
+      "  - name: default"
+      (printf "    url: %s/model-catalog/index-v2.json" $catalogMirrorURL)
+      "    schemaVersion: v2"
+      "    default: true"
+      (printf "chartRepo: %s/helm-charts" $catalogMirrorURL)
+      "registry:"
+      (printf "  mirror: %s" (ternary (.Values.registry | quote) "\"\"" $rewrite))
+      "model:"
+      (printf "  pathTemplate: %s" (dig "swiss" "modelPathTemplate" "/mnt/disk0/models/{{name}}" .Values | quote))
+      "extra:"
+      "  hangWatcher:"
+      "    image:"
+      (printf "      repository: %s/hang-watcher" .Values.registry)
+      "  cart:"
+      "    image:"
+      (printf "      repository: %s/cache_aware_router" .Values.registry)
+      "    ha:"
+      (printf "      image: %s" (printf "%s/autoconfig-hagate:%s" .Values.registry .Values.versions.autoconfig | quote))
+      "    reload:"
+      (printf "      image: %s" (printf "%s/autoconfig-reload:%s" .Values.registry .Values.versions.autoconfig | quote))
+    | join "\n" }}
   - name: swissd
     namespace: {{ .Values.namespaces.console }}
     chart: {{ template "chartref" (dict "local" $local "name" "swiss" "ver" .Values.versions.swiss "fallback" "modelsphere/swiss") }}
@@ -829,6 +875,54 @@ releases:
       tier: portal
     values:
       - console/swiss-overrides.yaml.gotmpl
+{{- if $catalogMirror }}
+    hooks:
+      # The site profile, written once if there is none: catalogs and chartRepo
+      # on catalog-mirror, a model release's four sidecars under `registry` --
+      # the addresses models/images.yaml.gotmpl gives a `models:` entry -- and
+      # under `rewrite` the engine image mirror. swiss's image mirror
+      # keeps only the last path segment (lmsysorg/sglang -> <registry>/sglang),
+      # which is why offline_load.sh pushes engine images under that name too.
+      # No nodes.gpus: swissd adds the well-known entries itself, and swiss
+      # 0.7.2 rejects the field.
+      - events: ["postsync"]
+        showlogs: true
+        command: "sh"
+        args:
+          - console/swiss-profile.sh
+          - {{ .Values.namespaces.console | quote }}
+          - swissd-profile
+          # base64: helmfile renders hook args as a template a second time
+          # when it runs the hook, and the profile carries swiss's own
+          # placeholders ({{"{{"}}name{{"}}"}} in pathTemplate) that must reach swissd
+          # as written.
+          - {{ $swissProfile | b64enc | quote }}
+{{- end }}
+
+  # The model catalog and the engine charts, served in the cluster for swissd
+  # where GitHub cannot be reached (enabled.catalogMirror; the offline
+  # environments turn it on). Filled from the bundle's catalog-snapshot.tar.gz
+  # when catalogSnapshot names it, synced from GitHub Pages otherwise -- see
+  # console/catalog-mirror.yaml.gotmpl.
+  - name: catalog-mirror
+    namespace: {{ .Values.namespaces.console }}
+    chart: {{ template "chartref" (dict "local" $local "name" "catalog-mirror" "ver" .Values.versions.catalogMirror "fallback" "modelsphere/catalog-mirror") }}
+    version: {{ .Values.versions.catalogMirror | quote }}
+    installed: {{ $catalogMirror }}
+    labels:
+      tier: portal
+    values:
+      - console/catalog-mirror.yaml.gotmpl
+{{- if $rewrite }}
+      - console/catalog-mirror-offline-images.yaml.gotmpl
+{{- end }}
+{{- if and $catalogMirror .Values.catalogSnapshot }}
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "sh"
+        args: ["console/catalog-snapshot.sh", {{ .Values.namespaces.console | quote }}, {{ .Values.catalogSnapshot | quote }}]
+{{- end }}
 
   - name: console
     namespace: {{ .Values.namespaces.console }}

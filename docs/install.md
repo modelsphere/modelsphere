@@ -82,7 +82,7 @@ them.*
 
 *A node with no route to the internet cannot run `setup-all`, which installs
 packages: see
-[`offline-install.md`](offline-install.md#node-packages-before-any-of-this)
+[`offline-install.md`](offline-install.md#42-tools-and-node-packages)
 for which tags to run instead.*
 
 What a node gets:
