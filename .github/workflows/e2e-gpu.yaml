@@ -17,8 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  # One cluster. Shared with e2e-gpu-infra so an infra apply and a test run
-  # never overlap. A second run waits; it is not cancelled.
+  # One cluster. A second run waits; it is not cancelled.
   group: e2e-gpu
   cancel-in-progress: false
 
