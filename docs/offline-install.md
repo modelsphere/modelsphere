@@ -6,6 +6,10 @@ rest of the deployment is unchanged and lives in
 [helmfile-deploy.md](helmfile-deploy.md); `offline/README.md` is the short
 version that travels with the payload.
 
+For one complete run of all of this on real hardware -- four Ascend 910B4
+servers, from bare machines to a model deployed from the console -- see
+[offline-ascend-walkthrough.md](offline-ascend-walkthrough.md).
+
 
 `registry` and `chartRepo` only ever covered what *we* build. Everything else —
 cilium, rook, the prometheus stack, the NVIDIA operators, lws, volcano — resolves
