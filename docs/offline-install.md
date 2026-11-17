@@ -105,7 +105,7 @@ make offline-tools                                 # ~400 MB: kubeadm, kubelet,
                                                    # helm-diff, crane, nerdctl,
                                                    # the registry image, and the
                                                    # kubeadm control-plane images
-make offline-bundle BUNDLE=offline ENV=<cluster> \
+make offline-bundle \
   ARGS='--set llmGateway.node=<node> --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks'
 ```
 
@@ -117,7 +117,8 @@ in the repo (`script/offline-units/`).
 A bundle is **not** built for a particular cluster's registry. `offline-bundle`
 renders the `default` environment, whose addresses are the public ones -- 4pdosc
 for what we build, the real upstream host for everything else -- and
-`offline-load` puts them wherever the site's registry is. That is what lets one
+`offline-load` puts them wherever the site's registry is, so leave `ENV` at its
+default. That is what lets one
 bundle serve both modes and any site: under `mirror` our components go in as
 `<registry>/4pdosc/<name>`, which is what a node asks docker.io's mirror for,
 and the environment file keeps saying `4pdosc` exactly as it does online.
@@ -170,7 +171,7 @@ the same tags and digests and needs no login:
 
 ```bash
 BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc" \
-  make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
+  make offline-bundle ARGS=...
 ```
 
 Only `4pdosc` is mirrored there; the engines (`lmsysorg/sglang`,
@@ -205,7 +206,7 @@ to ask:
 - **By catalog model**, for models deployed from the console:
 
   ```bash
-  CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
+  CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle ARGS=...
   ```
 
   `model:variant` (`qwen3-8b:vllm-tp1-a100`) takes one variant's image instead
@@ -265,12 +266,6 @@ than `make setup-all`, which assumes every node can reach the internet:
 ```bash
 make setup-k8s-offline LIMIT=all      # downloads nothing
 ```
-
-Installing the Kubernetes packages from apt instead of the bundle's binaries
-also works: one node publishing `registry-mirror/`'s package cache over HTTP is
-enough, with a `deb [trusted=yes] http://<that node>/llm-repo /` line on the
-others, and `make setup-k8s-online LIMIT=<the nodes that do have a route out>`
-for those that can.
 
 ### 4.3 Start the registry and load it
 
