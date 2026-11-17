@@ -270,8 +270,18 @@ dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or openEuler
 `ARCH=arm64 make offline-tools` and `ARCH=arm64 make offline-bundle`. Nothing
 detects it -- the build host need not be the target -- and the default is amd64.
 `ARCH` sets the binaries and, unless `BUNDLE_PLATFORMS` says otherwise, the
-platform of every image too. `make offline-tools` checks what it pulled: an
-image of the wrong architecture is not kept, and `verify` reports it.
+platform of every image too. Both commands check what they pulled, because
+`crane pull --platform` filters only an image index and saves a single-manifest
+image whatever its architecture. In `make offline-tools`, an image of the wrong
+architecture is not kept and `verify` reports it. In `make offline-bundle`, a
+rendered image of the wrong architecture fails the build. An image that only an
+engine chart pins (no render names it) is skipped and listed in
+`images-skipped.txt` instead: an amd64-only sidecar of an old GPU chart should
+not stop an arm64 bundle. `BUNDLE_ARCH_MISLABELED` lists images whose config
+names the wrong architecture although the binary is right. Each one was checked
+by hand with `file` on the binary. By default the list holds
+`registry.k8s.io/descheduler/descheduler:v0.36.0`, whose arm64 image says
+`linux/amd64`.
 
 An all-Ascend cluster also wants the NVIDIA components off, in the bundle's
 `ARGS` and in the environment alike: `enabled.gpuOperator`,

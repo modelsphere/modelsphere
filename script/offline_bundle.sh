@@ -812,6 +812,7 @@ fi
 #     asked for 0.1.22 against a registry that only had 0.1.25.
 #   - cart.image.tag is empty on purpose and means "the CART subchart's
 #     appVersion", which is inside the archive too.
+rm -f "$OUT/.pinned-only"
 for _ec in "$OUT"/charts/sglang-*.tgz "$OUT"/charts/vllm-*.tgz; do
   [ -f "$_ec" ] || continue
   # The list goes through a file, not a pipe: the right side of a pipe is a
@@ -883,6 +884,7 @@ PY
     _a="$SOURCE_REGISTRY/$_img"
     if [ -n "$SOURCE_REGISTRY" ] && ! grep -qxF "$_a" "$OUT/images.txt"; then
       echo "$_a" >> "$OUT/images.txt"
+      echo "$_a" >> "$OUT/.pinned-only"
       COUNT=$((COUNT+1))
       echo "    + $_a ($(basename "$_ec") pins this; no render names it)"
     fi
@@ -962,6 +964,68 @@ if [ "$SKIP_IMAGES" = false ]; then
     exit 1
   fi
 
+  # What a saved layout actually runs on. `crane pull --platform` filters an
+  # image INDEX; for an image published as a single manifest the flag is
+  # ignored and whatever was published is saved. Measured on an arm64 build:
+  # 4pdosc/hang-watcher:0.1.22 exists for amd64 only and went into the bundle
+  # without a word -- its pod would have died with "exec format error" on the
+  # far side. So every saved layout is checked against its config.
+  _want=${BUNDLE_PLATFORMS:-linux/${ARCH:-amd64}}
+  # Images whose config names the wrong architecture although the binary is
+  # right, verified by exporting the image and running `file` on the binary.
+  # They are kept: containerd does not compare a single manifest's config with
+  # the node. Upstream registry.k8s.io/descheduler/descheduler:v0.36.0 labels
+  # its arm64 image linux/amd64, and its bin/descheduler is ARM aarch64.
+  BUNDLE_ARCH_MISLABELED=${BUNDLE_ARCH_MISLABELED-registry.k8s.io/descheduler/descheduler:v0.36.0}
+  _layout_archs() {
+    python3 - "$1" <<'ARCHPY'
+import json, os, sys
+p = sys.argv[1]
+def blob(d):
+    f = os.path.join(p, "blobs", *d.split(":"))
+    return json.load(open(f)) if os.path.exists(f) else None
+out = set()
+for m in json.load(open(os.path.join(p, "index.json"))).get("manifests", []):
+    d = blob(m["digest"])
+    if d is None:
+        continue
+    if "manifests" in d:
+        for e in d["manifests"]:
+            pl = e.get("platform") or {}
+            if pl.get("architecture") not in (None, "unknown") and blob(e["digest"]) is not None:
+                out.add(pl.get("os", "") + "/" + pl["architecture"])
+    else:
+        c = blob(d["config"]["digest"]) or {}
+        out.add(c.get("os", "?") + "/" + c.get("architecture", "?"))
+print(" ".join(sorted(out)))
+ARCHPY
+  }
+  # Returns 1 for a layout of the wrong architecture, after removing it. The
+  # image is then skipped if only an engine chart pins it (no render names it,
+  # so nothing on this platform asks for it), and counted as failed otherwise.
+  arch_skipped=0; : > "$OUT/.arch-skipped"
+  _check_arch() {
+    case "$1" in *@sha256:*) return 0 ;; esac      # full index kept on purpose
+    _has=$(_layout_archs "$2" 2>/dev/null || echo "?")
+    _miss=""
+    for _w in $(echo "$_want" | tr ',' ' '); do
+      case " $_has " in *" $_w "*) ;; *) _miss="$_miss $_w" ;; esac
+    done
+    [ -z "$_miss" ] && return 0
+    case " $BUNDLE_ARCH_MISLABELED " in
+      *" $1 "*) echo "      config says $_has; kept, listed in BUNDLE_ARCH_MISLABELED"; return 0 ;;
+    esac
+    rm -rf "$2"
+    if [ -f "$OUT/.pinned-only" ] && grep -qxF "$1" "$OUT/.pinned-only"; then
+      echo "      SKIPPED: only $_has is published; an engine chart pins it, no render names it" >&2
+      echo "$1" >> "$OUT/.arch-skipped"; arch_skipped=$((arch_skipped+1))
+    else
+      echo "      WRONG ARCHITECTURE: $1 has $_has, this bundle is for $_want" >&2
+      img_failed=$((img_failed+1))
+    fi
+    return 1
+  }
+
   echo "==> copying images into OCI layouts"
   n=0
   while read -r img; do
@@ -974,6 +1038,8 @@ if [ "$SKIP_IMAGES" = false ]; then
     # a resume re-fetches everything.
     if [ -f "$dir/oci-layout" ] && [ -s "$dir/index.json" ]; then
       printf '    [%d/%d] have %s\n' "$n" "$COUNT" "$img"
+      # A layout an earlier run saved for another platform is not "have".
+      _check_arch "$img" "$dir" || true
       continue
     fi
     printf '    [%d/%d] %s\n' "$n" "$COUNT" "$img"
@@ -1045,6 +1111,7 @@ if [ "$SKIP_IMAGES" = false ]; then
     fi
     if [ "$_ok" = true ] && [ -f "$dir.part/oci-layout" ] && [ -s "$dir.part/index.json" ]; then
       rm -rf "$dir"; mv "$dir.part" "$dir"
+      _check_arch "$img" "$dir" || true
     else
       rm -rf "$dir.part"
       if [ "$_fetch" != "$img" ]; then
@@ -1061,7 +1128,19 @@ if [ "$SKIP_IMAGES" = false ]; then
   # That is precisely the ImagePullBackOff-in-an-air-gapped-room this script
   # exists to prevent.
   [ "$img_failed" -eq 0 ] || echo "    $img_failed image(s) could not be saved" >&2
+  # Skipped images leave images.txt, or offline_load.sh would report them
+  # MISSING on the far side; the list stays beside it so the gap is visible.
+  if [ "$arch_skipped" -gt 0 ]; then
+    grep -vxF -f "$OUT/.arch-skipped" "$OUT/images.txt" > "$OUT/.images.tmp" || true
+    mv "$OUT/.images.tmp" "$OUT/images.txt"
+    mv "$OUT/.arch-skipped" "$OUT/images-skipped.txt"
+    COUNT=$((COUNT-arch_skipped))
+    echo "    $arch_skipped image(s) skipped, not published for $_want: see images-skipped.txt"
+  else
+    rm -f "$OUT/.arch-skipped" "$OUT/images-skipped.txt"
+  fi
 fi
+rm -f "$OUT/.pinned-only"
 
 # source_registry is not decoration: offline_load.sh renames our own images by
 # replacing this exact prefix, because the charts render them as
