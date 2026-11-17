@@ -31,7 +31,7 @@ exactly as the catalog spells them: `model` for every variant's, or
 `model:variant` for that one variant's.
 Environment: CATALOG_URL, CHARTS_URL (defaults: the public GitHub Pages sites).
 """
-import argparse, hashlib, io, json, os, re, sys, tarfile, urllib.request
+import argparse, hashlib, io, json, os, re, sys, tarfile, time, urllib.error, urllib.request
 
 import yaml
 
@@ -40,10 +40,24 @@ CHARTS_URL = os.environ.get("CHARTS_URL", "https://modelsphere.github.io/helm-ch
 LIMIT = 1024 * 1024  # a ConfigMap's size limit, which the snapshot has to fit
 
 
-def get(url):
+def get(url, tries=4):
+    # A snapshot is a few hundred small fetches, so a single stalled read used
+    # to fail the whole bundle. Measured from an Ascend build host: three bundle
+    # attempts in a row each died on one `read operation timed out`, while the
+    # same files came back in 0.3 s a minute later. Retry each fetch instead.
     req = urllib.request.Request(url, headers={"User-Agent": "modelsphere-offline-bundle"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or i == tries - 1:
+                raise
+        except (urllib.error.URLError, OSError):
+            if i == tries - 1:
+                raise
+        print(f"    retrying {url} ({i + 1}/{tries - 1})", file=sys.stderr)
+        time.sleep(5 * (i + 1))
 
 
 def sha(b):
