@@ -588,12 +588,12 @@ for a new password; set one, the default is public. See
    and cannot be changed after deploying. Set the namespace to `models` and turn
    on **Create namespace**
 5. **Resources and scheduling**: pick `Ascend-910B4` as the GPU product. There
-   is no replica count here: the SLO decides it, set in steps 7 and 8
+   is no replica count here: the SLO decides it, set in step 7
 6. Click **Generate plan**, review the resources it will create, and confirm
-7. Once deployed, open `glm-5-3-flash`'s **Details** from the inference services
-   list and click **Edit SLO** at the top right
-8. In the **Bounds** row, keep the type `replica`, set both the minimum and the
-   maximum to `4` (one replica per server), and click **Save**
+7. The console opens the service's details and its SLO panel. In the **Bounds**
+   row, keep the type `replica`, set both the minimum and the maximum to `4`
+   (one replica per server), and click **Save**. **Edit SLO** at the top right
+   of the details page changes it later
 
 Behind this, the console reads the variant from the catalog in the cluster,
 rewrites the engine image address to the local registry, makes a plan, and
@@ -602,18 +602,27 @@ installs it with Helm. Nothing reaches the internet.
 ### 7.3 Wait for the model
 
 Each replica loads 311 GB of weights from local disk and compiles its graphs:
-10 to 15 minutes. Watch it in the console's **Model Serving** list, or on
-server 1:
+10 to 15 minutes. The service's details page shows the progress: when
+**Instances ready** under **Install progress** reaches 4 / 4 and the status at
+the top turns to running, the model is up. The **Instances** tab shows which
+server each replica landed on. On server 1, the same from the command line:
 
 ```bash
 kubectl -n models get pods -o wide -w
 ```
 
-Four pods, one per server, all `Running` and `READY 1/1`, means the model is up.
-
 ## 8. Try it
 
-On server 1, ask the model service directly:
+On the service's details page, open **Service check**. **Check service**
+confirms the route reaches the gateway; **Send request** under **Health check**
+sends a real request through the entrypoint and shows what came back.
+
+**Playground → Chat** talks to the model directly once it is ready: pick
+`glm-5-3-flash` in the model list (it is greyed out until its route is
+published to the gateway).
+
+The service speaks the OpenAI API: any SDK or application that does, pointed at
+the service's `/v1`, works. To check from the command line, on server 1:
 
 ```bash
 SVC=$(kubectl -n models get svc glm-5-3-flash -o jsonpath='{.spec.clusterIP}')
@@ -624,10 +633,6 @@ curl http://$SVC:$PORT/v1/chat/completions \
 ```
 
 `323` as the `content` means the install is done.
-
-The service speaks the OpenAI API: any SDK or application that does, pointed at
-the service's `/v1`, works. The console also has a chat page for the model just
-deployed.
 
 ## 9. Day-to-day operations
 
