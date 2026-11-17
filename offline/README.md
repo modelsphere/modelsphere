@@ -6,7 +6,7 @@ cannot download. It ships **empty**: the payload is built by
 loaded by `make offline-load`.
 
 Committed: this file, the directory structure, the `.gitignore`, `versions.env`,
-`site.env.example` and `engine-images.txt.example`. The payload is not -- it is
+`site.env.example`, `engine-images.txt.example` and `units/`. The payload is not -- it is
 ~17 GB without engine images, and one engine image is ~19 GB on top of that.
 
 ```
@@ -15,6 +15,9 @@ offline/
                       `models:` entry is an ordinary release and its images come
                       from the render like everything else -- this file is only
                       for the other kind, and is usually empty.
+  units/    the systemd files for containerd and kubelet (and kubeadm's
+            drop-in), at the versions in versions.env -- committed, so the
+            build does not fetch them; refresh them when bumping those
   images/   one OCI layout per image, copied with crane so the manifest, and
             the digest a chart pins, survive the trip
   charts/   chart tarballs (.tgz), ours and upstream's

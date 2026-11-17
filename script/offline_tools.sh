@@ -40,7 +40,7 @@ esac
 # not start on Kylin V10 or openEuler 20.03 (glibc 2.28) -- measured on a
 # Kunpeng 910B host, "GLIBC_2.32 not found". The static build runs on both.
 #
-# The three systemd files come from the repo (script/offline-units/), not from
+# The three systemd files come from the repo (offline/units/), not from
 # raw.githubusercontent.com: some build hosts resolve that name to IPv6 only and
 # cannot reach it at all, while the files are fixed text at the pinned
 # versions -- containerd's at v2.3.3, the kubelet's at kubernetes/release
@@ -58,9 +58,9 @@ helmfile.tar.gz|https://github.com/helmfile/helmfile/releases/download/v$HELMFIL
 helm-diff.tgz|https://github.com/databus23/helm-diff/releases/download/$HELM_DIFF_VERSION/helm-diff-linux-$ARCH.tgz|tar
 crane.tar.gz|https://github.com/google/go-containerregistry/releases/download/$CRANE_VERSION/go-containerregistry_Linux_$CRANE_ARCH.tar.gz|tar
 nerdctl.tar.gz|https://github.com/containerd/nerdctl/releases/download/v$NERDCTL_VERSION/nerdctl-$NERDCTL_VERSION-linux-$ARCH.tar.gz|tar
-containerd.service|file://$REPO_ROOT/script/offline-units/containerd.service|unit
-kubelet.service|file://$REPO_ROOT/script/offline-units/kubelet.service|unit
-10-kubeadm.conf|file://$REPO_ROOT/script/offline-units/10-kubeadm.conf|unit
+containerd.service|file://$REPO_ROOT/offline/units/containerd.service|unit
+kubelet.service|file://$REPO_ROOT/offline/units/kubelet.service|unit
+10-kubeadm.conf|file://$REPO_ROOT/offline/units/10-kubeadm.conf|unit
 EOF
 }
 

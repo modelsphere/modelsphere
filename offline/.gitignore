@@ -8,5 +8,7 @@
 !versions.env
 !site.env.example
 !engine-images.txt.example
+!units/
+!units/*
 !*/
 !*/.gitkeep

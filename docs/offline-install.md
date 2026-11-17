@@ -112,7 +112,7 @@ make offline-bundle \
 containerd is fetched as its static build, so the target's glibc does not
 matter: the dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or
 openEuler 20.03 (2.28), let alone CentOS 7 (2.17). The three systemd files ship
-in the repo (`script/offline-units/`).
+in the repo (`offline/units/`).
 
 A bundle is **not** built for a particular cluster's registry. `offline-bundle`
 renders the `default` environment, whose addresses are the public ones -- 4pdosc
