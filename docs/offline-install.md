@@ -182,8 +182,9 @@ make offline-bundle BUNDLE=offline ENV=<cluster> \
 **Fetching through a mirror.** `BUNDLE_FETCH_MIRRORS` sends the build's pulls
 somewhere else and stores the images under their real names, so nothing
 downstream changes. Each entry is `<upstream prefix>=<replacement>`, matched
-against the fully qualified name in the order given; an image the mirror does
-not answer for falls back to its real address. Where Docker Hub is slow, our
+against the fully qualified name; the longest matching prefix wins, so the order
+does not matter. An image the mirror does not answer for falls back to its real
+address. Where Docker Hub is slow, our
 own images come from the copy of `4pdosc` on Tencent Cloud, which carries the
 same tags and digests and needs no login:
 
