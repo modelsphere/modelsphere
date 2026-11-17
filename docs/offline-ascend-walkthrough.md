@@ -576,16 +576,17 @@ for a new password; set one, the default is public. See
 
 ### 7.2 Deploy the model
 
-1. Open **Model Serving** and click **Deploy model**
-2. Basics:
-   - Model: `glm-5.3-flash`
-   - Variant: `vllm-tp8-910b4-baseline` (one 910B4 node, 8 NPUs, TP=8, 1M context)
-   - Service name: `glm-53-flash`. It names the Helm release, the route, the scaler and the SLO, and cannot be changed after deploying
-   - Namespace: `models`, with **Create namespace** ticked
-3. Resources and scheduling:
-   - Replicas: `4`, one per server
-   - GPU product: `Ascend-910B4`. If it is not listed, leave it empty: the variant already requires Ascend hardware
-4. Click **Generate plan**, review the resources it will create, and confirm
+1. Open **Model Serving → Inference services** and click **Deploy model** at the top right
+2. In the model library, search for `GLM-5.3-Flash` and open its card
+3. In the variant list, find `vllm-tp8-910b4-baseline` (one 910B4 node, 8 NPUs,
+   TP=8, 1M context) and click **Deploy** on it
+4. **Basics**: the model and variant are filled in. Keep the default service name,
+   `glm-5-3-flash`: it names the Helm release, the route, the scaler and the SLO,
+   and cannot be changed after deploying. Set the namespace to `models` and turn
+   on **Create namespace**
+5. **Resources and scheduling**: set both minimum and maximum replicas to `4`,
+   one per server, and pick `Ascend-910B4` as the GPU product
+6. Click **Generate plan**, review the resources it will create, and confirm
 
 Behind this, the console reads the variant from the catalog in the cluster,
 rewrites the engine image address to the local registry, makes a plan, and
@@ -608,8 +609,8 @@ Four pods, one per server, all `Running` and `READY 1/1`, means the model is up.
 On server 1, ask the model service directly:
 
 ```bash
-SVC=$(kubectl -n models get svc glm-53-flash -o jsonpath='{.spec.clusterIP}')
-PORT=$(kubectl -n models get svc glm-53-flash -o jsonpath='{.spec.ports[0].port}')
+SVC=$(kubectl -n models get svc glm-5-3-flash -o jsonpath='{.spec.clusterIP}')
+PORT=$(kubectl -n models get svc glm-5-3-flash -o jsonpath='{.spec.ports[0].port}')
 curl http://$SVC:$PORT/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"GLM-5.3-Flash","messages":[{"role":"user","content":"What is 17 times 19? Answer with the number only."}],"max_tokens":64,"chat_template_kwargs":{"thinking":false}}'
