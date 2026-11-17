@@ -76,6 +76,14 @@ environments:
     values:
       - environments/default.yaml
       - environments/offline-rewrite.yaml
+  # test/e2e/gpu. Named test-gpu so it is not a site cluster. The file is
+  # placeholders until a maintainer fills them in (environments/test-gpu.yaml).
+  # The per-run suite selects part=product only; it does not apply this whole
+  # environment.
+  test-gpu:
+    values:
+      - environments/default.yaml
+      - environments/test-gpu.yaml
 
 ---
 
@@ -240,6 +248,21 @@ helmDefaults:
   cleanupOnFail: true
   historyMax: 10
 
+# `part` is which install set a release belongs to. test/e2e/gpu installs and
+# uninstalls `part=product` on every run and never selects `part=infra`.
+#
+# infra is the cluster base, rebuilt rarely and never by that suite: the CNI,
+# Ceph, the monitoring CRDs and the PrometheusRule/dashboard hooks, the GPU
+# and NIC operators (node drivers and device plugins), lws and volcano. Those
+# last two are CRDs plus, for volcano, an admission webhook with
+# failurePolicy: Fail and PodDisruptionBudgets applied by a hook helm does not
+# own. Uninstalling any of them on a daily run flaps cluster-scoped state or
+# takes the nodes down. `needs:` edges from product back to infra are not
+# pulled in: helmfile's --skip-needs is the default, and the suite passes it
+# on apply anyway.
+#
+# product is the routing layer, the operators, swissd and console.
+# tier=model has no part. Those releases are not in either set.
 releases:
 
   # ─────────────────────────────────────────────────────────────────────── CNI
@@ -259,6 +282,7 @@ releases:
     timeout: 900
     labels:
       tier: cni
+      part: infra
     values:
       - cni/overrides.yaml.gotmpl
     # Per-cluster values (control-plane endpoint, pod CIDR, whether
@@ -296,6 +320,7 @@ releases:
     installed: {{ .Values.enabled.rookCeph }}
     labels:
       tier: storage
+      part: infra
 {{- if $rewrite }}
     # This release had no values at all: its images, including the eight csi.*
     # ones that become rook-csi-operator-image-set-configmap, came straight from
@@ -313,6 +338,7 @@ releases:
       - {{ .Values.namespaces.rook }}/rook-ceph
     labels:
       tier: storage
+      part: infra
     values:
       - ceph/ceph-cluster-override.yaml.gotmpl
 {{- if $rewrite }}
@@ -334,6 +360,7 @@ releases:
       - {{ .Values.namespaces.rook }}/rook-ceph
     labels:
       tier: storage
+      part: infra
     values:
       - ceph/csi/values.yaml
 
@@ -361,6 +388,7 @@ releases:
 {{- end }}
     labels:
       tier: observability
+      part: infra
     # CRD-heavy chart with three StatefulSets behind it; 600s is not enough on a
     # cold cluster that still has to pull the images.
     timeout: 1200
@@ -434,6 +462,7 @@ releases:
     installed: {{ .Values.enabled.condition2taint }}
     labels:
       tier: observability
+      part: infra
     values:
     - config:
         descheduler:
@@ -447,6 +476,7 @@ releases:
     installed: {{ .Values.enabled.alertWebhook }}
     labels:
       tier: observability
+      part: infra
     values:
     - observability/alert-webhook/config.yaml.gotmpl
     - observability/alert-webhook/images.yaml.gotmpl
@@ -484,6 +514,7 @@ releases:
 {{- end }}
     labels:
       tier: observability
+      part: infra
     values:
       - observability/npd/overrides.yaml
 {{- if $rewrite }}
@@ -497,6 +528,7 @@ releases:
     installed: {{ .Values.enabled.descheduler }}
     labels:
       tier: observability
+      part: infra
     values:
       - observability/descheduler/overrides.yaml
 {{- if $rewrite }}
@@ -522,6 +554,7 @@ releases:
 {{- end }}
     labels:
       tier: gpu
+      part: infra
     # Driver validation + toolkit install on every GPU node, from a cold image
     # cache. This is the slowest release in the file.
     timeout: 1800
@@ -568,6 +601,7 @@ releases:
 {{- end }}
     labels:
       tier: gpu
+      part: infra
     timeout: 1200
     values:
       - nvidia/network-operator/overrides.yaml.gotmpl
@@ -621,6 +655,7 @@ releases:
     installed: {{ .Values.enabled.ascendDevicePlugin }}
     labels:
       tier: gpu
+      part: infra
     values:
       - ascend/overrides.yaml
 
@@ -631,6 +666,7 @@ releases:
     installed: {{ .Values.enabled.lws }}
     labels:
       tier: gpu
+      part: infra
     values:
       - nvidia/lws/overrrides.yaml
 {{- if $rewrite }}
@@ -644,6 +680,7 @@ releases:
     installed: {{ .Values.enabled.openresty }}
     labels:
       tier: llmgate
+      part: product
     values:
       - llmgateway/openresty.yaml.gotmpl
 {{- with dig "llmGateway" "openrestyOverrides" nil .Values }}
@@ -659,6 +696,7 @@ releases:
     installed: {{ .Values.enabled.bodylog }}
     labels:
       tier: llmgate
+      part: product
     values:
       - llmgateway/bodylog-overrides.yaml.gotmpl
 
@@ -674,6 +712,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
+      part: product
     values:
       - llmgateway/bodylog-exporter.yaml.gotmpl
 
@@ -704,6 +743,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
+      part: product
     values:
       - llmgateway/bodylog-victorialogs.yaml.gotmpl
 {{- if $rewrite }}
@@ -725,6 +765,7 @@ releases:
 {{- end }}
     labels:
       tier: llmgate
+      part: product
     values:
       # Repository only. The chart's own values say why, in as many words:
       # `tag: ""` means Chart.appVersion, which its CI rewrites on every
@@ -784,6 +825,7 @@ releases:
     installed: {{ .Values.enabled.llmslo }}
     labels:
       tier: operator
+      part: product
     values:
       - llm-operator/llmslo-images.yaml.gotmpl
 
@@ -794,6 +836,7 @@ releases:
     installed: {{ .Values.enabled.llmOperator }}
     labels:
       tier: operator
+      part: product
     values:
       - llm-operator/overrides.yaml.gotmpl
 
@@ -804,6 +847,7 @@ releases:
     installed: {{ .Values.enabled.llmCanaryOperator }}
     labels:
       tier: operator
+      part: product
     values:
       # `manager.*`, not top level. The chart reads .Values.manager.args and
       # .Values.manager.image; a top-level `args:`/`image:` is accepted by helm
@@ -873,6 +917,7 @@ releases:
     installed: {{ .Values.enabled.console }}
     labels:
       tier: portal
+      part: product
     values:
       - console/swiss-overrides.yaml.gotmpl
 {{- if $catalogMirror }}
@@ -933,6 +978,7 @@ releases:
       - {{ .Values.namespaces.console }}/swissd
     labels:
       tier: portal
+      part: product
     values:
       - console/overrides.yaml.gotmpl
 
@@ -960,6 +1006,7 @@ releases:
     # here, so a version bump is one line in the environment file.
     labels:
       tier: scheduler
+      part: infra
     values:
       - scheduler/volcano/values.yaml
 {{- if $rewrite }}
