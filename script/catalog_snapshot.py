@@ -2,7 +2,7 @@
 """Pack the model catalog and the engine charts for catalog-mirror's snapshot.
 
 swissd deploys a model from two things it reads over HTTP: the model catalog and
-the chart the catalog names (sglang or vllm). An air-gapped cluster reaches
+the chart the catalog names (sglang or vllm). An offline cluster reaches
 neither, so the bundle carries a copy and catalog-mirror serves it in the
 cluster (its `snapshot`, see the chart's README). This writes that copy: a gzip'd
 tar with the two trees nginx serves.

@@ -122,7 +122,7 @@ Exposing that outside the cluster is a Gateway, an Ingress or a Service of your 
 | Document | What is in it |
 |---|---|
 | [`docs/install.md`](docs/install.md) | the complete install: preparing the machines, creating the Kubernetes cluster, and installing the stack on it -- with the air-gapped path and the detail on each step linked from there |
-| [`docs/offline-ascend-walkthrough.md`](docs/offline-ascend-walkthrough.md) | one complete air-gapped install, step by step: four Ascend 910B4 servers, from bare machines to GLM-5.3-Flash deployed from the console |
+| [`docs/offline-ascend-walkthrough.md`](docs/offline-ascend-walkthrough.md) | one complete offline install, step by step: four Ascend 910B4 servers, from bare machines to GLM-5.3-Flash deployed from the console |
 | [`docs/configuration.md`](docs/configuration.md) | what to change once it runs, and where: the cluster's environment file against a model's values file, with the guides for models, routing and rate limits, CART, autoscaling and rolling updates linked from there |
 | [`docs/console.md`](docs/console.md) | opening the portal the first time: the address, the first login, and what the Model Serving pages need |
 | [`docker/README.md`](docker/README.md) | the same stack without Kubernetes: the routing layer as containers and one engine container per GPU server, on NVIDIA or Ascend hardware |

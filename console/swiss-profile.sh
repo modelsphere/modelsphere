@@ -5,7 +5,7 @@
 # Only when the profile does not exist yet. swissd owns the profile from then
 # on: it is edited from the web, and a helmfile run that rewrote it would undo
 # those edits. Without this, a fresh swissd offers its setup form pre-filled
-# with the public catalog and chart repository, which an air-gapped cluster
+# with the public catalog and chart repository, which an offline cluster
 # cannot reach, and nothing can be deployed until someone fixes both by hand.
 #
 #   console/swiss-profile.sh <namespace> <configmap> <profile yaml, base64>

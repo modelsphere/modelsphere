@@ -2,7 +2,7 @@
 # the cluster for swissd (console/swiss-overrides.yaml.gotmpl points it here).
 #
 # Two ways to fill it, chosen by catalogSnapshot:
-#   set     an air-gapped cluster. The bundle's catalog-snapshot.tar.gz arrives as a
+#   set     an offline cluster. The bundle's catalog-snapshot.tar.gz arrives as a
 #           ConfigMap (the presync hook on this release creates it) and is
 #           unpacked on every pod start; nothing syncs, since there is nothing
 #           to sync from. No volume is needed -- the snapshot refills an emptyDir.

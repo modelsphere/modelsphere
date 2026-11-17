@@ -1,4 +1,4 @@
-# Walkthrough: an air-gapped install on four Ascend 910B4 servers
+# Walkthrough: an offline install on four Ascend 910B4 servers
 
 This guide starts from four Ascend 910B4 servers with an operating system and
 nothing else, and ends with GLM-5.3-Flash (W8A8) answering requests as four
@@ -679,5 +679,5 @@ New models, replica changes and upgrades all happen in the console from here;
 what has to be carried in is the new images.
 
 For the detail behind each step: [`offline-install.md`](offline-install.md)
-(the air-gapped install), [`add-ascend-node.md`](add-ascend-node.md) (Ascend
+(the offline install), [`add-ascend-node.md`](add-ascend-node.md) (Ascend
 nodes) and [`console.md`](console.md) (the console).

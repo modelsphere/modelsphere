@@ -697,7 +697,7 @@ fi
 # at the version `versions:` pins. swissd, behind the console, installs the
 # NEWEST release that meets the catalog entry's constraint, from the chart
 # repository and catalog its site profile names -- GitHub Pages, which an
-# air-gapped cluster cannot reach. So the bundle carries both: the pinned
+# offline cluster cannot reach. So the bundle carries both: the pinned
 # versions and the newest ones go into charts/, and catalog-snapshot.tar.gz holds the
 # catalog plus those same charts for catalog-mirror to serve in the cluster.
 # catalog_snapshot.py refuses a snapshot that leaves a catalog entry with no chart.
