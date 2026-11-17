@@ -408,8 +408,17 @@ mkdir -p $HOME/.kube && cp /etc/kubernetes/admin.conf $HOME/.kube/config
 `--skip-phases=addon/kube-proxy` leaves out kube-proxy: Cilium, installed later,
 takes over its job.
 
-Note the `kubeadm join` line at the end of the output for the next step. If it
-is gone, print a new one:
+kubeadm stores the kubelet settings from the config file, `resolvConf`
+included, in the `kube-system/kubelet-config` ConfigMap. Nodes joining in the
+next step download it, so they need no setting of their own. To check:
+
+```bash
+kubectl -n kube-system get configmap kubelet-config -o yaml | grep resolvConf
+# resolvConf: /etc/resolv.conf
+```
+
+Note the `kubeadm join` line at the end of `kubeadm init`'s output for the next
+step. If it is gone, print a new one:
 
 ```bash
 kubeadm token create --ttl 1h --print-join-command
@@ -417,47 +426,19 @@ kubeadm token create --ttl 1h --print-join-command
 
 ### 5.2 Join the other three servers
 
-On servers 2, 3 and 4, write a join config. For server 2:
-
-`/etc/kubernetes/join.yaml` (the token and `caCertHashes` come from the join
-line above):
-
-```yaml
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: JoinConfiguration
-discovery:
-  bootstrapToken:
-    apiServerEndpoint: "10.0.0.11:6443"
-    token: "<token>"
-    caCertHashes: ["sha256:<hash>"]
-nodeRegistration:
-  name: ascend-12
-  criSocket: unix:///run/containerd/containerd.sock
-  kubeletExtraArgs:
-    - name: node-ip
-      value: "10.0.0.12"
-```
-
-Then join:
+On servers 2, 3 and 4, run the `kubeadm join` line printed above, with
+`--node-name` for the node's name. For server 2:
 
 ```bash
-kubeadm join --config /etc/kubernetes/join.yaml && rm -f /etc/kubernetes/join.yaml
+kubeadm join 10.0.0.11:6443 --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash> \
+  --node-name ascend-12
 ```
 
-Servers 3 and 4 the same way, with their own `name` and `node-ip`.
-
-Why not the plain `kubeadm join` line? To name the node and its `node-ip`
-explicitly: left out, the node is registered under the host's hostname, and
-`node-ip` may be taken from the wrong interface. kubelet's `resolvConf` needs
-nothing here: the `/etc/resolv.conf` set in 5.1 went into the cluster-wide
-kubelet configuration, which a joining node downloads. Check it after the join:
-
-```bash
-grep resolvConf /var/lib/kubelet/config.yaml    # resolvConf: /etc/resolv.conf
-```
-
-(Joining an Ascend node to a cluster whose control plane does run
-systemd-resolved is different: see [`add-ascend-node.md`](add-ascend-node.md).)
+Servers 3 and 4 the same way, with `--node-name ascend-13` and `ascend-14`. The
+names have to match the ones used for the labels and in the environment file
+below; if the servers' hostnames already are those names, `--node-name` can be
+left out and the printed line run as it is.
 
 ### 5.3 Label the nodes
 
@@ -696,6 +677,7 @@ deployed.
 | A pod reports `http: server gave HTTP response to HTTPS client` | that node does not trust the local registry | rerun 4.6 for that node |
 | `kubeadm init` preflight reports missing control-plane images | kubeadm's version does not match the bundle's images | set `kubernetesVersion` in the kubeadm config to `kubeadm version -o short` |
 | A pod in `ImagePullBackOff` with an address that is not the local registry | the image is not in the bundle | add it on the build host, then `make offline-load` again |
+| A node's `INTERNAL-IP` is not on the cluster network (`kubectl get nodes -o wide`) | on a host with several interfaces, kubelet takes the address of the one with the default route | on that node, add `--node-ip=<cluster-network address>` to `KUBELET_KUBEADM_ARGS` in `/var/lib/kubelet/kubeadm-flags.env`, then `systemctl restart kubelet` |
 | A node reports 0 NPUs | the device plugin is not scheduled there | check the `workerselector` label (5.3) and that `ascend-docker-runtime` is installed |
 | The console's model library is empty | the catalog service is off, or the snapshot path is wrong | check `catalogMirror` and `catalogSnapshot` in 6.1 (an absolute path) |
 | Model pods stay `Pending` | not enough NPUs or memory: each replica takes 8 NPUs and requests 64 GB | `kubectl describe pod` says which |
