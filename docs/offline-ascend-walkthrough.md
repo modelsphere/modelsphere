@@ -133,8 +133,8 @@ download or unpack, and no `ansible_python_interpreter` in the inventory.
 ### 2.4 Build host: internet access and tools
 
 The build host needs internet access and these tools: git, make, python3 (with
-PyYAML), helm, helmfile and crane. Its CPU architecture does not matter, x86 is
-fine: the target architecture is named when building the bundle.
+PyYAML), helm, helmfile and crane. Its CPU architecture does not matter (x86 is
+fine): the target architecture is named when building the bundle.
 
 ## 3. Build the bundle (build host)
 
@@ -252,8 +252,9 @@ tar -xzf cpython-*-aarch64-unknown-linux-gnu-install_only.tar.gz -C /opt/ansible
 
 ### 4.2 Put the weights in place
 
-The weights go to the same path on all four servers,
-`/data/models/zai-org/GLM-5.3-Flash`. When the console deploys the model it
+The weights downloaded in 3.5 go to the same path on all four servers,
+`/data/models/zai-org/GLM-5.3-Flash` (this path, not the download's
+`GLM-5.3-Flash-w8a8` directory name). When the console deploys the model it
 looks for the weights by the path template set in 6.1, `/data/models/{{name}}`,
 where `{{name}}` is the model's weights name, `zai-org/GLM-5.3-Flash`.
 
@@ -643,9 +644,10 @@ not needed; with keys configured, add `-H 'Authorization: Bearer <key>'`
 
 | Task | How |
 |---|---|
-| Service status | the console's **Model Serving** list, or `kubectl -n models get pods` |
-| Change replicas, upgrade the variant | select the service in the console, **Upgrade**, change it, regenerate the plan and confirm |
-| Remove the model | select the service in the console, **Uninstall** |
+| Service status | the console's **Inference services** list, or `kubectl -n models get pods` |
+| Change replicas | **Edit SLO** at the top right of the service's details page; change the **Bounds** minimum and maximum |
+| Upgrade the variant, change deploy settings | **Upgrade** at the top right of the details page; change it, regenerate the plan and confirm |
+| Remove the model | **Uninstall** at the top right of the details page |
 | Deploy another model | on the build host, pack its engine image with `CATALOG_MODELS`; on site, `make offline-load`; then deploy it from the console |
 | Upgrade ModelSphere | on the build host, rebuild the bundle from the new repository version; on site, `make offline-load`, then `make helm-apply ENV=offline-rewrite MODELS= SKIP_DEPS=1` |
 | Engine logs | `kubectl -n models logs <pod>` |
