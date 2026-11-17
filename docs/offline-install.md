@@ -1,4 +1,4 @@
-# Air-gapped install
+# Offline install
 
 Installing this stack on a cluster with no outbound network: what the bundle
 holds, how it is built and loaded, and the two modes a cluster can then use. The
@@ -10,12 +10,45 @@ For one complete run of all of this on real hardware -- four Ascend 910B4
 servers, from bare machines to a model deployed from the console -- see
 [offline-ascend-walkthrough.md](offline-ascend-walkthrough.md).
 
+- [1. Overview](#1-overview)
+- [2. Pick a mode: rewrite or mirror](#2-pick-a-mode-rewrite-or-mirror)
+- [3. Build the bundle](#3-build-the-bundle)
+- [4. Install on site](#4-install-on-site)
+- [5. Deploy a model](#5-deploy-a-model)
+- [6. How image addresses are rewritten](#6-how-image-addresses-are-rewritten)
+- [7. Limits](#7-limits)
+- [8. Bundle internals](#8-bundle-internals)
 
-`registry` and `chartRepo` only ever covered what *we* build. Everything else —
-cilium, rook, the prometheus stack, the NVIDIA operators, lws, volcano — resolves
-to its own upstream, and on our clusters reaches it through the containerd
-mirror `network_accesslator.yaml` writes. That mirror is itself a network hop, so
-it is not a way to install without one.
+## 1. Overview
+
+Nothing can be assumed present at the target site -- not a registry, not helm,
+not a container runtime. The work happens in three places:
+
+- **A build host** that reaches the internet. It fetches everything into
+  `offline/` (structure committed, content ignored; see `offline/README.md`):
+  binaries and the control-plane images (`tools/`), every image the stack uses
+  (`images/`), every chart (`charts/`), and the model catalog with the engine
+  charts (`catalog-snapshot.tar.gz`).
+- **A control machine** on site: where you type. It needs `ansible`, `kubectl`,
+  `helm`, `helmfile` and this repository; the bundle carries none of those. The
+  nodes do not need them, so this is one machine to prepare, not every node --
+  and a distribution's own `ansible` package may be older than the version
+  README asks for.
+- **The nodes.** One of them runs the local registry the bundle is loaded into.
+
+Carry **this repository** across, with `offline/` inside it. Every step is a
+`make` target, so the Makefile, `helmfile.yaml.gotmpl`, `environments/`, the
+playbooks and `cni/` all have to be on site -- the bundle alone runs nothing.
+
+Model weights are not in the bundle and are not a job for it.
+
+## 2. Pick a mode: rewrite or mirror
+
+`registry` and `chartRepo` only ever covered what *we* build. Everything else --
+cilium, rook, the prometheus stack, the NVIDIA operators, lws, volcano --
+resolves to its own upstream, and online reaches it through whatever containerd
+mirror the nodes have. That mirror is itself a network hop, so it is not a way
+to install without one.
 
 `registryMode` is the switch for a cluster that has no outbound network at all.
 It cannot be inferred from the other two values: both are always set, so
@@ -31,162 +64,109 @@ The modes differ only in what happens to image addresses:
 |---|---|---|
 | What helm renders | `<registry>/cilium/cilium` | `quay.io/cilium/cilium`, unchanged |
 | Where the redirect lives | the values files in this repo | `/etc/containerd/certs.d` on each node |
-| Environment file | `registry` must point at the local registry | `registry` is left alone — it stays the public `4pdosc` |
+| Environment file | `registry` must point at the local registry | `registry` is left alone -- it stays the public `4pdosc` |
 | Node setup | `make setup-offline-node REGISTRY=… MODE=rewrite` | `make setup-offline-node REGISTRY=… MODE=mirror` |
 | Digests charts pin | dropped (`useDigest: false` on sixteen cilium images) | kept |
-| `kubeadm init` | `--image-repository <registry>` | plain — containerd redirects |
+| `kubeadm init` | `--image-repository <registry>` | plain -- containerd redirects |
 | Diff reads as | every image under the local registry | upstream addresses, as online |
 
-One `offline-load` serves either, because it puts each image in under both
-names. For third-party images the two agree — the path containerd asks a mirror
-for is the path the rewrite rule produces, host stripped and rest kept. For the
-images **we** build they do not: the rewrite rule replaces the whole source
-prefix, so `harbor.internal/infra/autoconfig` becomes
-`<registry>/autoconfig`, while a mirror asks for
-`<registry>/infra/autoconfig`. A component pushed under only one of the two
-names is an ImagePullBackOff in the other mode, against a registry that holds
-the image under another name. The second push is a manifest; the blobs are
-already there. Pick the mode per cluster, not per bundle.
-
-A bundle is **not** built for a particular cluster's registry. `offline-bundle`
-renders the `default` environment, whose addresses are the public ones — 4pdosc
-for what we build, the real upstream host for everything else — and
-`offline-load` puts them wherever the site's registry is. That is what lets one
-bundle serve both modes and any site: under `mirror` our components go in as
-`<registry>/4pdosc/<name>`, which is what a node asks docker.io's mirror for,
-and the environment file keeps saying `4pdosc` exactly as it does online.
-
-Rendering a cluster environment instead (`-e <cluster>`) bakes that cluster's private registry into the
-image list, and that second name becomes `<registry>/infra/<name>` — right
-only for a cluster whose `registry` is private. `mirror-hosts.txt` comes from the
-same render, so it names whichever hosts that environment uses.
-
-⚠️ **Name your engine in `offline/engine-images.txt`.** It is the one image no
-render can infer -- sglang and vllm are upstream projects and a site runs its
-own build of one, at whatever address its `models:` entry gives the chart (see
-models/examples/sglang-qwen.yaml). Put
-that same address in `engine-images.txt` and two things follow: the bundle
-carries the image, and its host joins `mirror-hosts.txt` so an air-gapped node
-redirects it like any other. Leave it out and `mirror` sends the node to that
-address for real -- which works on a host that happens to reach it, and fails on
-one that does not.
-
-⚠️ Those are upstream REGISTRY hostnames, not machines -- the inventory holds
-the machines. The list is derived, not configured: `offline-bundle` reads every
-address in the image list and writes the distinct hosts, so it already covers
-wherever a site's own images live.
-
-A model's four sidecars -- hang-watcher, CART and CART's two -- do **not** bring
-their chart's host into that list. The sglang chart pins them at a private registry on
-purpose (its values say why: the subchart's public defaults would leave those
-pods in ImagePullBackOff on a cluster with no outbound network), but
-`models/images.yaml.gotmpl` names them under this environment's `registry`
-instead of inheriting those addresses, and the bundle stores them the same way.
-A bundle built from the public `default` environment therefore holds them as
-`4pdosc/...`, and that host never enters `mirror-hosts.txt` on their account.
-
-`mirror_hosts` set where ansible reads variables overrides the file, which is
-the escape hatch for a list that is wrong for some reason -- not the normal
-path.
-
-`rewrite` is the one to reach for by default — what the cluster will pull is
-visible in `helmfile diff`, with nothing depending on node state. `mirror` is
+**`rewrite` is the one to reach for by default** -- what the cluster will pull
+is visible in `helmfile diff`, with nothing depending on node state. `mirror` is
 worth it when the charts' digests matter, when the environment file must stay
 identical to the online one, or when a registry is already mirrored for other
 reasons.
 
 `mirror` has one sharp edge `rewrite` does not: two upstreams whose repository
 path is identical become one repository in the registry, because a plain
-registry ignores the `?ns=<upstream>` containerd sends. Nothing
-downstream reports it — the pod pulls the other project's image. `offline-bundle`
-refuses to build such a list rather than leave it to be discovered later.
+registry ignores the `?ns=<upstream>` containerd sends. Nothing downstream
+reports it -- the pod pulls the other project's image. `offline-bundle` refuses
+to build such a list rather than leave it to be discovered later.
 
-### The naming rule
+One bundle serves either mode: `offline-load` puts each image in under both
+names (see [6](#6-how-image-addresses-are-rewritten)). Pick the mode per
+cluster, not per bundle.
 
-Third-party images drop their upstream host and keep the rest of the path:
+## 3. Build the bundle
 
-```
-quay.io/cilium/cilium   ->   <registry>/cilium/cilium
-```
+### 3.1 The build host
 
-That holds as long as each org in the list comes from exactly one host. What
-stays possible is a chart moving to a different registry without changing its
-path — two internal copies would then collide silently, so check for that when
-bumping charts.
-
-Our own images have no path of their own — the charts render them as
-`<registry>/<name>` — so the **whole** source prefix is replaced, host and
-project both:
-
-```
-harbor.internal/infra/autoconfig   ->   <registry>/autoconfig
-```
-
-Stripping only the host would land them at `<registry>/infra/autoconfig`,
-one segment away from the address the cluster asks for. That mismatch is
-invisible until a pod cannot pull, and it only appears once the target registry
-differs from the source one — which is the case the whole feature exists for.
-`offline-load` reads the source prefix from the bundle MANIFEST, where
-`offline_bundle.sh` records it.
-
-The retag rule is written twice on purpose — here and in the offline-images
-values files; **change it in both places in the same commit.**
-
-`kube-prometheus-stack` is the one chart with a real one-line lever,
-`global.imageRegistry`, and it is used: it reaches the subcharts whose own
-values the parent's per-component keys never did. Do not copy that shape
-elsewhere — it is a convention of that chart family, not a Helm feature, and
-rook, npd, lws, descheduler, gpu-operator and network-operator have no such key.
-
-### Node packages, before any of this
-
-The bundle carries container images and charts, not apt packages: a node with no
-route out needs `kubelet` `kubeadm` `kubectl` `containerd.io` installed already,
-or an apt source that serves them. One node publishing `registry-mirror/`'s
-package cache over HTTP is enough, with a
-`deb [trusted=yes] http://<that node>/llm-repo /` line on the others.
-
-Then run the node-prep tags by what each one needs, rather than `make setup-all`,
-which assumes every node can reach the internet:
-
-```bash
-make setup-k8s-online  LIMIT=<the nodes that do have a route out>
-make setup-k8s-offline LIMIT=all      # downloads nothing
-make setup-mirror      LIMIT=all
-```
-
-### The four steps
-
-Nothing can be assumed present at the target site — not a registry, not helm,
-not a container runtime. The payload lives in `offline/` (structure committed,
-content ignored; see `offline/README.md`).
-
-**Build, where the internet is reachable.** Behind a proxy that means two
-separate settings: dockerd's (a drop-in under
-`/etc/systemd/system/docker.service.d/`, then restart it — the daemon pulls,
-not the shell) and helm's (`HTTPS_PROXY` in the environment, which helm does
-not inherit from docker). With only the first, `helm pull
+Behind a proxy, the build host needs two separate settings: dockerd's (a
+drop-in under `/etc/systemd/system/docker.service.d/`, then restart it -- the
+daemon pulls, not the shell) and helm's (`HTTPS_PROXY` in the environment,
+which helm does not inherit from docker). With only the first, `helm pull
 oci://registry.k8s.io/...` fails and prints nothing at all.
+
+### 3.2 Build
 
 ```bash
 make offline-tools                                 # ~400 MB: kubeadm, kubelet,
                                                    # kubectl, containerd, runc,
                                                    # CNI plugins, helm, helmfile,
-                                                   # helm-diff,
+                                                   # helm-diff, crane, nerdctl,
                                                    # the registry image, and the
-                                                   # kubeadm control-plane list
+                                                   # kubeadm control-plane images
 make offline-bundle BUNDLE=offline ENV=<cluster> \
   ARGS='--set llmGateway.node=<node> --set llmGateway.hostPath=/mnt/disk0/bodylog-sinks'
 ```
 
-**Fetching through a mirror.** `BUNDLE_FETCH_MIRRORS` sends the build's pulls
-somewhere else and stores the images under their real names, so nothing
-downstream changes. Each entry is `<upstream prefix>=<replacement>`, matched
-against the fully qualified name; the longest matching prefix wins, so the order
-does not matter. An image the mirror does not answer for falls back to its real
-address. Where Docker Hub is slow, our
-own images come from the copy of `4pdosc` on Tencent Cloud, which carries the
-same tags and digests and needs no login:
+containerd is fetched as its static build, so the target's glibc does not
+matter: the dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or
+openEuler 20.03 (2.28), let alone CentOS 7 (2.17). The three systemd files ship
+in the repo (`script/offline-units/`).
+
+A bundle is **not** built for a particular cluster's registry. `offline-bundle`
+renders the `default` environment, whose addresses are the public ones -- 4pdosc
+for what we build, the real upstream host for everything else -- and
+`offline-load` puts them wherever the site's registry is. That is what lets one
+bundle serve both modes and any site: under `mirror` our components go in as
+`<registry>/4pdosc/<name>`, which is what a node asks docker.io's mirror for,
+and the environment file keeps saying `4pdosc` exactly as it does online.
+Rendering a cluster environment instead (`-e <cluster>`) bakes that cluster's
+private registry into the image list, and that second name becomes
+`<registry>/infra/<name>` -- right only for a cluster whose `registry` is
+private. `mirror-hosts.txt` comes from the same render, so it names whichever
+hosts that environment uses.
+
+### 3.3 An arm64 target
+
+For Kunpeng or Ascend, name the architecture when fetching:
+`ARCH=arm64 make offline-tools` and `ARCH=arm64 make offline-bundle`. Nothing
+detects it -- the build host need not be the target -- and the default is amd64.
+`ARCH` sets the binaries and, unless `BUNDLE_PLATFORMS` says otherwise, the
+platform of every image too.
+
+Both commands check what they pulled, because `crane pull --platform` filters
+only an image index and saves a single-manifest image whatever its
+architecture:
+
+- In `make offline-tools`, an image of the wrong architecture is not kept and
+  `verify` reports it.
+- In `make offline-bundle`, a rendered image of the wrong architecture fails the
+  build. An image that only an engine chart pins (no render names it) is skipped
+  and listed in `images-skipped.txt` instead: an amd64-only sidecar of an old
+  GPU chart should not stop an arm64 bundle.
+- `BUNDLE_ARCH_MISLABELED` lists images whose config names the wrong
+  architecture although the binary is right, each checked by hand with `file`
+  on the binary. By default it holds
+  `registry.k8s.io/descheduler/descheduler:v0.36.0`, whose arm64 image says
+  `linux/amd64`.
+
+An all-Ascend cluster also wants the NVIDIA components off, in the bundle's
+`ARGS` and in the environment alike: `enabled.gpuOperator`,
+`enabled.dcgmCustomMetrics`, `enabled.networkOperator` and
+`enabled.nicClusterPolicy`. They are on by default, they do nothing without
+NVIDIA hardware, and the GPU operator pulls at least one image that has no
+arm64 build (`nvidia-sandbox-device-plugin`), which fails an arm64 bundle.
+
+### 3.4 Fetching through a mirror
+
+`BUNDLE_FETCH_MIRRORS` sends the build's pulls somewhere else and stores the
+images under their real names, so nothing downstream changes. Each entry is
+`<upstream prefix>=<replacement>`, matched against the fully qualified name; the
+longest matching prefix wins, so the order does not matter. An image the mirror
+does not answer for falls back to its real address. Where Docker Hub is slow,
+our own images come from the copy of `4pdosc` on Tencent Cloud, which carries
+the same tags and digests and needs no login:
 
 ```bash
 BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc" \
@@ -208,94 +188,91 @@ Kunpeng/Ascend build host -- cannot render at all without it. For such a host,
 with Docker Hub unreachable too:
 
 ```bash
-BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc docker.io=docker.m.daocloud.io registry.k8s.io=k8s.m.daocloud.io" \
-  ARCH=arm64 make offline-tools
-ARCH=arm64 BUNDLE_FETCH_MIRRORS="..." make offline-bundle ...
+export BUNDLE_FETCH_MIRRORS="docker.io/4pdosc=modelsphere.tencentcloudcr.com/4pdosc docker.io=docker.m.daocloud.io registry.k8s.io=k8s.m.daocloud.io"
+ARCH=arm64 make offline-tools
+ARCH=arm64 make offline-bundle ...
 ```
 
-**The engine is the one image no render can name.** Everything else in the
-bundle comes out of a helmfile render, but a model service is not in any
-environment -- it comes in from a `MODELS=` file on the command line, and a
-bundle is built before anyone knows which models the site will run. So the
-bundle covers a model's five images the other way round: the engine from the
-list below, and the four sidecars read out of the engine chart's own
-`values.yaml` in the bundle -- hang-watcher and CART at the versions that chart
-pins, CART's `ha` and `reload` at `versions.autoconfig` from the environment,
-since those two are autoconfig's.
-Copy `offline/engine-images.txt.example` and name the ones that site runs. The
-charts' own defaults are deliberately not used: they are `lmsysorg/sglang:latest`
-and `vllm/vllm-openai:latest-cu129-ubuntu2404`, floating tags that match nothing
-any cluster here runs.
+### 3.5 Engine images
 
-Size matters here more than anywhere else: **one engine image is ~19 GB
-compressed**, larger than everything else in the bundle put together. Model
-weights are not in the bundle and are not a job for it.
+Everything else in the bundle comes out of a helmfile render, but a model
+service is not in any environment -- it comes in from a `MODELS=` file or from
+the console, and a bundle is built before anyone knows which models the site
+will run. **One engine image is ~20 GB compressed**, larger than everything
+else in the bundle put together, so none is bundled unless asked for. Two ways
+to ask:
 
-**The sglang chart names three images no render lists.** The bundle reads them
-out of the chart archive, so this is background, not a task — nothing to add to
-`engine-images.txt` and nothing to override in a workload's values. With
-`cart.enabled`, CART comes up with three sidecars the chart pins to a private registry in
-its own values (`cart.image`, `cart.ha.image`, `cart.reload.image`);
-`models/images.yaml.gotmpl` replaces those addresses with this environment's
-`registry`, and the bundle carries them under the same name it will be asked
-for. The versions differ in where they come from: `cart.image` keeps the tag
-its chart pins, while `ha` and `reload` are autoconfig's sidecars and take
-`versions.autoconfig` from the environment being built. Get that wrong and the
-pod does not degrade — they are ordinary containers in the CART pod, so one
-unpullable image keeps the whole pod down.
+- **By catalog model**, for models deployed from the console:
 
-Carry **this repository** across, with `offline/` inside it. Every step below
-is a `make` target, so the Makefile, `helmfile.yaml.gotmpl`, `environments/`,
-the playbooks and `cni/` all have to be on site -- the bundle alone runs
-nothing.
+  ```bash
+  CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
+  ```
 
-One machine on site is the **control machine**: it is where you type, and it
-needs `ansible`, `kubectl`, `helm`, `helmfile` and this repository. The bundle
-carries none of those. The nodes do not need them, so this is one machine to
-prepare, not every node -- and note that a distribution's own `ansible` package
-may be older than the version README asks for.
+  `model:variant` (`qwen3-8b:vllm-tp1-a100`) takes one variant's image instead
+  of every variant's.
+- **By address, in `offline/engine-images.txt`** (copy
+  `offline/engine-images.txt.example`), for an engine a `models:` entry names --
+  a site runs its own build of sglang or vllm, at whatever address that entry
+  gives the chart (see `models/examples/sglang-qwen.yaml`). Put that same
+  address here and two things follow: the bundle carries the image, and its host
+  joins `mirror-hosts.txt` so a node redirects it like any other. Leave it out
+  and `mirror` sends the node to that address for real -- which works on a host
+  that happens to reach it, and fails on one that does not. The charts' own
+  defaults are deliberately not used: they are `lmsysorg/sglang:latest` and
+  `vllm/vllm-openai:latest-cu129-ubuntu2404`, floating tags that match nothing a
+  cluster actually runs.
 
-Then, on the air-gapped side, write the site's facts
-once — `cp offline/site.env.example offline/site.env` and set `REGISTRY`.
+Both lists go into the bundle's `swiss-engine-images.txt`, and the
+`CATALOG_MODELS` ones into `images.txt` too, exactly as the catalog spells them.
+
+**A model's four sidecars need nothing from you.** hang-watcher, CART and
+CART's two sidecars (`ha` and `reload`) are read out of the engine chart's own
+`values.yaml` in the bundle. The sglang chart pins them at a private registry on
+purpose (its values say why: the subchart's public defaults would leave those
+pods in ImagePullBackOff on a cluster with no outbound network), but
+`models/images.yaml.gotmpl` names them under this environment's `registry`
+instead, and the bundle stores them under that same name -- so a bundle built
+from `default` holds them as `4pdosc/...`, and the chart's private host never
+enters `mirror-hosts.txt`. hang-watcher and CART keep the versions their chart
+pins; `ha` and `reload` are autoconfig's and take `versions.autoconfig` from
+the environment being built. Get that wrong and the pod does not degrade --
+they are ordinary containers in the CART pod, so one unpullable image keeps the
+whole pod down.
+
+## 4. Install on site
+
+### 4.1 Write the site's facts once
+
+```bash
+cp offline/site.env.example offline/site.env      # and set REGISTRY
+```
+
 Every step below reads it, so the registry address is written once rather than
 in the three places that would otherwise each hold a copy of it (the
-environment values, kubeadm's flag, and containerd's sandbox image).
+environment values, kubeadm's flag, and containerd's sandbox image). Passing
+`REGISTRY=` on each command line does the same.
 
-**1. Tools.** `make offline-install-tools` — binaries, systemd units and a
-containerd config into place. Nothing here can be assumed present, which is why
-the registry image ships as a tool rather than as part of the image payload:
-step 2 cannot start without it.
+### 4.2 Tools and node packages
 
-containerd is the static build, so the target's glibc does not matter: the
-dynamic build needs glibc ≥ 2.32 and does not start on Kylin V10 or openEuler
-20.03 (2.28), let alone CentOS 7 (2.17). The three systemd files ship in the repo
-(`script/offline-units/`).
+On every node, `make offline-install-tools` puts the binaries, the systemd
+units and a containerd config into place. Nothing can be assumed present, which
+is why the registry image ships as a tool rather than as part of the image
+payload: the next step cannot start without it.
 
-**For an arm64 target** (Kunpeng, Ascend), name it when fetching:
-`ARCH=arm64 make offline-tools` and `ARCH=arm64 make offline-bundle`. Nothing
-detects it -- the build host need not be the target -- and the default is amd64.
-`ARCH` sets the binaries and, unless `BUNDLE_PLATFORMS` says otherwise, the
-platform of every image too. Both commands check what they pulled, because
-`crane pull --platform` filters only an image index and saves a single-manifest
-image whatever its architecture. In `make offline-tools`, an image of the wrong
-architecture is not kept and `verify` reports it. In `make offline-bundle`, a
-rendered image of the wrong architecture fails the build. An image that only an
-engine chart pins (no render names it) is skipped and listed in
-`images-skipped.txt` instead: an amd64-only sidecar of an old GPU chart should
-not stop an arm64 bundle. `BUNDLE_ARCH_MISLABELED` lists images whose config
-names the wrong architecture although the binary is right. Each one was checked
-by hand with `file` on the binary. By default the list holds
-`registry.k8s.io/descheduler/descheduler:v0.36.0`, whose arm64 image says
-`linux/amd64`.
+Then prepare the nodes from the control machine, with the node-prep tags rather
+than `make setup-all`, which assumes every node can reach the internet:
 
-An all-Ascend cluster also wants the NVIDIA components off, in the bundle's
-`ARGS` and in the environment alike: `enabled.gpuOperator`,
-`enabled.dcgmCustomMetrics`, `enabled.networkOperator` and
-`enabled.nicClusterPolicy`. They are on by default, they do nothing without
-NVIDIA hardware, and the GPU operator pulls at least one image that has no
-arm64 build (`nvidia-sandbox-device-plugin`), which fails an arm64 bundle.
+```bash
+make setup-k8s-offline LIMIT=all      # downloads nothing
+```
 
-**2. Registry, and load it.** Both read `offline/site.env`:
+Installing the Kubernetes packages from apt instead of the bundle's binaries
+also works: one node publishing `registry-mirror/`'s package cache over HTTP is
+enough, with a `deb [trusted=yes] http://<that node>/llm-repo /` line on the
+others, and `make setup-k8s-online LIMIT=<the nodes that do have a route out>`
+for those that can.
+
+### 4.3 Start the registry and load it
 
 ```bash
 make offline-registry                              # one registry:3 container
@@ -303,14 +280,14 @@ make offline-load                                  # images, and kubeadm's
 ```
 
 The registry holds images only. The charts stay as the `.tgz` files the bundle
-carried and helm installs them from there, which is what `chartsDir` is for —
+carried and helm installs them from there, which is what `chartsDir` is for --
 uploading them was a whole moving part (a path prefix so a chart and an image
 sharing one OCI path did not overwrite each other, helm's separate credential
 store, Harbor's `/api/charts` versus an OCI push) to hand back files the site
 already had.
 
-**2b. If the registry has credentials**, they are needed in two places that
-share nothing with each other:
+**If the registry has credentials**, they are needed in two places that share
+nothing with each other:
 
 ```bash
 crane auth login <host>:5000 -u ... -p ...  # images, for offline_load.sh (or `docker login`: same file)
@@ -325,14 +302,110 @@ configs:
 Without the cluster-side entry, `crictl pull` fails with `no basic auth
 credentials` while the load side is perfectly happy.
 
-**3. Point everything at it.** Under `rewrite`, three values, no more:
+### 4.4 Make every node pull from it
+
+Run this on every node, including the ones kubeadm runs on, **before**
+`kubeadm init` or `join`:
+
+```bash
+make setup-offline-node REGISTRY=<host>:5000 MODE=rewrite                  # or:
+make setup-offline-node REGISTRY=<host>:5000 MODE=mirror BUNDLE=./offline
+```
+
+Under **`rewrite`** every address is `<host>:5000/...`, and a plain-HTTP
+registry is refused by containerd unless a `certs.d` entry says otherwise.
+`offline_registry.sh up` writes one, but only on the machine it runs on -- so a
+control plane that is also the registry host comes up while every other node
+joins and then fails to pull anything. The playbook writes the registry's
+entry on each of them, `/etc/containerd/certs.d/<host>:5000/hosts.toml`:
+
+```toml
+[host."http://<host>:5000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+```
+
+and restarts containerd.
+
+Under **`mirror`** the playbook writes one
+`/etc/containerd/certs.d/<upstream>/hosts.toml` per host in the bundle's
+`mirror-hosts.txt`, each pointing at the registry, and deliberately without a
+`server =` line: that key is the upstream fallback, and here it would turn a
+missing image into a long timeout -- or, on a node with partial network, into a
+silent pull from the internet, leaving the bundle untested. It also overwrites
+what `make setup-mirror` writes (the public-cache mirrors), so on an offline
+cluster run this one last and not that one again.
+
+`BUNDLE=` is a path on the **control machine**, not on the nodes: the playbook
+reads the bundle's `mirror-hosts.txt` with an Ansible file lookup, which always
+resolves locally. Point it at a bundle the nodes can see and the run fails with
+`The 'file' lookup had an issue accessing the file '…/mirror-hosts.txt'. file
+not found` -- naming a path that does exist on the node you are configuring,
+which sends you to look on the wrong machine. `mirror_hosts` set where ansible
+reads variables overrides the file; that is the escape hatch for a list that is
+wrong for some reason, not the normal path. The list itself is derived, not
+configured -- `offline-bundle` writes the distinct hosts of every address in
+the image list -- and they are upstream registry hostnames, not machines.
+
+Then there is **containerd's sandbox (pause) image**, a third address that
+belongs to neither of the others: containerd holds it as a literal and asks for
+it by that name. `make offline-install-tools` stamps it from `REGISTRY` (4.1),
+using the pause version out of kubeadm's own list so it matches what kubeadm's
+preflight expects, and under `rewrite` the playbook points it at the registry
+again -- a node that kept an older address would otherwise go there for real.
+Under `mirror` the original address is one of the redirected hosts. The key differs by version -- `sandbox_image` in containerd
+1.x, and `plugins."io.containerd.cri.v1.images".pinned_images.sandbox` in 2.x.
+Miss it and every pod sits in ContainerCreating while kubeadm's images are all
+present, which points nowhere near the cause.
+
+### 4.5 Create the cluster
+
+The control-plane images belong to no chart, so the distribution is pointed at
+the registry itself:
+
+```bash
+kubeadm init --kubernetes-version "$(kubeadm version -o short)" \
+             --image-repository <host>:5000     # or imageRepository: and
+                                                # kubernetesVersion: in the
+                                                # kubeadm config file
+k3s server --system-default-registry <host>:5000
+```
+
+Under `mirror`, `kubeadm init` needs no `--image-repository`: containerd
+redirects. Two things kubeadm does that the bundle cannot see, both met in a
+rehearsal:
+
+- **Without `--kubernetes-version` it asks dl.k8s.io for the latest stable
+  release.** A host with no route falls back to kubeadm's own version after a
+  timeout; a host that *can* reach it gets a newer version than the bundle
+  carries images for, and preflight fails on every control-plane image. The
+  bundle's images are those of the kubeadm it carries, so name that version.
+- **It copies `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` from its own environment
+  into every control-plane manifest.** kubeadm talks only to the node and the
+  registry, so run it without them; a proxy left in the shell otherwise ends up
+  in kube-apiserver.
+
+### 4.6 The environment file
+
+Under `rewrite`, three values:
 
 ```yaml
-# environments/<cluster>.yaml — what helm renders
+# environments/<cluster>.yaml
 registry: <host>:5000
 chartsDir: /root/bundle/charts     # where the bundle was carried to
 registryMode: rewrite
 ```
+
+Under `mirror`, `registry` stays exactly as it is online:
+
+```yaml
+# environments/<cluster>.yaml
+chartsDir: /root/bundle/charts     # where the bundle was carried to
+registryMode: mirror
+```
+
+`environments/offline.yaml.example` has both, plus the catalog settings of
+[5.1](#51-from-the-console).
 
 **Register that file** under `environments:` in `helmfile.yaml.gotmpl`,
 alongside `environments/default.yaml`, or helmfile never reads it. Nothing
@@ -345,98 +418,12 @@ charts there, so a `chartRepo: oci://<host>:5000/charts` is an address nothing
 ever filled. `chartRepo` stays as it is and is simply not consulted for a chart
 the directory already has.
 
-```bash
-# what the distribution pulls for itself -- kube-apiserver belongs to no chart
-kubeadm init --kubernetes-version "$(kubeadm version -o short)" \
-             --image-repository <host>:5000     # or imageRepository: and
-                                                # kubernetesVersion: in the
-                                                # kubeadm config file
-k3s server --system-default-registry <host>:5000
-```
+### 4.7 Install the stack
 
-Two things kubeadm does that the bundle cannot see, both met in a rehearsal:
-
-- **Without `--kubernetes-version` it asks dl.k8s.io for the latest stable
-  release.** A host with no route falls back to kubeadm's own version after a
-  timeout; a host that *can* reach it gets a newer version than the bundle
-  carries images for, and preflight fails on every control-plane image. The
-  bundle's images are those of the kubeadm it carries, so name that version.
-- **It copies `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` from its own environment
-  into every control-plane manifest.** kubeadm talks only to the node and the
-  registry, so run it without them; a proxy left in the shell otherwise ends
-  up in kube-apiserver.
-
-⚠️ **Every node needs to trust that registry**, not just the one running it.
-The addresses are all `<host>:5000/...` in this mode, and a plain-HTTP registry
-is refused by containerd unless a `certs.d` entry says otherwise --
-`offline_registry.sh up` writes one, but only on the machine it runs on. On
-every other node, before it joins:
-
-```bash
-mkdir -p /etc/containerd/certs.d/<host>:5000
-cat > /etc/containerd/certs.d/<host>:5000/hosts.toml <<EOF
-server = "http://<host>:5000"
-
-[host."http://<host>:5000"]
-  capabilities = ["pull", "resolve"]
-  skip_verify = true
-EOF
-systemctl restart containerd
-```
-
-A control plane that is also the registry host therefore comes up while every
-other node joins and then fails to pull anything. `mirror` does not have this
-gap -- its whole node-side config is a playbook that runs everywhere.
-
-Under `mirror`, one address and one playbook — the nodes carry the redirect, so
-`kubeadm init` and `registry:` are left exactly as they are online:
-
-```yaml
-# environments/<cluster>.yaml
-chartsDir: /root/bundle/charts     # where the bundle was carried to
-registryMode: mirror
-```
-
-```bash
-# every node, including the ones kubeadm runs on, BEFORE kubeadm init
-make setup-offline-node REGISTRY=<host>:5000 MODE=mirror BUNDLE=./offline
-```
-
-`BUNDLE=` here is a path on the **control machine**, not on the nodes: the
-playbook reads the bundle's `mirror-hosts.txt` with an Ansible file lookup,
-which always resolves locally. Point it at a bundle the nodes can see and the
-run fails with `The 'file' lookup had an issue accessing the file
-'…/mirror-hosts.txt'. file not found` -- naming a path that does exist on the
-node you are configuring, which sends you to look on the wrong machine.
-
-That playbook writes one `/etc/containerd/certs.d/<upstream>/hosts.toml` per
-host in the bundle's `mirror-hosts.txt`, each pointing at the registry, and
-deliberately without a `server =` line: that key is the upstream fallback, and
-here it would turn a missing image into a long timeout — or, on a node with
-partial network, into a silent pull from the internet, leaving the bundle
-untested. It also overwrites what `make setup-mirror` writes (the public-cache
-mirrors), so on an air-gapped cluster run this one last and not that one again.
-
-There is a **third** address, and it belongs to neither of them: containerd
-holds the sandbox (pause) image as a literal and asks for it by that name.
-`offline_tools.sh install` stamps it from `REGISTRY`, using the pause version
-out of kubeadm's own list so it matches what kubeadm's preflight expects. The
-key differs by version — `sandbox_image` in containerd 1.x, and
-`plugins."io.containerd.cri.v1.images".pinned_images.sandbox` in 2.x. Miss it
-and every pod sits in ContainerCreating while kubeadm's images are all present,
-which points nowhere near the cause.
-
-Those control-plane images do **not** follow the host-stripping rule the charts
-use. `kubeadm` asks for `<registry>/coredns`, while stripping the host from
-`registry.k8s.io/coredns/coredns` gives `<registry>/coredns/coredns` — one
-segment apart, and the cluster never comes up. `offline_load.sh` does not
-compute those names: it asks kubeadm for both lists and pairs them line by
-line, refusing to proceed if the lengths differ.
-
-**4. Install**, with one flag added: `SKIP_DEPS=1` (or `--skip-deps` when
-calling helmfile directly). helmfile refreshes every declared chart repository
-before it renders, which fails with no outbound network even though the charts
-are all on disk. Otherwise unchanged from an online cluster:
+Unchanged from an online cluster, with one flag added: `SKIP_DEPS=1` (or
+`--skip-deps` when calling helmfile directly). helmfile refreshes every
+declared chart repository before it renders, which fails with no outbound
+network even though the charts are all on disk.
 
 ```bash
 make helm-bootstrap ENV=<cluster> SKIP_DEPS=1
@@ -444,24 +431,16 @@ make helm-apply     ENV=<cluster> SKIP_DEPS=1
 ```
 
 Read the diff before applying: anything still naming `quay.io`, `nvcr.io`,
-`ghcr.io` or `registry.k8s.io` is a component the bundle missed — and after
-step 3 those will fail loudly rather than quietly reaching upstream.
+`ghcr.io` or `registry.k8s.io` is a component the bundle missed -- and with
+the nodes set up as in 4.4, those fail loudly rather than quietly reaching
+upstream.
 
-**5. A model goes in as a helmfile release**, not with `helm install`. The
-online path installs an engine straight from the chart repository, which an
-air-gapped cluster cannot reach; going through helmfile is also what puts the
-model's five images through `registryMode`, the same rewrite every other image
-in the stack gets:
+## 5. Deploy a model
 
-```bash
-make helm-apply ENV=<cluster> SELECTOR=tier=model \
-  MODELS=models/examples/sglang-qwen.yaml SKIP_DEPS=1
-```
+The weights are not in the bundle and never were: put them on the nodes first,
+as [install step 8](install.md#8-deploy-a-model) describes.
 
-The weights themselves are not in the bundle and never were: put them on the
-node first, as [install step 8](install.md#8-deploy-a-model) describes.
-
-### Deploying a model from the console
+### 5.1 From the console
 
 swissd, the backend behind the console, deploys a model from two things it
 reads over HTTP: the [model catalog](https://github.com/modelsphere/model-catalog)
@@ -470,89 +449,110 @@ GitHub Pages. Offline, the bundle carries a copy and
 [catalog-mirror](https://github.com/modelsphere/helm-charts/tree/main/charts/catalog-mirror)
 serves it in the cluster:
 
-- `offline_bundle.sh` writes **`catalog-snapshot.tar.gz`**: the catalog (v1 and v2
-  indexes and every file they name, digests checked; not the HTML reports) and
-  the newest release of each engine chart, plus the versions `versions:` pins,
-  with an `index.yaml` naming the archives by file name. It refuses a snapshot in
-  which some v2 catalog entry would find no chart. The same chart archives go
-  into `charts/`, which is where the bundle reads a model's sidecar images
-  from (above).
-- **`enabled.catalogMirror: true`** and **`catalogSnapshot: <bundle>/catalog-snapshot.tar.gz`**,
-  an absolute path, in the environment (`environments/offline.yaml.example` has both). A presync
-  hook hands the snapshot over as a ConfigMap, and catalog-mirror unpacks it on
-  every pod start, with its sync from GitHub off. swissd's own default catalog
-  points at the copy.
+- `offline_bundle.sh` writes **`catalog-snapshot.tar.gz`**: the catalog (v1 and
+  v2 indexes and every file they name, digests checked; not the HTML reports)
+  and the newest release of each engine chart, plus the versions `versions:`
+  pins, with an `index.yaml` naming the archives by file name. It refuses a
+  snapshot in which some v2 catalog entry would find no chart. The same chart
+  archives go into `charts/`, which is where the bundle reads a model's sidecar
+  images from (3.5).
+- **`enabled.catalogMirror: true`** and **`catalogSnapshot:
+  <bundle>/catalog-snapshot.tar.gz`**, an absolute path, in the environment. A
+  presync hook hands the snapshot over as a ConfigMap, and catalog-mirror
+  unpacks it on every pod start, with its sync from GitHub off. swissd's own
+  default catalog points at the copy.
 - **The site profile is written once**, by a postsync hook on the swissd
   release, and only if none exists: the catalog (v2) and `chartRepo` on
   catalog-mirror, the four sidecar images under `registry` -- the addresses
   `models/images.yaml.gotmpl` gives a `models:` entry, CART's two at
   `versions.autoconfig` -- and under `registryMode: rewrite` also
-  `registry.mirror`. swissd owns the profile
-  from then on -- edit it from the console; a later helmfile run leaves it
-  alone, and says so, printing each line this environment would have written
-  that the stored profile lacks. Those are the cases to fix by hand: a profile
-  saved before catalog-mirror was turned on (it still names GitHub), a
-  `registry` that moved, and an autoconfig upgrade (CART's sidecars carry its
-  version). `swiss.siteName`, `swiss.modelNamespace` and `swiss.modelPathTemplate`
-  in the environment fill in its other fields.
+  `registry.mirror`. `swiss.siteName`, `swiss.modelNamespace` and
+  `swiss.modelPathTemplate` in the environment fill in its other fields. swissd
+  owns the profile from then on -- edit it from the console; a later helmfile
+  run leaves it alone, and says so, printing each line this environment would
+  have written that the stored profile lacks. Those are the cases to fix by
+  hand: a profile saved before catalog-mirror was turned on (it still names
+  GitHub), a `registry` that moved, and an autoconfig upgrade (CART's sidecars
+  carry its version).
 
-**Engine images come from the catalog by model name.** One is ~20 GB, so none
-is bundled unless asked for:
-
-```bash
-CATALOG_MODELS=glm-5.3-flash,qwen3.6-35b-a3b make offline-bundle BUNDLE=offline ENV=<cluster> ARGS=...
-```
-
-`model:variant` (`qwen3-8b:vllm-tp1-a100`) takes one variant's image instead
-of every variant's. The images go into `images.txt`, exactly as
-the catalog spells it, and into the bundle's `swiss-engine-images.txt` together
-with the hand-written list. `offline_load.sh` pushes those once more under the name
-swiss's image mirror asks for: swiss keeps only the last path segment, so
-`lmsysorg/sglang:v0.5.20` is asked for as `<registry>/sglang:v0.5.20`, not
+The engine image has to be in the bundle (`CATALOG_MODELS`, 3.5).
+`offline_load.sh` pushes each one in `swiss-engine-images.txt` once more under
+the name swiss's image mirror asks for: swiss keeps only the last path segment,
+so `lmsysorg/sglang:v0.5.20` is asked for as `<registry>/sglang:v0.5.20`, not
 `<registry>/lmsysorg/sglang:v0.5.20`. Two engines whose last segment and tag
 agree would land on one name; the load refuses that rather than overwrite one
 with the other. Under `registryMode: mirror` nothing is rewritten, and the
 nodes redirect the catalog's addresses like any other.
 
-### One known gap: what values cannot reach
+### 5.2 As a helmfile release
 
-Rewriting addresses in values changes what the **Pod spec says**. It cannot
-change what a controller asks for on its own.
+Not with `helm install`: the online path installs an engine straight from the
+chart repository, which an offline cluster cannot reach. Going through helmfile
+is also what puts the model's five images through `registryMode`, the same
+rewrite every other image in the stack gets:
 
-Under `rewrite`, ceph-csi's operator creates its driver pods from
-`quay.io/cephcsi` and four `registry.k8s.io/sig-storage` images *before* it
-reads the image set it has been given, and reconciles them to the internal
-addresses about five minutes later. On an air-gapped cluster those pods sit in
-ImagePullBackOff for that interval and are then replaced — survivable, and
-worth knowing about before someone watches it happen. On a host that can still
-reach the public registries the first pull succeeds instead, and those five
-upstream names stay in containerd next to their internal copies, same image ids
-with two tags each, which nothing shows until the image list is read tag by tag.
+```bash
+make helm-apply ENV=<cluster> SELECTOR=tier=model \
+  MODELS=models/examples/sglang-qwen.yaml SKIP_DEPS=1
+```
 
-Under `mirror` this five-minute gap does not happen at all: the operator's
-compiled-in `quay.io/cephcsi` is an address the nodes already answer, so the
-first pod starts from the bundle and the reconcile changes nothing visible.
+The engine's address must be in `engine-images.txt` (3.5).
 
-What must not be done — in either mode — is to reach for a mirror of the
-upstream names that keeps a `server =` fallback, the kind `make setup-mirror`
-writes for public caches. That makes an image the bundle is MISSING succeed
-quietly off the internet, which is the failure the bundle exists to prevent:
-the install passes in a room that still has a network, and fails in the room
-that does not. `make setup-offline-node` writes no fallback for exactly this
-reason.
+## 6. How image addresses are rewritten
 
-One caveat: dropping `server =` removes the *explicit* fallback, so a missing
-image fails at once while the registry is up. It does not cut the upstream off
--- when the listed host does not answer at all (the registry stopped),
-containerd still tries the namespace host itself, and on a node that still has
-internet the pull comes from quay.io. Air-gapped that is a timeout rather than a
-wrong pull, but "no fallback" describes the config, not the network.
+Background for changing a chart or debugging a pull; nothing here is a step.
 
-### Where the addresses live
+### 6.1 The naming rule
 
-`registryMode: upstream` renders byte-for-byte what the repo rendered before the flag
-existed — the offline values are separate files, pulled into `values:` only when
-the flag is on:
+Third-party images drop their upstream host and keep the rest of the path:
+
+```
+quay.io/cilium/cilium   ->   <registry>/cilium/cilium
+```
+
+That holds as long as each org in the list comes from exactly one host. What
+stays possible is a chart moving to a different registry without changing its
+path -- two internal copies would then collide silently, so check for that when
+bumping charts.
+
+Our own images have no path of their own -- the charts render them as
+`<registry>/<name>` -- so the **whole** source prefix is replaced, host and
+project both:
+
+```
+harbor.internal/infra/autoconfig   ->   <registry>/autoconfig
+```
+
+Stripping only the host would land them at `<registry>/infra/autoconfig`, one
+segment away from the address the cluster asks for. That mismatch is invisible
+until a pod cannot pull, and it only appears once the target registry differs
+from the source one -- which is the case the whole feature exists for.
+`offline-load` reads the source prefix from the bundle MANIFEST, where
+`offline_bundle.sh` records it.
+
+This is also why `offline-load` pushes every image under **two names**. For
+third-party images the two modes agree -- the path containerd asks a mirror for
+is the path the rewrite rule produces. For ours they do not: a mirror asks for
+`<registry>/infra/autoconfig`. A component pushed under only one of the two
+names is an ImagePullBackOff in the other mode, against a registry that holds
+the image under another name. The second push is a manifest; the blobs are
+already there.
+
+The control-plane images do **not** follow the host-stripping rule. `kubeadm`
+asks for `<registry>/coredns`, while stripping the host from
+`registry.k8s.io/coredns/coredns` gives `<registry>/coredns/coredns` -- one
+segment apart, and the cluster never comes up. `offline_load.sh` does not
+compute those names: it asks kubeadm for both lists and pairs them line by
+line, refusing to proceed if the lengths differ.
+
+The retag rule is written twice on purpose -- here and in the offline-images
+values files; **change it in both places in the same commit.**
+
+### 6.2 Where the addresses live
+
+`registryMode: upstream` renders byte-for-byte what the repo rendered before
+the flag existed -- the offline values are separate files, pulled into
+`values:` only when the flag is on:
 
 | Release | File |
 | --- | --- |
@@ -566,24 +566,31 @@ the flag is on:
 | `network-operator` | `nvidia/network-operator/offline-images.yaml.gotmpl` |
 | `lws` | `nvidia/lws/offline-images.yaml.gotmpl` |
 | `volcano` | `scheduler/volcano/offline-images.yaml.gotmpl` |
+| `catalog-mirror` | `console/catalog-mirror-offline-images.yaml.gotmpl` |
 
 They are separate files rather than blocks appended to each `overrides.yaml`
 because an overrides file may legitimately hold a Go-template expression meant
-for something downstream — `observability/npd/overrides.yaml` carries one for
+for something downstream -- `observability/npd/overrides.yaml` carries one for
 Prometheus. Renaming those to `.gotmpl` hands them to helmfile's template
 engine, which resolves the undefined variable and blanks the annotation, or
 fails the render. The same trap applies *inside comments*: helmfile renders the
 whole file before any YAML is parsed, which is why the comments in these files
 describe such expressions instead of quoting one.
 
-### Subcharts are where this goes wrong
+`kube-prometheus-stack` is the one chart with a real one-line lever,
+`global.imageRegistry`, and it is used: it reaches the subcharts whose own
+values the parent's per-component keys never did. Do not copy that shape
+elsewhere -- it is a convention of that chart family, not a Helm feature, and
+rook, npd, lws, descheduler, gpu-operator and network-operator have no such key.
 
-Three of these charts name images the parent's own keys do not reach, and the
+### 6.3 Subcharts are where this goes wrong
+
+Four of these charts name images the parent's own keys do not reach, and the
 values file does not show it:
 
 | Chart | Subchart | Key |
 | --- | --- | --- |
-| `kube-prometheus-stack` | `grafana`, `kube-state-metrics`, `prometheus-node-exporter` | `<subchart>.image.registry` — five of its ten images |
+| `kube-prometheus-stack` | `grafana`, `kube-state-metrics`, `prometheus-node-exporter` | `<subchart>.image.registry` -- five of its ten images |
 | `gpu-operator` | `node-feature-discovery` | `node-feature-discovery.image.repository` |
 | `rook-ceph` | `ceph-csi-operator` | `ceph-csi-operator.controllerManager.manager.image.repository` |
 | `network-operator` | `sriov-network-operator` | a flat `images:` map of twelve full addresses |
@@ -592,109 +599,144 @@ Setting only the parent keys leaves a cluster that pulls from the public
 internet and looks fine until it tries. When bumping any of these charts, render
 it and check the addresses rather than diffing the values file.
 
-Two chart-specific shapes worth knowing:
+Three chart-specific shapes worth knowing:
 
 - **cilium pins by digest.** `useDigest` defaults to `true` on all sixteen of
-  its images, and a digest overrides `repository` — so each entry needs
+  its images, and a digest overrides `repository` -- so each entry needs
   `useDigest: false` alongside it or the rewrite is silently ignored. It is the
   only chart here that does this.
 - **gpu-operator splits the address.** Its ClusterPolicy carries `repository:`,
   a bare `image:` name and `version:` on three separate lines, so grepping
   rendered `image:` lines for this chart reports names, not addresses.
-  `offline-bundle` reassembles the three; a check written by hand has
-  to read all three fields.
+  `offline-bundle` reassembles the three; a check written by hand has to read
+  all three fields.
 - **network-operator's sriov images come from the parent, not the subchart.**
   The `sriov-network-operator` subchart defaults its `images:` map to
   `ghcr.io/k8snetworkplumbingwg/*` untagged, and the parent overrides nine of
   them to `nvcr.io/nvidia/mellanox/*:network-operator-v26.4.1`. The parent's
   values are what deploys. Naming the subchart's defaults changes the host and
-  drops the tag — and an untagged address carries no version, so the bundle
+  drops the tag -- and an untagged address carries no version, so the bundle
   leaves it out and a prefix check then passes over nine missing images. The
   metrics exporter is the one sriov image the parent does not pin, so
   `nvidia/network-operator/overrides.yaml` pins it at v1.2.0 itself, on the
-  online path as well as the air-gapped one.
+  online path as well as the offline one.
 
-### What the bundle does not cover
+### 6.4 What values cannot reach
 
-- Images referenced by workloads rather than by this helmfile — inference
-  engines (named in `engine-images.txt` or through `CATALOG_MODELS`, see
-  above), anything under `gateway-api/`.
-- Components whose flags are off. The image list is derived from a render, and
-  a render only sees what is switched on. Turning a feature on later means
-  rebuilding the bundle. cilium is the one exception: the bundle renders it a
-  second time on its own and includes it regardless of the flag, because an
-  air-gapped cluster needs its CNI before anything else.
-- Addresses that carry no tag upstream. There are none left today, but the
+Rewriting addresses in values changes what the **Pod spec says**. It cannot
+change what a controller asks for on its own.
+
+Under `rewrite`, ceph-csi's operator creates its driver pods from
+`quay.io/cephcsi` and four `registry.k8s.io/sig-storage` images *before* it
+reads the image set it has been given, and reconciles them to the internal
+addresses about five minutes later. On an offline cluster those pods sit in
+ImagePullBackOff for that interval and are then replaced -- survivable, and
+worth knowing about before someone watches it happen. On a host that can still
+reach the public registries the first pull succeeds instead, and those five
+upstream names stay in containerd next to their internal copies, same image ids
+with two tags each, which nothing shows until the image list is read tag by tag.
+
+Under `mirror` this five-minute gap does not happen at all: the operator's
+compiled-in `quay.io/cephcsi` is an address the nodes already answer, so the
+first pod starts from the bundle and the reconcile changes nothing visible.
+
+What must not be done -- in either mode -- is to reach for a mirror of the
+upstream names that keeps a `server =` fallback, the kind `make setup-mirror`
+writes for public caches. That makes an image the bundle is MISSING succeed
+quietly off the internet, which is the failure the bundle exists to prevent:
+the install passes in a room that still has a network, and fails in the room
+that does not. `make setup-offline-node` writes no fallback for exactly this
+reason.
+
+One caveat: dropping `server =` removes the *explicit* fallback, so a missing
+image fails at once while the registry is up. It does not cut the upstream off
+-- when the listed host does not answer at all (the registry stopped),
+containerd still tries the namespace host itself, and on a node that still has
+internet the pull comes from quay.io. Fully offline that is a timeout rather
+than a wrong pull, but "no fallback" describes the config, not the network.
+
+## 7. Limits
+
+### 7.1 What the bundle does not cover
+
+- **Images referenced by workloads rather than by this helmfile** -- inference
+  engines (named in `engine-images.txt` or through `CATALOG_MODELS`, see 3.5),
+  anything under `gateway-api/`.
+- **Components whose flags are off.** The image list is derived from a render,
+  and a render only sees what is switched on: a release that is off renders no
+  objects, so its images are absent from the list -- and its chart is not
+  pulled either, since the chart alone would install nothing that can run.
+  `offline_bundle.sh` names them rather than letting the count come up short;
+  turning a feature on later means rebuilding the bundle with the flag on.
+  cilium is the one exception: the bundle renders it a second time on its own
+  and includes it regardless of the flag, because an offline cluster needs its
+  CNI before anything else.
+- **Addresses that carry no tag upstream.** There are none left today, but the
   script lists any it finds on stderr rather than deciding silently: such an
-  address still pulls — no tag means `:latest` — yet it names no version, so
+  address still pulls -- no tag means `:latest` -- yet it names no version, so
   bundling it would pin one on the chart's behalf. Pin it in our own values
   instead, the way `nvidia/network-operator/overrides.yaml` does.
-- The ClusterPolicy's kernel-module images — `driver`, `gdrcopy` and `gds`.
+- **The ClusterPolicy's kernel-module images** -- `driver`, `gdrcopy` and `gds`.
   Their `version` field is a base version only; the gpu-operator appends the
   node's OS at run time, so the render never contains a complete address and
   the three fields cannot be assembled into one. NGC publishes no bare
   `580.126.20` tag for `nvidia/driver` at all, and none for gdrdrv or nvidia-fs
-  either — the real tags read `580.126.20-ubuntu22.04`, `v2.5.2-rhcos4.16` and
+  either -- the real tags read `580.126.20-ubuntu22.04`, `v2.5.2-rhcos4.16` and
   so on. The script reports these rather than bundling an address that exists
   nowhere.
 
   None of them is pulled on our clusters today: `gdrcopy` and `gds` render
-  `enabled: false` on all three, and the driver DaemonSet sits at DESIRED=0
-  because every GPU node is labelled `nvidia.com/gpu.deploy.driver=pre-installed`.
-  Before enabling one on an isolated cluster, mirror it by hand at the suffix
-  its nodes call for — every GPU node here runs Ubuntu 22.04, so `-ubuntu22.04`,
-  with a single Kylin V10 node as the exception.
+  `enabled: false`, and the driver DaemonSet sits at DESIRED=0 because every GPU
+  node is labelled `nvidia.com/gpu.deploy.driver=pre-installed`. Before enabling
+  one on an offline cluster, mirror it by hand at the suffix its nodes call for
+  (`-ubuntu22.04` on Ubuntu 22.04 nodes).
 
   Filtering these out by `enabled` does not work: `driver` renders
   `enabled: true` and is held off by the node label rather than by the chart,
   while `dcgm` and `nodeStatusExporter` render `enabled: false` yet name
   addresses that other, enabled components pull.
-- Example addresses quoted in CRD `description:` prose. Three today, all from
-  rook: `quay.io/ceph/ceph:<tag>`, `quay.io/ceph/nvmeof:1.5` and
-  `quay.io/repository/ceph/ceph`. The first is a literal `<tag>`, which is why
-  CRDs are scraped for real image fields only.
-- Releases switched off for the run. One that is off renders no objects, so its
-  images are absent from the list -- and its chart is not pulled either, since
-  the chart alone would install nothing that can run. `offline_bundle.sh` names
-  them rather than letting the count come up short; build with the flag on to
-  include one.
-
-A reference with no registry host is expanded rather than dropped:
-`busybox:1.37` means `docker.io/library/busybox:1.37`. The expansion is gated
-on the document kind, because a ClusterPolicy writes the name half of a
-repository/image/version triple as a bare `image: driver`, and expanding those
-invents addresses that exist nowhere.
-- The NVIDIA driver itself, if you ever set `driver.enabled` so that the
+- **The NVIDIA driver itself**, if you ever set `driver.enabled` so that the
   operator installs it. `usePrecompiled: false` means the driver container
   compiles the module on the node and needs kernel headers from a distro apt
-  mirror — a second network dependency that no registry covers, and
-  `driver.repoConfig.configMapName` is empty. Our clusters run a host driver
-  (`nvidia.com/gpu.deploy.driver: pre-installed`, driver DaemonSet DESIRED=0),
+  mirror -- a second network dependency that no registry covers, and
+  `driver.repoConfig.configMapName` is empty. Our clusters run a host driver,
   so this path is currently unused.
+- **Example addresses quoted in CRD `description:` prose.** Three today, all
+  from rook: `quay.io/ceph/ceph:<tag>`, `quay.io/ceph/nvmeof:1.5` and
+  `quay.io/repository/ceph/ceph`. The first is a literal `<tag>`, which is why
+  CRDs are scraped for real image fields only.
 
-### What is still unproven
+A reference with no registry host is expanded rather than dropped:
+`busybox:1.37` means `docker.io/library/busybox:1.37`. The expansion is gated on
+the document kind, because a ClusterPolicy writes the name half of a
+repository/image/version triple as a bare `image: driver`, and expanding those
+invents addresses that exist nowhere.
+
+### 7.2 What is still unproven
 
 - **`registryMode: mirror`, as a whole install.** `kubeadm init` plus a full
-  `helmfile apply` in this mode has not been done end to end; the mirror
-  mechanism on its own is covered by
-  `tools/offline-install/verify_mirror_mode.sh` (in the vllm repo).
+  `helmfile apply` in this mode has not been done end to end; only the mirror
+  mechanism on its own has been checked.
 - **rook-ceph-cluster.** The CephCluster and its OSDs are untested here, which
   needs three nodes with a spare raw device.
 - **A bundle built from true upstreams in one pass.** `*.pkg.dev` (which serves
-  the lws chart) and GitHub's release CDN need an internal proxy, so a build
-  host without one comes up short a chart.
+  the lws chart) and GitHub's release CDN may need a proxy or
+  `BUNDLE_FETCH_MIRRORS` (3.4), or the build comes up short a chart.
 - **Multi-node.** Nothing in the flag is node-count dependent, and the `join`
   half of kubeadm is not covered here anyway.
-- **The distribution's own images are not this bundle's job.** k3s ships an
-  airgap tarball; a kubeadm cluster needs `kubeadm config images list` mirrored
-  -- which `offline_tools.sh` does fetch and `offline_load.sh` does push, and
-  `kubeadm init --image-repository` then pulls from there.
 - **Pull credentials.** k3s authenticates to a registry node-wide through
   `registries.yaml`, so no imagePullSecret is needed; a kubeadm cluster wants
   the containerd `registry.configs` equivalent or a dockerconfigjson Secret per
   namespace. Neither has been exercised against a registry that requires auth.
 
-## Why crane, and why the full index
+The distribution's own images are not this bundle's job either: k3s ships an
+airgap tarball; for kubeadm, `offline_tools.sh` fetches `kubeadm config images
+list`, `offline_load.sh` pushes it, and `kubeadm init --image-repository` pulls
+from there (4.5).
+
+## 8. Bundle internals
+
+### 8.1 Why crane, and why the full index
 
 `docker pull` + `docker save` rewrites the manifest before the bundle is
 carried anywhere: docker resolves a multi-arch index to one platform and saves
@@ -713,7 +755,7 @@ chart pins BY DIGEST keeps its index, and everything else is fetched for
 `BUNDLE_PLATFORMS` only -- one platform by default (`linux/$ARCH`),
 `"linux/amd64,linux/arm64"` for a cluster with both kinds of nodes.
 
-## One build per output directory
+### 8.2 One build per output directory
 
 A full run takes tens of minutes, which makes it tempting to start a second one
 into the same output directory. Do not: two `crane pull` processes write the
@@ -723,14 +765,13 @@ the bundle is simply wrong.
 The lock is a `mkdir` with the pid inside, not `flock`, which does not exist on
 macOS. A lock whose holder is gone is taken over rather than left forever.
 
-## An empty layout is not an image
+### 8.3 An empty layout is not an image
 
 crane writes `oci-layout` and `index.json` before it fetches any blob, so a pull
 that is killed leaves a directory that passes every cheap check: an interrupted
 layout sits in the bundle with `"manifests": []` and counts as done, and nothing
 says otherwise until a node tries to pull it, in the room with no network.
 
-`tools/offline-install/verify_layouts.sh` (in the vllm repo) walks every layout
-and checks each blob exists at the size its manifest claims. A check that only
-looks for missing blobs passes an empty layout, since no manifests means no
-blobs to find missing.
+A check worth trusting walks every layout and confirms each blob exists at the
+size its manifest claims. One that only looks for missing blobs passes an empty
+layout, since no manifests means no blobs to find missing.
