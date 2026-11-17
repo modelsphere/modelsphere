@@ -622,17 +622,22 @@ sends a real request through the entrypoint and shows what came back.
 published to the gateway).
 
 The service speaks the OpenAI API: any SDK or application that does, pointed at
-the service's `/v1`, works. To check from the command line, on server 1:
+the service's `/v1`, works.
+
+To check from the command line, there is no address to look up: **Access**, at
+the bottom of the details page's **Overview**, shows the service address with a
+copy button. With it (the address below is an example):
 
 ```bash
-SVC=$(kubectl -n models get svc glm-5-3-flash -o jsonpath='{.spec.clusterIP}')
-PORT=$(kubectl -n models get svc glm-5-3-flash -o jsonpath='{.spec.ports[0].port}')
-curl http://$SVC:$PORT/v1/chat/completions \
+curl http://10.0.0.11:32446/glm-5-3-flash/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"GLM-5.3-Flash","messages":[{"role":"user","content":"What is 17 times 19? Answer with the number only."}],"max_tokens":64,"chat_template_kwargs":{"thinking":false}}'
 ```
 
-`323` as the `content` means the install is done.
+`323` as the `content` means the install is done. This guide configures no API
+keys on the gateway, so the `Authorization` header the page's example shows is
+not needed; with keys configured, add `-H 'Authorization: Bearer <key>'`
+([openresty.md](openresty.md) covers setting them up).
 
 ## 9. Day-to-day operations
 
