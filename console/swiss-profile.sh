@@ -16,7 +16,17 @@
 set -eu
 NS=$1; CM=$2
 PROFILE=$(printf '%s' "$3" | base64 -d) || { echo "swiss-profile.sh: the profile argument is not base64" >&2; exit 1; }
-if kubectl -n "$NS" get configmap "$CM" >/dev/null 2>&1; then
+# Only NotFound means "no profile yet". Any other error (RBAC, an unreachable
+# API) is reported as itself rather than taken for absence.
+if ! ERR=$(kubectl -n "$NS" get configmap "$CM" -o name 2>&1); then
+  case "$ERR" in
+    *NotFound*|*"not found"*) EXISTS=false ;;
+    *) echo "swiss-profile.sh: cannot read $NS/$CM: $ERR" >&2; exit 1 ;;
+  esac
+else
+  EXISTS=true
+fi
+if [ "$EXISTS" = true ]; then
   echo "site profile $NS/$CM exists -- left as it is (swissd owns it; edit it from the web)"
   # Left alone, but not silently: lines this environment would write that the
   # stored profile does not have -- a profile saved before catalog-mirror was

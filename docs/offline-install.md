@@ -747,8 +747,10 @@ tarball a few KB in size for a 143 MB image -- valid tar, and silently useless.
 The full index is what preserves the digest, and it is expensive: `pause:3.10`
 is 553 MB as an index against roughly 700 KB for one platform. So an image a
 chart pins BY DIGEST keeps its index, and everything else is fetched for
-`BUNDLE_PLATFORMS` only -- one platform by default (`linux/$ARCH`),
-`"linux/amd64,linux/arm64"` for a cluster with both kinds of nodes.
+`BUNDLE_PLATFORMS` only -- one platform by default (`linux/$ARCH`). For a
+cluster with both kinds of nodes, `"linux/amd64,linux/arm64"` keeps the full
+index of every image (crane's `--platform` takes one platform), and the build
+checks that each listed platform is in it.
 
 ### 8.2 One build per output directory
 

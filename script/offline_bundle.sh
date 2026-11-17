@@ -187,7 +187,14 @@ RENDER_PLACEHOLDERS=(
 # environment files by hand missed intermediate layers and --set.
 helmfile -f "$REPO_ROOT/helmfile.yaml.gotmpl" -e "$ENVIRONMENT" \
   --state-values-set catalogSnapshot= \
-  ${EXTRA[@]+"${EXTRA[@]}"} build > "$OUT/.build.yaml" 2>/dev/null || : > "$OUT/.build.yaml"
+  ${EXTRA[@]+"${EXTRA[@]}"} build > "$OUT/.build.yaml" 2> "$OUT/.build.err" || {
+  # Fatal: the registry, the chart pins, chartRepo and whether catalog-mirror is
+  # bundled all come from this, and an empty answer is a quietly wrong bundle.
+  echo "helmfile build failed for environment $ENVIRONMENT:" >&2
+  cat "$OUT/.build.err" >&2
+  exit 1
+}
+rm -f "$OUT/.build.err"
 _rendered() {   # _rendered <dotted.key>: one value of renderedvalues, empty if absent
   python3 - "$OUT/.build.yaml" "$1" <<'PY' 2>/dev/null || true
 import sys, yaml
@@ -1085,6 +1092,10 @@ ARCHPY
     # check above would otherwise accept as finished.
     case "$img" in
       *@sha256:*) _plat="" ;;
+      # crane's --platform takes ONE platform ("no child with platform
+      # linux/amd64,linux/arm64", crane 0.22.1). Several: keep the full index,
+      # and _arch_matches below checks every listed platform is in it.
+      *,*)        _plat="" ;;
       *)          _plat="--platform ${BUNDLE_PLATFORMS:-linux/${ARCH:-amd64}}" ;;
     esac
     # Fetch through a mirror where the build host needs one. crane does NOT

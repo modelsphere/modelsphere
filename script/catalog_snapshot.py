@@ -37,7 +37,9 @@ import yaml
 
 CATALOG_URL = os.environ.get("CATALOG_URL", "https://modelsphere.github.io/model-catalog/").rstrip("/") + "/"
 CHARTS_URL = os.environ.get("CHARTS_URL", "https://modelsphere.github.io/helm-charts/").rstrip("/") + "/"
-LIMIT = 1024 * 1024  # a ConfigMap's size limit, which the snapshot has to fit
+# A ConfigMap is capped at 1 MiB, which also counts its other fields, and the
+# archive goes in as binaryData; stop well short of it.
+LIMIT = 900 * 1024
 
 
 def get(url, tries=4):
@@ -243,7 +245,7 @@ def main():
             t.addfile(info, io.BytesIO(files[rel]))
     data = buf.getvalue()
     if len(data) > LIMIT:
-        raise SystemExit(f"the snapshot is {len(data)} bytes, over the {LIMIT} a ConfigMap holds")
+        raise SystemExit(f"the snapshot is {len(data)} bytes, over the {LIMIT} kept as headroom under a ConfigMap's 1 MiB")
     with open(a.out, "wb") as f:
         f.write(data)
     n_cat = sum(k.startswith("model-catalog/") for k in files)
