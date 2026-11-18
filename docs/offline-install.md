@@ -199,7 +199,7 @@ ARCH=arm64 make offline-bundle ...
 Everything else in the bundle comes out of a helmfile render, but a model
 service is not in any environment -- it comes in from a `MODELS=` file or from
 the console, and a bundle is built before anyone knows which models the site
-will run. **One engine image is ~20 GB compressed**, larger than everything
+will run. **One engine image is 8-20 GB compressed**, more than everything
 else in the bundle put together, so none is bundled unless asked for. Two ways
 to bring one:
 

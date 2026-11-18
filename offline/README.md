@@ -7,7 +7,8 @@ loaded by `make offline-load`.
 
 Committed: this file, the directory structure, the `.gitignore`, `versions.env`,
 `site.env.example`, `engine-images.txt.example` and `units/`. The payload is not -- it is
-~17 GB without engine images, and one engine image is ~19 GB on top of that.
+about 6 GB for the default x86 bundle without engine images (about 3 GB for an
+all-Ascend arm64 one), and an engine image adds 8-20 GB on top of that.
 
 ```
 offline/
