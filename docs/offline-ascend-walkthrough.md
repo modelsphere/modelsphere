@@ -197,8 +197,8 @@ ARCH=arm64 make offline-bundle \
   and NicClusterPolicy. An all-Ascend cluster has no use for them, and some of
   their images are amd64-only, which fails an arm64 bundle
 
-This fetches about 40 component images and usually takes over an hour
-depending on the network. Afterwards `offline/` holds:
+This fetches about 40 component images, about 3 GB for arm64; how long it
+takes depends on the network. Afterwards `offline/` holds:
 
 ```
 offline/
@@ -235,7 +235,7 @@ Face.
 
 Copy to a disk:
 
-- the whole `modelsphere/` directory, `offline/` included: about 30 GB, mostly the component images and the vLLM-Ascend image
+- the whole `modelsphere/` directory, `offline/` included: about 12 GB: the component images about 3 GB, the vLLM-Ascend image about 9 GB, and the base tools about 0.5 GB
 - the weights directory `GLM-5.3-Flash-w8a8/`
 - python-build-standalone's aarch64 archive
 
@@ -446,17 +446,26 @@ left out and the printed line run as it is.
 
 ### 5.3 Label the nodes
 
-Back on server 1, label the four nodes. The Ascend device plugin selects nodes
-by `workerselector`:
+Back on server 1, label the four nodes:
 
 ```bash
 for n in ascend-11 ascend-12 ascend-13 ascend-14; do
   kubectl label node $n --overwrite \
     accelerator=huawei-Ascend910 \
     workerselector=dls-worker-node \
+    accelerator/huawei-ascend910=Ascend-910B4 \
     node.modelsphere.dev/accelerator=ascend-910b
 done
 ```
+
+- `workerselector`: the Ascend device plugin's DaemonSet runs on the nodes
+  carrying it
+- `accelerator=huawei-Ascend910`: Huawei's usual label for an Ascend node;
+  `ascend/smoke-pod.yaml` selects on it
+- `accelerator/huawei-ascend910`: the NPU model. The console reads it to tell
+  910B4 nodes apart, and a deploy is pinned to nodes whose value is a product
+  the model variant lists. Without it the console counts no 910B4 nodes and
+  the model's pods stay `Pending`
 
 `kubectl get nodes` now shows all four `NotReady`. That is expected: the
 cluster has no network plugin yet, and they turn `Ready` once Cilium is
@@ -683,7 +692,7 @@ not needed; with keys configured, add `-H 'Authorization: Bearer <key>'`
 | A node's `INTERNAL-IP` is not on the cluster network (`kubectl get nodes -o wide`) | on a host with several interfaces, kubelet takes the address of the one with the default route | on that node, add `--node-ip=<cluster-network address>` to `KUBELET_KUBEADM_ARGS` in `/var/lib/kubelet/kubeadm-flags.env`, then `systemctl restart kubelet` |
 | A node reports 0 NPUs | the device plugin is not scheduled there | check the `workerselector` label (5.3) and that `ascend-docker-runtime` is installed |
 | The console's model library is empty | the catalog service is off, or the snapshot path is wrong | check `catalogMirror` and `catalogSnapshot` in 6.1 (an absolute path) |
-| Model pods stay `Pending` | not enough NPUs or memory: each replica takes 8 NPUs and requests 64 GB | `kubectl describe pod` says which |
+| Model pods stay `Pending` | not enough NPUs or memory: each replica takes 8 NPUs and requests 64 GB; or no node matches the pod's node affinity | `kubectl describe pod` says which; for the affinity, check the `accelerator/huawei-ascend910=Ascend-910B4` label (5.3) |
 | A model pod cannot find its weights | that server has no weights, or a different path | check `/data/models/zai-org/GLM-5.3-Flash` on all four servers, and `swiss.modelPathTemplate` in 6.1 |
 
 ## 11. Summary

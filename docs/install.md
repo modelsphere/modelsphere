@@ -540,7 +540,7 @@ While the engine image is still being pulled, **the router pods CrashLoopBackOff
 with `Failed to read config file '/workspace/configs/workers.yaml'`, and that is
 the expected state, not a fault**: there is no engine to route to yet, so
 autoconfig has no worker list to write, and the routers restart until there is
-one. An engine image is ~15-19 GB, so on a cluster pulling it from the internet
+one. The sglang image is ~15-19 GB, so on a cluster pulling it from the internet
 this window is comfortably over half an hour. It clears itself.
 
 ```bash

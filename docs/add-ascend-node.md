@@ -178,8 +178,10 @@ If the node is already joined, do not join again — put those same two keys int
 
 ## 3. Label the node and deploy the device plugin
 
-Labels first — the device plugin's DaemonSet selects on `workerselector`, and
-the `nvidia.com/gpu.deploy.*` ones keep the GPU operator's DaemonSets off a node
+Labels first — the device plugin's DaemonSet selects on `workerselector`;
+`accelerator/huawei-ascend910` is the NPU model, which the console counts nodes
+by and pins a deploy to (without it a variant's pods stay `Pending`); and the
+`nvidia.com/gpu.deploy.*` ones keep the GPU operator's DaemonSets off a node
 that has no NVIDIA card (its validator and toolkit pods otherwise land here and
 fail):
 
@@ -187,6 +189,7 @@ fail):
 kubectl label node <node> --overwrite \
     accelerator=huawei-Ascend910 \
     workerselector=dls-worker-node \
+    accelerator/huawei-ascend910=<product> \
     node.modelsphere.dev/accelerator=ascend-910b \
     nvidia.com/gpu.deploy.operator-validator=false \
     nvidia.com/gpu.deploy.container-toolkit=false \
@@ -195,6 +198,9 @@ kubectl label node <node> --overwrite \
     nvidia.com/gpu.deploy.dcgm-exporter=false \
     nvidia.com/gpu.deploy.mig-manager=false
 ```
+
+`<product>` is the product name the model catalog uses for that card, e.g.
+`Ascend-910B4` for a 910B4 (`npu-smi info` shows the model).
 
 The compute-only taint is set at registration (step 2's `JoinConfiguration`); to
 reconcile it later use the same script the NVIDIA nodes use, pointed at this resource:
