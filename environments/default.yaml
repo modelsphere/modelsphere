@@ -243,7 +243,7 @@ enabled:
   networkOperator: true
   # Ascend NPU device plugin. Off unless the cluster actually has an Ascend node
   # prepared per docs/add-ascend-node.md — the DaemonSet targets
-  # accelerator=huawei-Ascend910 and would otherwise just sit with no node to run on.
+  # workerselector=dls-worker-node and would otherwise just sit with no node to run on.
   ascendDevicePlugin: false
   # The NicClusterPolicy is per-fabric hardware config (rdmaSharedDevicePlugin
   # selectors, optionally the DOCA/OFED driver). Applying the repo's copy blind on

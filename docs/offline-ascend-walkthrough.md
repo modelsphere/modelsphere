@@ -235,7 +235,7 @@ Face.
 
 Copy to a disk:
 
-- the whole `modelsphere/` directory, `offline/` included: about 12 GB, of which the component images are about 3 GB and the vLLM-Ascend image about 9 GB
+- the whole `modelsphere/` directory, `offline/` included: about 12 GB: the component images about 3 GB, the vLLM-Ascend image about 9 GB, and the base tools about 0.5 GB
 - the weights directory `GLM-5.3-Flash-w8a8/`
 - python-build-standalone's aarch64 archive
 
@@ -458,8 +458,10 @@ for n in ascend-11 ascend-12 ascend-13 ascend-14; do
 done
 ```
 
-- `accelerator` and `workerselector`: the Ascend device plugin runs on the
-  nodes carrying these two
+- `workerselector`: the Ascend device plugin's DaemonSet runs on the nodes
+  carrying it
+- `accelerator=huawei-Ascend910`: Huawei's usual label for an Ascend node;
+  `ascend/smoke-pod.yaml` selects on it
 - `accelerator/huawei-ascend910`: the NPU model. The console reads it to tell
   910B4 nodes apart, and a deploy is pinned to nodes whose value is a product
   the model variant lists. Without it the console counts no 910B4 nodes and

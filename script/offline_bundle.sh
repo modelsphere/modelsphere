@@ -102,7 +102,7 @@ Environment:
                          into the bundle: `model` for every variant, or
                          `model:variant` for one, e.g.
                          CATALOG_MODELS=glm-5.3-flash,qwen3-8b:vllm-tp1-a100.
-                         Unset: none -- one engine image is ~20 GB.
+                         Unset: none -- one engine image is 8-20 GB.
   BUNDLE_FETCH_INSECURE  true to allow plain HTTP when fetching through a
                          mirror above. Never applied to an upstream address.
   DOCKER_CONFIG          where crane looks for registry credentials.
@@ -752,7 +752,7 @@ img_failed=0
 # (offline/engine-images.txt, copied from the .example) and is optional: a
 # bundle for the platform stack alone is a legitimate thing to build.
 #
-# ⚠️ One engine image is ~19 GB compressed, more than the other 68 together.
+# ⚠️ One engine image is 8-20 GB compressed, more than the rest of the bundle together.
 ENGINE_LIST=${ENGINE_LIST:-$REPO_ROOT/offline/engine-images.txt}
 ENGINE_COUNT=0
 if [ -f "$ENGINE_LIST" ]; then

@@ -22,8 +22,8 @@
 # floating tags that match nothing any cluster here runs.
 #
 # ⚠️ Size. One engine image is 8-20 GB compressed -- more than the rest of the
-#    bundle put together (about 6 GB by default). Name only the engines
-#    that site will actually run.
+#    bundle put together (about 7 GB by default, base tools included). Name
+#    only the engines that site will actually run.
 #
 # Model weights are not here either, and are not a job for this bundle.
 
