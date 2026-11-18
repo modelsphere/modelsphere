@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -286,8 +287,153 @@ func dumpClusterState(spec string) {
 	dump("swissd logs", "-n", consoleNS, "logs", "deploy/swissd", "--tail=100")
 	dump("autoconfig logs", "-n", routeNS, "logs", "deploy/autoconfig", "--tail=50")
 	dump("operator logs", "-n", operatorNS, "logs", "deploy/llmscaleoperator-controller-manager", "--tail=50")
+	dumpUnhealthyPods(dump, append(append([]string{}, stackNamespaces...), modelNS)...)
 	if out, err := helm("list", "-A", "-a"); err == nil {
 		_, _ = fmt.Fprintf(GinkgoWriter, "\n--- helm releases\n%s\n", out)
+	}
+}
+
+type podDiagList struct {
+	Items []podDiag `json:"items"`
+}
+
+type podDiag struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Status struct {
+		Phase                 string            `json:"phase"`
+		Reason                string            `json:"reason"`
+		Message               string            `json:"message"`
+		Conditions            []podCondition    `json:"conditions"`
+		InitContainerStatuses []containerStatus `json:"initContainerStatuses"`
+		ContainerStatuses     []containerStatus `json:"containerStatuses"`
+	} `json:"status"`
+}
+
+type podCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+type containerStatus struct {
+	Name         string         `json:"name"`
+	Ready        bool           `json:"ready"`
+	RestartCount int            `json:"restartCount"`
+	State        containerState `json:"state"`
+	LastState    containerState `json:"lastState"`
+}
+
+type containerState struct {
+	Waiting *struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	} `json:"waiting"`
+	Terminated *struct {
+		Reason   string `json:"reason"`
+		Message  string `json:"message"`
+		ExitCode int    `json:"exitCode"`
+	} `json:"terminated"`
+}
+
+// dumpUnhealthyPods inspects every pod in the given namespaces and dumps status,
+// describe output, and per-container logs (including --previous) for any pod
+// that is not healthy (ignoring Completed/Succeeded pods).
+func dumpUnhealthyPods(dump func(string, ...string), namespaces ...string) {
+	seen := map[string]bool{}
+	for _, ns := range namespaces {
+		if ns == "" || seen[ns] {
+			continue
+		}
+		seen[ns] = true
+		out, err := kubectl("-n", ns, "get", "pods", "-o", "json")
+		if err != nil {
+			continue
+		}
+		var list podDiagList
+		if json.Unmarshal([]byte(out), &list) != nil {
+			continue
+		}
+		for _, p := range list.Items {
+			if isPodHealthy(p) {
+				continue
+			}
+			// Printed before describe because tail(..., 80) drops container state when events are long.
+			printPodSummary(ns, p)
+			dump(fmt.Sprintf("describe %s/%s", ns, p.Metadata.Name), "-n", ns, "describe", "pod", p.Metadata.Name)
+			for _, cs := range allContainerStatuses(p) {
+				if cs.State.Waiting == nil {
+					dump(fmt.Sprintf("%s/%s[%s] logs", ns, p.Metadata.Name, cs.Name),
+						"-n", ns, "logs", p.Metadata.Name, "-c", cs.Name, "--tail=50")
+				}
+				if cs.RestartCount > 0 || cs.LastState.Terminated != nil {
+					dump(fmt.Sprintf("%s/%s[%s] previous logs", ns, p.Metadata.Name, cs.Name),
+						"-n", ns, "logs", p.Metadata.Name, "-c", cs.Name, "--previous", "--tail=50")
+				}
+			}
+		}
+	}
+}
+
+func isPodHealthy(p podDiag) bool {
+	if p.Status.Phase == "Succeeded" || p.Status.Reason == "Completed" {
+		return true
+	}
+	if p.Status.Phase != "Running" {
+		return false
+	}
+	return isPodReady(p) && !hasPodRestarts(p)
+}
+
+func allContainerStatuses(p podDiag) []containerStatus {
+	out := make([]containerStatus, 0, len(p.Status.InitContainerStatuses)+len(p.Status.ContainerStatuses))
+	out = append(out, p.Status.InitContainerStatuses...)
+	out = append(out, p.Status.ContainerStatuses...)
+	return out
+}
+
+func isPodReady(p podDiag) bool {
+	for _, c := range p.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True"
+		}
+	}
+	return false
+}
+
+func hasPodRestarts(p podDiag) bool {
+	for _, cs := range allContainerStatuses(p) {
+		if cs.RestartCount > 0 || cs.LastState.Terminated != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func printPodSummary(ns string, p podDiag) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- pod %s/%s (phase=%s ready=%t)\n", ns, p.Metadata.Name, p.Status.Phase, isPodReady(p))
+	if p.Status.Reason != "" || p.Status.Message != "" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "status: %s %s\n", p.Status.Reason, p.Status.Message)
+	}
+	for _, c := range p.Status.Conditions {
+		if c.Status != "True" {
+			_, _ = fmt.Fprintf(GinkgoWriter, "condition %s=%s (%s): %s\n", c.Type, c.Status, c.Reason, c.Message)
+		}
+	}
+	for _, cs := range allContainerStatuses(p) {
+		parts := []string{fmt.Sprintf("ready=%t restarts=%d", cs.Ready, cs.RestartCount)}
+		if cs.State.Waiting != nil {
+			parts = append(parts, fmt.Sprintf("waiting=%s (%s)", cs.State.Waiting.Reason, cs.State.Waiting.Message))
+		}
+		if cs.State.Terminated != nil {
+			parts = append(parts, fmt.Sprintf("terminated=%s exit=%d (%s)", cs.State.Terminated.Reason, cs.State.Terminated.ExitCode, cs.State.Terminated.Message))
+		}
+		if cs.LastState.Terminated != nil {
+			parts = append(parts, fmt.Sprintf("last=%s exit=%d (%s)", cs.LastState.Terminated.Reason, cs.LastState.Terminated.ExitCode, cs.LastState.Terminated.Message))
+		}
+		_, _ = fmt.Fprintf(GinkgoWriter, "container %s: %s\n", cs.Name, strings.Join(parts, " "))
 	}
 }
 
