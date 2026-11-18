@@ -22,7 +22,13 @@ import (
 // specs pass. Off by default; failures dump the cluster state either way.
 var verbose = os.Getenv("E2E_VERBOSE") == "1" || os.Getenv("E2E_VERBOSE") == "true"
 
-const apiTimeout = 60 * time.Second
+const (
+	apiTimeout = 60 * time.Second
+	// swissd runs helmfile apply and helm uninstall synchronously under a 15m
+	// server budget (detached from the client request). Keep the client timeout
+	// past it so slow chart fetches do not cancel early and leave the release locked.
+	installTimeout = 16 * time.Minute
+)
 
 func show(title, out string) {
 	if verbose {
@@ -83,7 +89,7 @@ func deployModel(token string) {
 		Status      string `json:"status"`
 		StatusError string `json:"statusError"`
 	}
-	mustAPI(token, http.MethodPost, "/api/install", map[string]string{
+	mustAPITimeout(installTimeout, token, http.MethodPost, "/api/install", map[string]string{
 		"planHash": planned.Hash, "applyWith": cfg.backend,
 	}, &installed)
 	Expect(installed.Status).To(Equal("applied"), installed.StatusError)
@@ -118,7 +124,7 @@ func deployModel(token string) {
 func removeModel(token string) {
 	rel := cfg.release
 	By("uninstalling " + rel)
-	code, body := call(http.MethodDelete, fmt.Sprintf("%s/api/releases/%s/%s", swissd.base(), cfg.namespace, rel), token, "", nil, nil)
+	code, body := callTimeout(installTimeout, http.MethodDelete, fmt.Sprintf("%s/api/releases/%s/%s", swissd.base(), cfg.namespace, rel), token, "", nil, nil)
 	Expect(code).To(BeElementOf(http.StatusOK, http.StatusNotFound), body)
 	Eventually(func(g Gomega) {
 		out, err := kubectl("-n", cfg.namespace, "get", "deploy,sts,svc,pods,llmservices,modelroutes,llmscalers", "-o", "name")
@@ -221,13 +227,22 @@ func secretValue(ns, name, key string) string {
 }
 
 func mustAPI(token, method, path string, in, out any) {
+	code, text := callAPI(apiTimeout, token, method, path, in, out)
+	ExpectWithOffset(1, code).To(Equal(http.StatusOK), "%s %s: %s", method, path, text)
+}
+
+func mustAPITimeout(d time.Duration, token, method, path string, in, out any) {
+	code, text := callAPI(d, token, method, path, in, out)
+	ExpectWithOffset(1, code).To(Equal(http.StatusOK), "%s %s: %s", method, path, text)
+}
+
+func callAPI(d time.Duration, token, method, path string, in, out any) (int, string) {
 	var body io.Reader
 	ctype := ""
 	if in != nil {
 		body, ctype = jsonBody(in), "application/json"
 	}
-	code, text := call(method, swissd.base()+path, token, ctype, body, out)
-	ExpectWithOffset(1, code).To(Equal(http.StatusOK), "%s %s: %s", method, path, text)
+	return callTimeout(d, method, swissd.base()+path, token, ctype, body, out)
 }
 
 // httpClient opens a connection per request. kubectl port-forward drops idle
