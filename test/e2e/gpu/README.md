@@ -38,7 +38,6 @@ End-to-end test of the product stack on an existing GPU cluster. `make test-e2e-
 | `cilium.clusterName` | This cluster's Cilium name. Must be unique if clusters ever peer. |
 | `cilium.k8sServiceHost` | kubeadm `controlPlaneEndpoint`, or the control-plane node address. |
 | `storage.className` | A StorageClass that already exists. bodylog-victorialogs claims it. |
-| `llmGateway.node` | The node bodylog pins its sinks to. |
 
 Also confirm, and change if the site differs:
 
@@ -112,4 +111,4 @@ make helm-destroy-product ENV=test-gpu INTERACTIVE=false # uninstall part=produc
 
 Durations accept a Go duration (`90m`) or a bare number of seconds.
 
-`helmfile -e test-gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.node` and `hostPath` have to be non-empty for the product set to render at all; `REPLACE_ME` is enough for a template and not enough for an apply.
+`helmfile -e test-gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.hostPath` has to be non-empty for the product set to render at all. `llmGateway.bodylogNodeSelector` in that file is `modelsphere.dev/bodylog: "true"`, the same map a Deployment writes under `nodeSelector`, so bodylog selects a node with that label instead of a hostname.

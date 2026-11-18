@@ -161,12 +161,14 @@ func kindProfile() string {
 }
 
 // installStack applies the repo's helmfile, environment kind (kind-cilium for
-// the cilium profile). The node name follows KIND_CLUSTER, since bodylog is
-// pinned to that node; without kube-proxy cilium reaches the apiserver at it too.
+// the cilium profile). environments/kind.yaml sets llmGateway.bodylogNodeSelector;
+// this labels the kind node with it before apply. Without kube-proxy, cilium
+// reaches the apiserver at that same node.
 func installStack() {
 	env := "kind"
 	node := cfg.cluster + "-control-plane"
-	sets := []string{"--state-values-set", "llmGateway.node=" + node}
+	mustKubectl("label", "node", node, "modelsphere.dev/bodylog=true", "--overwrite")
+	var sets []string
 	if cfg.profile == "cilium" {
 		env = "kind-cilium"
 		sets = append(sets, "--state-values-set", "cilium.k8sServiceHost="+node)

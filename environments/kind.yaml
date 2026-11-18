@@ -30,9 +30,11 @@ storage:
   persistence: false
 
 llmGateway:
-  # kind names its node <cluster>-control-plane; test/e2e/kind sets this from
-  # KIND_CLUSTER, so the value here only matters for a hand-run apply.
-  node: modelsphere-e2e-control-plane
+  # Same map a Deployment writes under nodeSelector. test/e2e/kind labels the
+  # kind node with these labels before apply. Empty keeps the hostname pin
+  # (llmGateway.node).
+  bodylogNodeSelector:
+    modelsphere.dev/bodylog: "true"
   hostPath: /var/lib/bodylog
   memoryLimit: 512Mi
   serviceMonitor: false    # no monitoring.coreos.com/v1 without kube-prometheus-stack
