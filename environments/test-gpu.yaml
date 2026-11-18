@@ -60,9 +60,11 @@ storage:
   className: REPLACE_ME
 
 llmGateway:
-  # A node that keeps bodylog's sinks. bodylog, bodylog-exporter and
-  # bodylog-victorialogs all refuse an empty node or hostPath.
-  node: REPLACE_ME
+  # Same map a Deployment writes under nodeSelector. test/e2e/gpu labels one
+  # node with these labels before apply. Empty keeps the hostname pin
+  # (llmGateway.node).
+  bodylogNodeSelector:
+    modelsphere.dev/bodylog: "true"
   # The directory on that node. kubelet creates it. Change it if the site
   # keeps the sinks somewhere else; the three releases must agree.
   hostPath: /mnt/disk0/bodylog-sinks

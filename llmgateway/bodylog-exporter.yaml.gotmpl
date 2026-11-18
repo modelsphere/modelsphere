@@ -1,5 +1,8 @@
 {{- $g := .Values.llmGateway }}
-{{- if not $g.node }}{{ fail (printf "llmGateway.node is empty for environment %q: the exporter has to run on the node bodylog wrote to. Set it in environments/%s.yaml, or enabled.bodylogExporter: false." .Environment.Name .Environment.Name) }}{{ end }}
+{{- $sel := dig "bodylogNodeSelector" (dict) $g }}
+{{- if empty $sel }}
+{{- if not $g.node }}{{ fail (printf "llmGateway.node is empty for environment %q: the exporter has to run on the node bodylog wrote to. Set llmGateway.node or llmGateway.bodylogNodeSelector in environments/%s.yaml, or enabled.bodylogExporter: false." .Environment.Name .Environment.Name) }}{{ end }}
+{{- end }}
 {{- if not $g.hostPath }}{{ fail (printf "llmGateway.hostPath is empty for environment %q. It has to be the directory bodylog writes to; a mismatch exports nothing and logs nothing." .Environment.Name) }}{{ end }}
 
 data:
@@ -15,7 +18,11 @@ image:
 listener:
   service: bodylog
 nodeSelector:
+{{- if not (empty $sel) }}
+{{ toYaml $sel | nindent 2 }}
+{{- else }}
   kubernetes.io/hostname: {{ $g.node | quote }}
+{{- end }}
 secret:
   existingSecret: bodylog
 serviceMonitor:

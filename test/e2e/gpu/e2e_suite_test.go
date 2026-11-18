@@ -255,11 +255,21 @@ func isolateKubeconfig() {
 	By("using kube context " + cfg.context)
 }
 
+// labelBodylogNode marks one node with the labels environments/test-gpu.yaml
+// selects (llmGateway.bodylogNodeSelector). The selector itself stays in that file.
+func labelBodylogNode() {
+	out := mustKubectl("get", "nodes", "-o", "jsonpath={.items[0].metadata.name}")
+	name := strings.TrimSpace(out)
+	Expect(name).NotTo(BeEmpty(), "no node to label modelsphere.dev/bodylog")
+	mustKubectl("label", "node", name, "modelsphere.dev/bodylog=true", "--overwrite")
+}
+
 // installProduct applies helmfile -e test-gpu -l part=product. --skip-needs is the
 // default and is passed anyway: needs edges point at kube-prometheus-stack,
 // which is part=infra and must not be pulled into a per-run apply.
 func installProduct() {
 	rows := listProduct()
+	labelBodylogNode()
 	By(fmt.Sprintf("installing part=product (%d releases): helmfile -e %s apply", len(rows), cfg.helmEnv))
 	installStarted = true
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.installTO)
