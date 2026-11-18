@@ -44,7 +44,7 @@ Also confirm, and change if the site differs:
 - `llmGateway.hostPath` (default `/mnt/disk0/bodylog-sinks`).
 - `cilium.podCIDR` if the cluster's podSubnet is not `192.168.0.0/16`. Changing it after Cilium is up renumbers every pod.
 - `cilium.serviceMonitors` is false so the first infra apply can render before the Prometheus CRDs exist. After that apply, set it true and apply infra once more.
-- `test/e2e/gpu/testdata/profile.yaml`: `model.pathTemplate`, and `nodes.gpuProductAliases` if the node's `nvidia.com/gpu.product` label is not `NVIDIA-A100-SXM4-80GB`. The alias is used only when `E2E_GPU_PRODUCTS` is set.
+- `test/e2e/gpu/testdata/profile.yaml`: `registry.mirror`, `model.pathTemplate`, and `nodes.gpuProductAliases` if the node's `nvidia.com/gpu.product` label is not `NVIDIA-A100-SXM4-80GB`. The alias is used only when `E2E_GPU_PRODUCTS` is set.
 - The profile matches swiss 0.7.2 (`nodes.gpuProductAliases`). A newer swiss requires `nodes.gpus` and will reject this file until it is edited.
 - `enabled.networkOperator` if the cluster has no RDMA devices (the default is on; `nicClusterPolicy` stays off).
 - Runner labels in `.github/workflows/e2e-gpu.yaml` (`[self-hosted, gpu]` is a placeholder). `.github/actionlint.yaml` lists `gpu` so actionlint accepts it; change both when the label is confirmed.
