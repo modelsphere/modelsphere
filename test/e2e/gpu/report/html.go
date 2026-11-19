@@ -27,7 +27,6 @@ type htmlReportData struct {
 	Window         string
 	Duration       string
 	RunURL         string
-	ArtifactURL    string
 	Ref            string
 	ShortSHA       string
 	Event          string
@@ -514,7 +513,6 @@ func RenderHTML(reports []types.Report, ctx WorkflowContext) (string, error) {
 		Window:         window,
 		Duration:       dur,
 		RunURL:         ctx.RunURL,
-		ArtifactURL:    ctx.ArtifactURL,
 		Ref:            ctx.Ref,
 		ShortSHA:       shortSHA(ctx.SHA),
 		Event:          ctx.Event,
@@ -556,7 +554,6 @@ func RenderFallbackHTML(ctx WorkflowContext, reason string) (string, error) {
 		Headline:       "No Ginkgo JSON suite report was available.",
 		FallbackReason: strings.TrimSpace(reason),
 		RunURL:         ctx.RunURL,
-		ArtifactURL:    ctx.ArtifactURL,
 		Ref:            ctx.Ref,
 		ShortSHA:       shortSHA(ctx.SHA),
 		Event:          ctx.Event,

@@ -30,13 +30,15 @@ type RunConfig struct {
 
 // WorkflowContext carries GitHub Actions metadata into Markdown and HTML rendering.
 type WorkflowContext struct {
-	StepOutcome string
-	JobStatus   string
-	RunURL      string
-	ArtifactURL string
-	Ref         string
-	SHA         string
-	Event       string
+	StepOutcome       string
+	JobStatus         string
+	RunURL            string
+	ArtifactURL       string
+	ReportURL         string
+	ReportUploadError string
+	Ref               string
+	SHA               string
+	Event             string
 }
 
 // ReadJSON loads Ginkgo's -ginkgo.json-report array ([]types.Report) from path.

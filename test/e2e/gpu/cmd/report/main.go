@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,18 +27,25 @@ func run(args []string, stdout io.Writer) error {
 	fs.SetOutput(io.Discard)
 
 	var (
-		input    string
-		summary  string
-		htmlPath string
-		ctx      report.WorkflowContext
+		input        string
+		summary      string
+		htmlPath     string
+		uploadHTML   string
+		uploadServer string
+		uploadUser   string
+		ctx          report.WorkflowContext
 	)
 	fs.StringVar(&input, "input", "", "path to Ginkgo JSON report file (-ginkgo.json-report)")
 	fs.StringVar(&summary, "summary", "", "path to append Markdown summary (defaults to stdout when -html is unset)")
 	fs.StringVar(&htmlPath, "html", "", "path to write standalone HTML report")
+	fs.StringVar(&uploadHTML, "upload-html", "", "path to HTML report to upload if -upload-server is set (errors are non-fatal)")
+	fs.StringVar(&uploadServer, "upload-server", os.Getenv("E2E_REPORT_SERVER_URL"), "internal HTTP file server base URL (dufs)")
+	fs.StringVar(&uploadUser, "upload-user", os.Getenv("E2E_REPORT_USER"), "HTTP Basic auth username for internal report server (defaults to ci)")
 	fs.StringVar(&ctx.StepOutcome, "step-outcome", os.Getenv("E2E_STEP_OUTCOME"), "e2e step outcome")
 	fs.StringVar(&ctx.JobStatus, "job-status", os.Getenv("E2E_JOB_STATUS"), "workflow job status")
 	fs.StringVar(&ctx.RunURL, "run-url", defaultRunURL(), "workflow run URL")
 	fs.StringVar(&ctx.ArtifactURL, "artifact-url", os.Getenv("E2E_ARTIFACT_URL"), "uploaded report artifact URL")
+	fs.StringVar(&ctx.ReportURL, "report-url", os.Getenv("E2E_REPORT_URL"), "internal HTML report URL")
 	fs.StringVar(&ctx.Ref, "ref", os.Getenv("GITHUB_REF_NAME"), "git ref name")
 	fs.StringVar(&ctx.SHA, "sha", os.Getenv("GITHUB_SHA"), "git commit SHA")
 	fs.StringVar(&ctx.Event, "event", os.Getenv("GITHUB_EVENT_NAME"), "workflow trigger event")
@@ -82,6 +90,23 @@ func run(args []string, stdout io.Writer) error {
 		}
 		if err := os.WriteFile(htmlPath, []byte(html), 0o644); err != nil {
 			return fmt.Errorf("write html %s: %w", htmlPath, err)
+		}
+	}
+
+	if uploadHTML != "" && strings.TrimSpace(uploadServer) != "" && ctx.ReportURL == "" {
+		uploadedURL, err := report.UploadHTML(
+			context.Background(),
+			uploadHTML,
+			uploadServer,
+			uploadUser,
+			os.Getenv("E2E_REPORT_TOKEN"),
+			os.Getenv("GITHUB_RUN_ID"),
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: internal html upload failed: %v\n", err)
+			ctx.ReportUploadError = err.Error()
+		} else if uploadedURL != "" {
+			ctx.ReportURL = uploadedURL
 		}
 	}
 

@@ -90,6 +90,7 @@ func RenderMarkdown(reports []types.Report, ctx WorkflowContext) string {
 			ctx.StepOutcome)
 	}
 
+	writeReportLinks(&b, ctx)
 	writeMetadataTable(&b, merged, runCfg, durSec, ctx)
 	writeCountsTable(&b, counts)
 
@@ -129,6 +130,8 @@ func RenderFallbackMarkdown(ctx WorkflowContext, reason string) string {
 		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(reason))
 	}
 
+	writeReportLinks(&b, ctx)
+
 	var rows [][2]string
 	if ctx.JobStatus != "" {
 		rows = append(rows, [2]string{"Job status", fmt.Sprintf("`%s`", escapeTableCell(ctx.JobStatus))})
@@ -139,15 +142,29 @@ func RenderFallbackMarkdown(ctx WorkflowContext, reason string) string {
 	if wf := formatWorkflowCell(ctx); wf != "" {
 		rows = append(rows, [2]string{"Workflow", wf})
 	}
-	if ctx.ArtifactURL != "" {
-		rows = append(rows, [2]string{"Report", fmt.Sprintf("[Download HTML report](%s)", strings.TrimSpace(ctx.ArtifactURL))})
-	}
 	if len(rows) > 0 {
 		b.WriteString("### Workflow Metadata\n\n")
 		writeKeyValueTable(&b, rows)
 	}
 
 	return b.String()
+}
+
+func writeReportLinks(b *strings.Builder, ctx WorkflowContext) {
+	var links []string
+	if u := strings.TrimSpace(ctx.ReportURL); u != "" {
+		links = append(links, fmt.Sprintf("[Open HTML report](%s)", u))
+	}
+	if u := strings.TrimSpace(ctx.ArtifactURL); u != "" {
+		links = append(links, fmt.Sprintf("[Download GitHub artifact (.zip)](%s)", u))
+	}
+	if len(links) > 0 {
+		fmt.Fprintf(b, "> [!TIP]\n> **HTML Report:** %s\n\n", strings.Join(links, " · "))
+	}
+	if msg := strings.TrimSpace(ctx.ReportUploadError); msg != "" {
+		fmt.Fprintf(b, "> [!NOTE]\n> Internal HTML server upload failed (e2e result unaffected): `%s`\n\n",
+			strings.ReplaceAll(msg, "`", "'"))
+	}
 }
 
 func analyzeReports(reports []types.Report) (types.Report, types.SpecReports, specCounts, types.SpecReports, RunConfig) {
@@ -291,9 +308,6 @@ func writeMetadataTable(b *strings.Builder, r types.Report, cfg RunConfig, durSe
 
 	if wf := formatWorkflowCell(ctx); wf != "" {
 		rows = append(rows, [2]string{"Workflow", wf})
-	}
-	if ctx.ArtifactURL != "" {
-		rows = append(rows, [2]string{"Report", fmt.Sprintf("[Download HTML report](%s)", strings.TrimSpace(ctx.ArtifactURL))})
 	}
 
 	if len(rows) > 0 {
