@@ -3,7 +3,10 @@
 # gpuProductAliases as deprecated; this file will not load there unchanged.
 name: gpu-e2e
 namespace: llm-demo
-chartRepo: https://modelsphere.github.io/helm-charts
+chartRepo: https://harbor.4pd.io/chartrepo/hardcore-tech
+registry:
+  # Engine images are pulled from the mirror, keeping the catalog's image name and tag.
+  mirror: harbor.4pd.io/hardcore-tech
 catalogs:
   - name: public
     # The suite replaces this token with E2E_CATALOG.
