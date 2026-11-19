@@ -345,6 +345,5 @@ test-e2e-gpu:
 	(cd test/e2e/gpu && go run ./cmd/report \
 	  -input "$$report_dir/ginkgo-report.json" \
 	  -html "$$report_dir/index.html" \
-	  -summary "$$GITHUB_STEP_SUMMARY" \
 	  -step-outcome "$$step_outcome") || true; \
 	exit $$rc

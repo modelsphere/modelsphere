@@ -114,9 +114,11 @@ Durations accept a Go duration (`90m`) or a bare number of seconds.
 
 ## Reporting
 
-`make test-e2e-gpu` writes Ginkgo's native JSON report (`ginkgo-report.json`, with non-secret run configuration recorded via `AddReportEntry("run-config", ...)`), renders a standalone HTML report (`index.html`) directly under `E2E_REPORT_DIR` (`test/e2e/gpu/reports` by default, ignored by git), and appends a Markdown summary to `$GITHUB_STEP_SUMMARY` when running in GitHub Actions.
+`make test-e2e-gpu` writes Ginkgo's native JSON report (`ginkgo-report.json`, with non-secret run configuration recorded via `AddReportEntry("run-config", ...)`) and a standalone HTML report (`index.html`) directly under `E2E_REPORT_DIR` (`test/e2e/gpu/reports` by default, ignored by git).
 
-In `.github/workflows/e2e-gpu.yaml`, `Upload report` uploads `test/e2e/gpu/reports` as the `e2e-gpu-report` workflow artifact (`retention-days: 30`). Future notification steps (Slack or custom webhooks) can run as an `if: always()` step consuming `test/e2e/gpu/reports/ginkgo-report.json`.
+In `.github/workflows/e2e-gpu.yaml`:
+- `Upload report` uploads `test/e2e/gpu/reports` as the `e2e-gpu-report` workflow artifact (`retention-days: 30`).
+- `Publish summary` runs `cmd/report` with `if: always()`, optionally uploading `index.html` via HTTP `PUT` to `E2E_REPORT_SERVER_URL/e2e-gpu/<run_id>.html` (using HTTP Basic auth with `E2E_REPORT_USER` and `E2E_REPORT_TOKEN`, defaulting the username to `ci` when `E2E_REPORT_USER` is unset) and posting a prominent banner at the top of `$GITHUB_STEP_SUMMARY` with both the internal HTML link and the GitHub artifact download link. Internal server upload errors are non-fatal so an unreachable file server never fails the job. Future notification steps (Slack or custom webhooks) can run as an `if: always()` step consuming `test/e2e/gpu/reports/ginkgo-report.json`.
 
 Preview a local JSON report as Markdown:
 

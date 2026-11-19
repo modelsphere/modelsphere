@@ -88,6 +88,7 @@ jobs:
           echo "KUBECONFIG=$dir/kubeconfig" >> "$GITHUB_ENV"
           echo "E2E_KUBECONFIG_DIR=$dir" >> "$GITHUB_ENV"
       - name: e2e
+        id: e2e
         env:
           E2E_VERBOSE: "true"
         run: make test-e2e-gpu
@@ -101,6 +102,7 @@ jobs:
             rm -rf "$E2E_KUBECONFIG_DIR"
           fi
       - name: Upload report
+        id: upload-report
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
@@ -108,5 +110,15 @@ jobs:
           path: test/e2e/gpu/reports
           if-no-files-found: ignore
           retention-days: 30
+      - name: Publish summary
+        if: always()
+        env:
+          E2E_STEP_OUTCOME: ${{ steps.e2e.outcome }}
+          E2E_JOB_STATUS: ${{ job.status }}
+          E2E_ARTIFACT_URL: ${{ steps.upload-report.outputs.artifact-url }}
+          E2E_REPORT_SERVER_URL: ${{ secrets.E2E_REPORT_SERVER_URL }}
+          E2E_REPORT_USER: ${{ secrets.E2E_REPORT_USER }}
+          E2E_REPORT_TOKEN: ${{ secrets.E2E_REPORT_TOKEN }}
+        run: cd test/e2e/gpu && go run ./cmd/report -input reports/ginkgo-report.json -upload-html reports/index.html -summary "$GITHUB_STEP_SUMMARY"
       # Future notification channels (custom webhook / Slack) can run as an
       # `if: always()` step here consuming test/e2e/gpu/reports/ginkgo-report.json.

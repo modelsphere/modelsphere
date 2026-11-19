@@ -1,6 +1,10 @@
 package report
 
 import (
+	"errors"
+	"io"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -219,6 +223,7 @@ func TestRenderMarkdownPassed(t *testing.T) {
 		JobStatus:   "success",
 		RunURL:      "https://github.com/modelsphere/modelsphere/actions/runs/42",
 		ArtifactURL: "https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99",
+		ReportURL:   "http://reports.internal:5000/e2e-gpu/42.html",
 		Ref:         "main",
 		SHA:         "abcdef1234567890",
 		Event:       "workflow_dispatch",
@@ -228,11 +233,13 @@ func TestRenderMarkdownPassed(t *testing.T) {
 	checks := []string{
 		"## ✅ GPU E2E Report: PASSED",
 		"**1/1** specs passed · **14m 22s**",
+		"> [!TIP]",
+		"[Open HTML report](http://reports.internal:5000/e2e-gpu/42.html)",
+		"[Download GitHub artifact (.zip)](https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99)",
 		"`test-gpu` (context: `gpu-cluster`)",
 		"`qwen3-8b / vllm-tp1-a100` (servedName: `Qwen3-8B`)",
 		"sha: `abcdef1`",
 		"[View run](https://github.com/modelsphere/modelsphere/actions/runs/42)",
-		"[Download HTML report](https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99)",
 		"| 1 | 0 | 0 | 0 | 1 |",
 		"### Suite Lifecycle",
 		"| BeforeSuite | ✅ passed | 1m 05s |",
@@ -640,5 +647,143 @@ func TestRenderHTMLBeforeSuiteAndEmptyAndFallback(t *testing.T) {
 				t.Errorf("want %q in fallback HTML:\n%s", tc.want, got)
 			}
 		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUploadHTML(t *testing.T) {
+	dir := t.TempDir()
+	htmlFile := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(htmlFile, []byte("<!DOCTYPE html><html>ok</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("uploads with default ci user and basic auth", func(t *testing.T) {
+		var (
+			gotMethod string
+			gotPath   string
+			gotCT     string
+			gotUser   string
+			gotPass   string
+			gotOK     bool
+			gotBody   string
+		)
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotCT = r.Header.Get("Content-Type")
+			gotUser, gotPass, gotOK = r.BasicAuth()
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Status:     "201 Created",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})}
+
+		gotURL, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000/", "", "secret-token", "12345")
+		if err != nil {
+			t.Fatalf("UploadHTML: %v", err)
+		}
+		wantURL := "http://reports.internal:5000/e2e-gpu/12345.html"
+		if gotURL != wantURL {
+			t.Fatalf("gotURL = %q, want %q", gotURL, wantURL)
+		}
+		if gotMethod != http.MethodPut || gotPath != "/e2e-gpu/12345.html" {
+			t.Fatalf("unexpected request: %s %s", gotMethod, gotPath)
+		}
+		if !gotOK || gotUser != "ci" || gotPass != "secret-token" {
+			t.Fatalf("unexpected basic auth: ok=%v user=%q pass=%q", gotOK, gotUser, gotPass)
+		}
+		if gotCT != "text/html; charset=utf-8" || gotBody != "<!DOCTYPE html><html>ok</html>" {
+			t.Fatalf("unexpected content-type/body: %q / %q", gotCT, gotBody)
+		}
+	})
+
+	t.Run("uses explicit user without splitting colon in token", func(t *testing.T) {
+		var gotUser, gotPass string
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotUser, gotPass, _ = r.BasicAuth()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})}
+
+		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "reporter", "tok:en", "98"); err != nil {
+			t.Fatalf("UploadHTML: %v", err)
+		}
+		if gotUser != "reporter" || gotPass != "tok:en" {
+			t.Fatalf("got %q:%q, want reporter:tok:en", gotUser, gotPass)
+		}
+	})
+
+	t.Run("supports custom user:password token when user is empty", func(t *testing.T) {
+		var gotUser, gotPass string
+		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			gotUser, gotPass, _ = r.BasicAuth()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})}
+
+		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "", "uploader:pw123", "99"); err != nil {
+			t.Fatalf("UploadHTML: %v", err)
+		}
+		if gotUser != "uploader" || gotPass != "pw123" {
+			t.Fatalf("got %q:%q, want uploader:pw123", gotUser, gotPass)
+		}
+	})
+
+	t.Run("returns error when server fails or is unreachable", func(t *testing.T) {
+		errClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Status:     "500 Internal Server Error",
+				Body:       io.NopCloser(strings.NewReader("disk full")),
+			}, nil
+		})}
+		url, err := uploadHTMLWithClient(t.Context(), errClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10")
+		if err == nil || url != "" || !strings.Contains(err.Error(), "500") {
+			t.Fatalf("expected 500 error, got url=%q err=%v", url, err)
+		}
+
+		downClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, errors.New("connection refused")
+		})}
+		url, err = uploadHTMLWithClient(t.Context(), downClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10")
+		if err == nil || url != "" || !strings.Contains(err.Error(), "connection refused") {
+			t.Fatalf("expected connection error against down server, got url=%q err=%v", url, err)
+		}
+	})
+
+	t.Run("skips cleanly when file or server is missing", func(t *testing.T) {
+		if url, err := UploadHTML(t.Context(), filepath.Join(dir, "missing.html"), "http://127.0.0.1:5000", "ci", "tok", "10"); err != nil || url != "" {
+			t.Fatalf("expected empty skip for missing file, got url=%q err=%v", url, err)
+		}
+		if url, err := UploadHTML(t.Context(), htmlFile, "", "ci", "tok", "10"); err != nil || url != "" {
+			t.Fatalf("expected empty skip for empty server, got url=%q err=%v", url, err)
+		}
+	})
+}
+
+func TestRenderMarkdownUploadFailureNote(t *testing.T) {
+	md := RenderFallbackMarkdown(WorkflowContext{
+		StepOutcome:       "success",
+		ArtifactURL:       "https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99",
+		ReportUploadError: "dial tcp 127.0.0.1:5000: connection refused",
+	}, "No JSON")
+	if !strings.Contains(md, "[Download GitHub artifact (.zip)](https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99)") {
+		t.Fatalf("missing artifact link in:\n%s", md)
+	}
+	if !strings.Contains(md, "Internal HTML server upload failed (e2e result unaffected)") {
+		t.Fatalf("missing non-fatal upload note in:\n%s", md)
 	}
 }
