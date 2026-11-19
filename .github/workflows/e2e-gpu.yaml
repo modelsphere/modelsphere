@@ -89,14 +89,9 @@ jobs:
           echo "KUBECONFIG=$dir/kubeconfig" >> "$GITHUB_ENV"
           echo "E2E_KUBECONFIG_DIR=$dir" >> "$GITHUB_ENV"
       - name: e2e
-        id: e2e
         env:
           E2E_VERBOSE: "true"
-          E2E_REPORT_JSON: ${{ runner.temp }}/e2e-gpu-report.json
-        run: |
-          set -euo pipefail
-          rm -f "$E2E_REPORT_JSON"
-          make test-e2e-gpu
+        run: make test-e2e-gpu
       - name: Remove kubeconfig
         if: always()
         run: |
@@ -106,40 +101,13 @@ jobs:
           if [ -n "${E2E_KUBECONFIG_DIR:-}" ]; then
             rm -rf "$E2E_KUBECONFIG_DIR"
           fi
-      - name: Publish summary
+      - name: Upload report
         if: always()
-        env:
-          E2E_REPORT_JSON: ${{ runner.temp }}/e2e-gpu-report.json
-          E2E_STEP_OUTCOME: ${{ steps.e2e.outcome }}
-          JOB_STATUS: ${{ job.status }}
-          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          GITHUB_REF_NAME_VAL: ${{ github.ref_name }}
-          GITHUB_SHA_VAL: ${{ github.sha }}
-          GITHUB_EVENT_VAL: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GITHUB_STEP_SUMMARY:-}" ]; then
-            echo "GITHUB_STEP_SUMMARY is not set; skipping summary"
-            exit 0
-          fi
-          if command -v go >/dev/null 2>&1; then
-            (cd test/e2e/gpu && go run ./cmd/report \
-              -input "$E2E_REPORT_JSON" \
-              -summary "$GITHUB_STEP_SUMMARY" \
-              -step-outcome "$E2E_STEP_OUTCOME" \
-              -job-status "$JOB_STATUS" \
-              -run-url "$GITHUB_RUN_URL" \
-              -ref "$GITHUB_REF_NAME_VAL" \
-              -sha "$GITHUB_SHA_VAL" \
-              -event "$GITHUB_EVENT_VAL")
-          else
-            {
-              echo "## GPU E2E Report"
-              echo ""
-              echo "- Job status: \`${JOB_STATUS}\`"
-              echo "- E2E step outcome: \`${E2E_STEP_OUTCOME}\`"
-              echo "- Report unavailable (Go toolchain was not installed before failure)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: e2e-gpu-report
+          path: test/e2e/gpu/reports
+          if-no-files-found: ignore
+          retention-days: 30
       # Future notification channels (custom webhook / Slack) can run as an
-      # `if: always()` step here consuming the Ginkgo JSON report at `$E2E_REPORT_JSON`.
+      # `if: always()` step here consuming test/e2e/gpu/reports/ginkgo-report.json.

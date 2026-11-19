@@ -218,6 +218,7 @@ func TestRenderMarkdownPassed(t *testing.T) {
 		StepOutcome: "success",
 		JobStatus:   "success",
 		RunURL:      "https://github.com/modelsphere/modelsphere/actions/runs/42",
+		ArtifactURL: "https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99",
 		Ref:         "main",
 		SHA:         "abcdef1234567890",
 		Event:       "workflow_dispatch",
@@ -231,6 +232,7 @@ func TestRenderMarkdownPassed(t *testing.T) {
 		"`qwen3-8b / vllm-tp1-a100` (servedName: `Qwen3-8B`)",
 		"sha: `abcdef1`",
 		"[View run](https://github.com/modelsphere/modelsphere/actions/runs/42)",
+		"[Download HTML report](https://github.com/modelsphere/modelsphere/actions/runs/42/artifacts/99)",
 		"| 1 | 0 | 0 | 0 | 1 |",
 		"### Suite Lifecycle",
 		"| BeforeSuite | ✅ passed | 1m 05s |",
@@ -421,6 +423,221 @@ func TestRenderFallbackMarkdown(t *testing.T) {
 			md := RenderFallbackMarkdown(tc.ctx, "No Ginkgo JSON report produced.")
 			if !strings.Contains(md, tc.wantHead) {
 				t.Errorf("got:\n%s\nwant heading %q", md, tc.wantHead)
+			}
+		})
+	}
+}
+
+func TestRenderHTMLPassed(t *testing.T) {
+	start := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	end := start.Add(5 * time.Minute)
+	path := filepath.Join(t.TempDir(), "report.json")
+	rep := types.Report{
+		SuiteDescription: "modelsphere gpu e2e",
+		SuiteSucceeded:   true,
+		StartTime:        start,
+		EndTime:          end,
+		RunTime:          end.Sub(start),
+		SpecReports: types.SpecReports{
+			{
+				LeafNodeType: types.NodeTypeBeforeSuite,
+				State:        types.SpecStatePassed,
+				RunTime:      30 * time.Second,
+				ReportEntries: types.ReportEntries{
+					{
+						Name: RunConfigEntryName,
+						Value: types.WrapEntryValue(RunConfig{
+							HelmEnv:    "test-gpu",
+							Model:      "qwen3-8b",
+							Variant:    "vllm-tp1-a100",
+							ServedName: "Qwen3-8B",
+							Release:    "e2e-gpu",
+							Namespace:  "llm-demo",
+							Backend:    "helm",
+							GPUCount:   1,
+						}),
+					},
+				},
+			},
+			{
+				ContainerHierarchyTexts:    []string{"stack", "swissd"},
+				LeafNodeType:               types.NodeTypeIt,
+				LeafNodeText:               "deploys model",
+				State:                      types.SpecStatePassed,
+				RunTime:                    270 * time.Second,
+				CapturedGinkgoWriterOutput: "helm release deployed\nchat ok",
+				SpecEvents: types.SpecEvents{
+					{
+						SpecEventType:    types.SpecEventByStart,
+						Message:          "planning",
+						TimelineLocation: types.TimelineLocation{Time: start.Add(30 * time.Second)},
+					},
+					{
+						SpecEventType:    types.SpecEventByEnd,
+						Message:          "planning",
+						Duration:         2 * time.Second,
+						TimelineLocation: types.TimelineLocation{Time: start.Add(32 * time.Second)},
+					},
+				},
+			},
+			{
+				LeafNodeType: types.NodeTypeReportAfterSuite,
+				State:        types.SpecStatePassed,
+			},
+		},
+	}
+
+	if err := reporters.GenerateJSONReport(rep, path); err != nil {
+		t.Fatalf("GenerateJSONReport: %v", err)
+	}
+	reports, err := ReadJSON(path)
+	if err != nil {
+		t.Fatalf("ReadJSON: %v", err)
+	}
+
+	html, err := RenderHTML(reports, WorkflowContext{
+		StepOutcome: "success",
+		JobStatus:   "success",
+		RunURL:      "https://github.com/modelsphere/modelsphere/actions/runs/42",
+		Ref:         "main",
+		SHA:         "abcdef1234567890",
+		Event:       "workflow_dispatch",
+	})
+	if err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+
+	checks := []string{
+		"<!DOCTYPE html>",
+		"PASSED",
+		"1/1 specs passed",
+		"test-gpu",
+		"qwen3-8b / vllm-tp1-a100 (servedName: Qwen3-8B)",
+		"planning",
+		"helm release deployed",
+		`style="width: 100%"`,
+		"https://github.com/modelsphere/modelsphere/actions/runs/42",
+	}
+	for _, want := range checks {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in html:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "ZgotmplZ") {
+		t.Errorf("unexpected html/template ZgotmplZ sanitization in html:\n%s", html)
+	}
+	if strings.Contains(html, "ReportAfterSuite") {
+		t.Errorf("did not expect ReportAfterSuite in HTML output")
+	}
+}
+
+func TestRenderHTMLFailedEscapingAndTailLog(t *testing.T) {
+	longWriterOut := strings.Repeat("L", 70000) + "\nTAIL-END-MARKER"
+	rep := types.Report{
+		SuiteDescription:           "modelsphere gpu e2e",
+		SuiteSucceeded:             false,
+		RunTime:                    40 * time.Second,
+		SpecialSuiteFailureReasons: []string{"Suite Timeout Elapsed"},
+		SpecReports: types.SpecReports{
+			{
+				ContainerHierarchyTexts:    []string{"stack"},
+				LeafNodeType:               types.NodeTypeIt,
+				LeafNodeText:               "bad <script>alert(1)</script>",
+				State:                      types.SpecStateFailed,
+				RunTime:                    40 * time.Second,
+				CapturedGinkgoWriterOutput: longWriterOut,
+				Failure: types.Failure{
+					Message: "boom <script>alert(1)</script>",
+				},
+				AdditionalFailures: []types.AdditionalFailure{
+					{
+						State: types.SpecStateFailed,
+						Failure: types.Failure{
+							Message:         "cleanup 409",
+							FailureNodeType: types.NodeTypeCleanupAfterEach,
+							Location: types.CodeLocation{
+								FileName:   "/home/runner/work/modelsphere/test/e2e/gpu/helpers_test.go",
+								LineNumber: 128,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	html, err := RenderHTML([]types.Report{rep}, WorkflowContext{StepOutcome: "failure"})
+	if err != nil {
+		t.Fatalf("RenderHTML: %v", err)
+	}
+
+	if strings.Contains(html, "<script>alert(1)</script>") {
+		t.Fatalf("unescaped <script> found in rendered HTML")
+	}
+	checks := []string{
+		"&lt;script&gt;alert(1)&lt;/script&gt;",
+		"Suite Timeout Elapsed",
+		"Additional failures (1)",
+		"cleanup 409",
+		"... (truncated ",
+		"TAIL-END-MARKER",
+	}
+	for _, want := range checks {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q in html", want)
+		}
+	}
+}
+
+func TestRenderHTMLBeforeSuiteAndEmptyAndFallback(t *testing.T) {
+	beforeFail := types.Report{
+		SuiteDescription: "modelsphere gpu e2e",
+		SuiteSucceeded:   false,
+		RunTime:          10 * time.Second,
+		SpecReports: types.SpecReports{
+			{
+				LeafNodeType: types.NodeTypeBeforeSuite,
+				State:        types.SpecStateFailed,
+				RunTime:      10 * time.Second,
+				Failure: types.Failure{
+					FailureNodeType: types.NodeTypeBeforeSuite,
+					Message:         "before suite broke",
+				},
+			},
+		},
+	}
+	html, err := RenderHTML([]types.Report{beforeFail}, WorkflowContext{StepOutcome: "failure"})
+	if err != nil {
+		t.Fatalf("RenderHTML beforeFail: %v", err)
+	}
+	if !strings.Contains(html, "before suite broke") || !strings.Contains(html, "FAILED") {
+		t.Errorf("unexpected beforeFail HTML:\n%s", html)
+	}
+
+	emptyHTML, err := RenderHTML(nil, WorkflowContext{StepOutcome: "failure"})
+	if err != nil {
+		t.Fatalf("RenderHTML empty: %v", err)
+	}
+	if !strings.Contains(emptyHTML, "contained no suite reports") {
+		t.Errorf("unexpected empty HTML:\n%s", emptyHTML)
+	}
+
+	for _, tc := range []struct {
+		name string
+		ctx  WorkflowContext
+		want string
+	}{
+		{"skipped", WorkflowContext{StepOutcome: "skipped", JobStatus: "failure"}, "SKIPPED"},
+		{"cancelled", WorkflowContext{StepOutcome: "cancelled", JobStatus: "cancelled"}, "CANCELLED"},
+		{"failed", WorkflowContext{StepOutcome: "failure", JobStatus: "failure"}, "FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderFallbackHTML(tc.ctx, "missing json")
+			if err != nil {
+				t.Fatalf("RenderFallbackHTML: %v", err)
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("want %q in fallback HTML:\n%s", tc.want, got)
 			}
 		})
 	}

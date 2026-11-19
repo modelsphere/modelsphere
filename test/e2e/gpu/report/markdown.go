@@ -57,21 +57,7 @@ func RenderMarkdown(reports []types.Report, ctx WorkflowContext) string {
 		return RenderFallbackMarkdown(ctx, "Ginkgo JSON report contained no suite reports.")
 	}
 
-	merged := reports[0]
-	for _, next := range reports[1:] {
-		merged = merged.Add(next)
-	}
-
-	itSpecs := merged.SpecReports.WithLeafNodeType(types.NodeTypeIt)
-	counts := specCounts{
-		Total:   len(itSpecs),
-		Passed:  itSpecs.CountWithState(types.SpecStatePassed),
-		Failed:  itSpecs.CountWithState(types.SpecStateFailureStates),
-		Skipped: itSpecs.CountWithState(types.SpecStateSkipped),
-		Pending: itSpecs.CountWithState(types.SpecStatePending),
-	}
-	hooks := extractHooks(merged.SpecReports)
-	runCfg := extractRunConfig(merged.SpecReports)
+	merged, itSpecs, counts, hooks, runCfg := analyzeReports(reports)
 
 	var b strings.Builder
 
@@ -153,12 +139,31 @@ func RenderFallbackMarkdown(ctx WorkflowContext, reason string) string {
 	if wf := formatWorkflowCell(ctx); wf != "" {
 		rows = append(rows, [2]string{"Workflow", wf})
 	}
+	if ctx.ArtifactURL != "" {
+		rows = append(rows, [2]string{"Report", fmt.Sprintf("[Download HTML report](%s)", strings.TrimSpace(ctx.ArtifactURL))})
+	}
 	if len(rows) > 0 {
 		b.WriteString("### Workflow Metadata\n\n")
 		writeKeyValueTable(&b, rows)
 	}
 
 	return b.String()
+}
+
+func analyzeReports(reports []types.Report) (types.Report, types.SpecReports, specCounts, types.SpecReports, RunConfig) {
+	merged := reports[0]
+	for _, next := range reports[1:] {
+		merged = merged.Add(next)
+	}
+	itSpecs := merged.SpecReports.WithLeafNodeType(types.NodeTypeIt)
+	counts := specCounts{
+		Total:   len(itSpecs),
+		Passed:  itSpecs.CountWithState(types.SpecStatePassed),
+		Failed:  itSpecs.CountWithState(types.SpecStateFailureStates),
+		Skipped: itSpecs.CountWithState(types.SpecStateSkipped),
+		Pending: itSpecs.CountWithState(types.SpecStatePending),
+	}
+	return merged, itSpecs, counts, extractHooks(merged.SpecReports), extractRunConfig(merged.SpecReports)
 }
 
 func extractHooks(reports types.SpecReports) types.SpecReports {
@@ -286,6 +291,9 @@ func writeMetadataTable(b *strings.Builder, r types.Report, cfg RunConfig, durSe
 
 	if wf := formatWorkflowCell(ctx); wf != "" {
 		rows = append(rows, [2]string{"Workflow", wf})
+	}
+	if ctx.ArtifactURL != "" {
+		rows = append(rows, [2]string{"Report", fmt.Sprintf("[Download HTML report](%s)", strings.TrimSpace(ctx.ArtifactURL))})
 	}
 
 	if len(rows) > 0 {

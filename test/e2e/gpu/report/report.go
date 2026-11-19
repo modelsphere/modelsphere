@@ -28,11 +28,12 @@ type RunConfig struct {
 	KeepInstall bool     `json:"keepInstall,omitempty"`
 }
 
-// WorkflowContext carries GitHub Actions metadata into Markdown rendering.
+// WorkflowContext carries GitHub Actions metadata into Markdown and HTML rendering.
 type WorkflowContext struct {
 	StepOutcome string
 	JobStatus   string
 	RunURL      string
+	ArtifactURL string
 	Ref         string
 	SHA         string
 	Event       string
