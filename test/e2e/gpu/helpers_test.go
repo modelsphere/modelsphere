@@ -181,8 +181,14 @@ func assertGPU() {
 		}
 		Expect(saw).To(BeTrue(), "pod %s does not request %s", p.Metadata.Name, gpuResource)
 
-		alloc := mustKubectl("get", "node", p.Spec.NodeName, "-o",
-			`jsonpath={.status.allocatable['nvidia.com/gpu']}`)
+		nodeOut := mustKubectl("get", "node", p.Spec.NodeName, "-o", "json")
+		var node struct {
+			Status struct {
+				Allocatable map[string]string `json:"allocatable"`
+			} `json:"status"`
+		}
+		Expect(json.Unmarshal([]byte(nodeOut), &node)).To(Succeed())
+		alloc := node.Status.Allocatable[gpuResource]
 		Expect(qty(alloc)).To(BeNumerically(">=", cfg.gpuCount),
 			"node %s allocatable %s=%q", p.Spec.NodeName, gpuResource, alloc)
 	}
