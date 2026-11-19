@@ -660,6 +660,7 @@ func TestUploadHTML(t *testing.T) {
 	if err := os.WriteFile(htmlFile, []byte("<!DOCTYPE html><html>ok</html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fixedNow := time.Date(2026, 11, 19, 8, 4, 29, 0, time.UTC)
 
 	t.Run("uploads with default ci user and basic auth", func(t *testing.T) {
 		var (
@@ -685,15 +686,15 @@ func TestUploadHTML(t *testing.T) {
 			}, nil
 		})}
 
-		gotURL, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000/", "", "secret-token", "12345")
+		gotURL, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000/", "", "secret-token", "12345", fixedNow)
 		if err != nil {
 			t.Fatalf("UploadHTML: %v", err)
 		}
-		wantURL := "http://reports.internal:5000/e2e-gpu/12345.html"
+		wantURL := "http://reports.internal:5000/e2e-gpu/2026-11-19-080429Z-12345.html"
 		if gotURL != wantURL {
 			t.Fatalf("gotURL = %q, want %q", gotURL, wantURL)
 		}
-		if gotMethod != http.MethodPut || gotPath != "/e2e-gpu/12345.html" {
+		if gotMethod != http.MethodPut || gotPath != "/e2e-gpu/2026-11-19-080429Z-12345.html" {
 			t.Fatalf("unexpected request: %s %s", gotMethod, gotPath)
 		}
 		if !gotOK || gotUser != "ci" || gotPass != "secret-token" {
@@ -701,6 +702,20 @@ func TestUploadHTML(t *testing.T) {
 		}
 		if gotCT != "text/html; charset=utf-8" || gotBody != "<!DOCTYPE html><html>ok</html>" {
 			t.Fatalf("unexpected content-type/body: %q / %q", gotCT, gotBody)
+		}
+	})
+
+	t.Run("report filenames sort chronologically by date prefix", func(t *testing.T) {
+		older := reportFileName(time.Date(2026, 11, 9, 23, 59, 59, 0, time.UTC), "1000")
+		newer := reportFileName(time.Date(2026, 11, 19, 8, 4, 29, 0, time.UTC), "99")
+		if older != "2026-11-09-235959Z-1000.html" || newer != "2026-11-19-080429Z-99.html" {
+			t.Fatalf("unexpected filenames: older=%q newer=%q", older, newer)
+		}
+		if !(older < newer) {
+			t.Fatalf("expected %q < %q for lexical chronological sort", older, newer)
+		}
+		if noRun := reportFileName(fixedNow, ""); noRun != "2026-11-19-080429Z.html" {
+			t.Fatalf("empty runID filename = %q, want 2026-11-19-080429Z.html", noRun)
 		}
 	})
 
@@ -715,7 +730,7 @@ func TestUploadHTML(t *testing.T) {
 			}, nil
 		})}
 
-		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "reporter", "tok:en", "98"); err != nil {
+		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "reporter", "tok:en", "98", fixedNow); err != nil {
 			t.Fatalf("UploadHTML: %v", err)
 		}
 		if gotUser != "reporter" || gotPass != "tok:en" {
@@ -734,7 +749,7 @@ func TestUploadHTML(t *testing.T) {
 			}, nil
 		})}
 
-		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "", "uploader:pw123", "99"); err != nil {
+		if _, err := uploadHTMLWithClient(t.Context(), client, htmlFile, "http://reports.internal:5000", "", "uploader:pw123", "99", fixedNow); err != nil {
 			t.Fatalf("UploadHTML: %v", err)
 		}
 		if gotUser != "uploader" || gotPass != "pw123" {
@@ -750,7 +765,7 @@ func TestUploadHTML(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader("disk full")),
 			}, nil
 		})}
-		url, err := uploadHTMLWithClient(t.Context(), errClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10")
+		url, err := uploadHTMLWithClient(t.Context(), errClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10", fixedNow)
 		if err == nil || url != "" || !strings.Contains(err.Error(), "500") {
 			t.Fatalf("expected 500 error, got url=%q err=%v", url, err)
 		}
@@ -758,7 +773,7 @@ func TestUploadHTML(t *testing.T) {
 		downClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			return nil, errors.New("connection refused")
 		})}
-		url, err = uploadHTMLWithClient(t.Context(), downClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10")
+		url, err = uploadHTMLWithClient(t.Context(), downClient, htmlFile, "http://reports.internal:5000", "ci", "tok", "10", fixedNow)
 		if err == nil || url != "" || !strings.Contains(err.Error(), "connection refused") {
 			t.Fatalf("expected connection error against down server, got url=%q err=%v", url, err)
 		}

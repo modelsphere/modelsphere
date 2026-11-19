@@ -118,7 +118,7 @@ Durations accept a Go duration (`90m`) or a bare number of seconds.
 
 In `.github/workflows/e2e-gpu.yaml`:
 - `Upload report` uploads `test/e2e/gpu/reports` as the `e2e-gpu-report` workflow artifact (`retention-days: 30`).
-- `Publish summary` runs `cmd/report` with `if: always()`, optionally uploading `index.html` via HTTP `PUT` to `E2E_REPORT_SERVER_URL/e2e-gpu/<run_id>.html` (using HTTP Basic auth with `E2E_REPORT_USER` and `E2E_REPORT_TOKEN`, defaulting the username to `ci` when `E2E_REPORT_USER` is unset) and posting a prominent banner at the top of `$GITHUB_STEP_SUMMARY` with both the internal HTML link and the GitHub artifact download link. Internal server upload errors are non-fatal so an unreachable file server never fails the job. Future notification steps (Slack or custom webhooks) can run as an `if: always()` step consuming `test/e2e/gpu/reports/ginkgo-report.json`.
+- `Publish summary` runs `cmd/report` with `if: always()`, optionally uploading `index.html` via HTTP `PUT` to `E2E_REPORT_SERVER_URL/e2e-gpu/<YYYY-MM-DD-HHMMSSZ>-<run_id>.html` (or `<YYYY-MM-DD-HHMMSSZ>.html` when `GITHUB_RUN_ID` is unset, sorting chronologically in directory listings; using HTTP Basic auth with `E2E_REPORT_USER` and `E2E_REPORT_TOKEN`, defaulting the username to `ci` when `E2E_REPORT_USER` is unset) and posting a prominent banner at the top of `$GITHUB_STEP_SUMMARY` with both the internal HTML link and the GitHub artifact download link. Internal server upload errors are non-fatal so an unreachable file server never fails the job. Future notification steps (Slack or custom webhooks) can run as an `if: always()` step consuming `test/e2e/gpu/reports/ginkgo-report.json`.
 
 Preview a local JSON report as Markdown:
 

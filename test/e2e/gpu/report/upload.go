@@ -16,10 +16,10 @@ const uploadTimeout = 15 * time.Second
 // UploadHTML uploads filePath via HTTP PUT to a dufs/WebDAV-compatible server.
 // If filePath does not exist or serverURL is empty, it returns ("", nil).
 func UploadHTML(ctx context.Context, filePath, serverURL, user, token, runID string) (string, error) {
-	return uploadHTMLWithClient(ctx, &http.Client{Timeout: uploadTimeout}, filePath, serverURL, user, token, runID)
+	return uploadHTMLWithClient(ctx, &http.Client{Timeout: uploadTimeout}, filePath, serverURL, user, token, runID, time.Now().UTC())
 }
 
-func uploadHTMLWithClient(ctx context.Context, client *http.Client, filePath, serverURL, user, token, runID string) (string, error) {
+func uploadHTMLWithClient(ctx context.Context, client *http.Client, filePath, serverURL, user, token, runID string, now time.Time) (string, error) {
 	serverURL = strings.TrimSpace(serverURL)
 	if filePath == "" || serverURL == "" {
 		return "", nil
@@ -39,7 +39,7 @@ func uploadHTMLWithClient(ctx context.Context, client *http.Client, filePath, se
 		return "", fmt.Errorf("stat html report %s: %w", filePath, err)
 	}
 
-	name := reportFileName(runID)
+	name := reportFileName(now, runID)
 	targetURL := strings.TrimRight(serverURL, "/") + "/e2e-gpu/" + name
 
 	reqCtx, cancel := context.WithTimeout(ctx, uploadTimeout)
@@ -80,11 +80,15 @@ func uploadHTMLWithClient(ctx context.Context, client *http.Client, filePath, se
 	return targetURL, nil
 }
 
-func reportFileName(runID string) string {
+func reportFileName(now time.Time, runID string) string {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	stamp := now.UTC().Format("2006-01-02-150405Z")
 	clean := strings.TrimSpace(runID)
 	clean = strings.ReplaceAll(clean, "/", "-")
 	if clean == "" {
-		clean = time.Now().UTC().Format("20060102-150405")
+		return stamp + ".html"
 	}
-	return clean + ".html"
+	return stamp + "-" + clean + ".html"
 }
