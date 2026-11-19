@@ -334,4 +334,6 @@ E2E_GPU_TIMEOUT := $(if $(filter command line environment,$(origin E2E_TIMEOUT))
 
 test-e2e-gpu:
 	cd test/e2e/gpu && E2E_VERBOSE=$(E2E_VERBOSE) \
-	  go test -tags=e2e . -v -ginkgo.v -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)
+	  go test -tags=e2e . -v -ginkgo.v \
+	  $(if $(E2E_REPORT_JSON),-ginkgo.json-report="$(abspath $(E2E_REPORT_JSON))",) \
+	  -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)
