@@ -331,7 +331,20 @@ cleanup-test-e2e-kind:
 # suite above. A weight download does not fit in that, so an E2E_TIMEOUT that
 # was not set on the command line or in the environment is 210m here only.
 E2E_GPU_TIMEOUT := $(if $(filter command line environment,$(origin E2E_TIMEOUT)),$(E2E_TIMEOUT),210m)
+E2E_REPORT_DIR ?= test/e2e/gpu/reports
 
 test-e2e-gpu:
-	cd test/e2e/gpu && E2E_VERBOSE=$(E2E_VERBOSE) \
-	  go test -tags=e2e . -v -ginkgo.v -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)
+	@report_dir="$(abspath $(E2E_REPORT_DIR))"; \
+	rm -rf "$$report_dir" && mkdir -p "$$report_dir"; \
+	rc=0; \
+	(cd test/e2e/gpu && E2E_VERBOSE=$(E2E_VERBOSE) \
+	  go test -tags=e2e . -v -ginkgo.v \
+	  -ginkgo.json-report="$$report_dir/ginkgo-report.json" \
+	  -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)) || rc=$$?; \
+	step_outcome="success"; [ "$$rc" -ne 0 ] && step_outcome="failure"; \
+	(cd test/e2e/gpu && go run ./cmd/report \
+	  -input "$$report_dir/ginkgo-report.json" \
+	  -html "$$report_dir/index.html" \
+	  -summary "$$GITHUB_STEP_SUMMARY" \
+	  -step-outcome "$$step_outcome") || true; \
+	exit $$rc

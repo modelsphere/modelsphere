@@ -101,3 +101,13 @@ jobs:
           if [ -n "${E2E_KUBECONFIG_DIR:-}" ]; then
             rm -rf "$E2E_KUBECONFIG_DIR"
           fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: e2e-gpu-report
+          path: test/e2e/gpu/reports
+          if-no-files-found: ignore
+          retention-days: 30
+      # Future notification channels (custom webhook / Slack) can run as an
+      # `if: always()` step here consuming test/e2e/gpu/reports/ginkgo-report.json.

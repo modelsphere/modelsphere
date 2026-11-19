@@ -18,6 +18,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/modelsphere/modelsphere/test/e2e/gpu/report"
 )
 
 // Namespaces and services as environments/default.yaml and the charts name them.
@@ -139,6 +141,21 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	isolateKubeconfig()
+	AddReportEntry(report.RunConfigEntryName, report.RunConfig{
+		HelmEnv:     cfg.helmEnv,
+		KubeContext: cfg.context,
+		Model:       cfg.model,
+		Variant:     cfg.variant,
+		ServedName:  cfg.servedName,
+		Release:     cfg.release,
+		Namespace:   cfg.namespace,
+		Backend:     cfg.backend,
+		Catalog:     cfg.catalog,
+		GPUCount:    cfg.gpuCount,
+		GPUProducts: append([]string(nil), cfg.gpuProducts...),
+		SkipInstall: cfg.skipInstall,
+		KeepInstall: cfg.keepInstall,
+	}, ReportEntryVisibilityNever)
 	mustKubectl("get", "nodes")
 	logInotifyLimits()
 

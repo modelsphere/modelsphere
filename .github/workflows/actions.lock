@@ -6,6 +6,7 @@ workflows:
     '.github/workflows/e2e-gpu.yaml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-go@v7.0.0'
+        - 'actions/upload-artifact@v7.0.0'
         - 'azure/setup-helm@v5.0.1'
     '.github/workflows/e2e-kind.yaml':
         - 'actions/checkout@v7.0.1'
@@ -22,6 +23,11 @@ dependencies:
         commit: 'sha1-b7ad1dad31e06c5925ef5d2fc7ad053ef454303e'
         owner_id: 44036562
         repo_id: 192624594
+    'actions/upload-artifact@v7.0.0':
+        ref: 'v7.0.0'
+        commit: 'sha1-bbbca2ddaa5d8feaa63e36b76fdaad77386f024f'
+        owner_id: 44036562
+        repo_id: 192625955
     'azure/setup-helm@v5.0.1':
         ref: 'v5.0.1'
         commit: 'sha1-9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310'

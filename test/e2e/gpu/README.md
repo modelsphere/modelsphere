@@ -106,9 +106,23 @@ make helm-destroy-product ENV=test-gpu INTERACTIVE=false # uninstall part=produc
 | `E2E_GONE_TIMEOUT` | `30m` | Uninstall. The variant's grace period is 1200s. |
 | `E2E_CHAT_TIMEOUT` | `3m` | One chat call. |
 | `E2E_VERBOSE` | false | Print helm releases, pods and chat bodies. |
+| `E2E_REPORT_DIR` | `test/e2e/gpu/reports` | Directory where `make test-e2e-gpu` writes `ginkgo-report.json` and `index.html`. |
 | `KEEP_INSTALL` | false | Do not uninstall `part=product` afterwards. |
 | `E2E_SKIP_INSTALL` | false | Do not install or uninstall `part=product`. |
 
 Durations accept a Go duration (`90m`) or a bare number of seconds.
+
+## Reporting
+
+`make test-e2e-gpu` writes Ginkgo's native JSON report (`ginkgo-report.json`, with non-secret run configuration recorded via `AddReportEntry("run-config", ...)`), renders a standalone HTML report (`index.html`) directly under `E2E_REPORT_DIR` (`test/e2e/gpu/reports` by default, ignored by git), and appends a Markdown summary to `$GITHUB_STEP_SUMMARY` when running in GitHub Actions.
+
+In `.github/workflows/e2e-gpu.yaml`, `Upload report` uploads `test/e2e/gpu/reports` as the `e2e-gpu-report` workflow artifact (`retention-days: 30`). Future notification steps (Slack or custom webhooks) can run as an `if: always()` step consuming `test/e2e/gpu/reports/ginkgo-report.json`.
+
+Preview a local JSON report as Markdown:
+
+```sh
+make test-e2e-gpu
+cd test/e2e/gpu && go run ./cmd/report -input reports/ginkgo-report.json
+```
 
 `helmfile -e test-gpu -l part=product template` renders without a cluster. `part=infra` does not: Cilium's ServiceMonitors and several charts want CRDs or a live API, which is why `cilium.serviceMonitors` starts false. `llmGateway.hostPath` has to be non-empty for the product set to render at all. `llmGateway.bodylogNodeSelector` in that file is `modelsphere.dev/bodylog: "true"`, the same map a Deployment writes under `nodeSelector`, so bodylog selects a node with that label instead of a hostname.
