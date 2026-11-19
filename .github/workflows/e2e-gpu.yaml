@@ -9,9 +9,8 @@ name: e2e-gpu
 # fork must not be able to run this.
 on:
   workflow_dispatch:
-  # schedule:
-  #   # 02:00 UTC. Enable once the runner network is up.
-  #   - cron: "0 2 * * *"
+  schedule:
+    - cron: "0 2 * * *"
 
 permissions:
   contents: read
