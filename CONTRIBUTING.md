@@ -20,7 +20,7 @@ Run what the change touches:
 | a playbook or a role | `ansible-playbook --syntax-check`, and `ansible -i inventory.ini.example --list-hosts all` if you touched the inventory contract |
 | `script/*.sh` | `bash -n`, and the script's own test if it has one (`script/test_node_prep_rdma.sh` is the pattern: a fake sysfs tree, no hardware) |
 | the stack's serving path (releases `environments/kind.yaml` installs) | `make test-e2e-kind` — kind, `helmfile -e kind apply` and the specs in [`test/e2e/kind`](test/e2e/kind/README.md); `KIND_PROFILE=cilium` runs them on cilium without kube-proxy. The `e2e-kind` workflow runs both profiles on every pull request |
-| the GPU-cluster e2e | Moved to [modelsphere-e2e](https://github.com/modelsphere/modelsphere-e2e). Run and configure it there; this repository only owns the deployment stack and kind suite. |
+| the GPU-cluster e2e | Moved to [modelsphere-e2e](https://github.com/modelsphere/modelsphere-e2e/blob/main/GPU_TESTING.md). Run and configure it there; this repository only owns the deployment stack and kind suite. |
 | documentation | check that every relative link still resolves, including `#anchors` — moving a section breaks links pointing into it, silently |
 
 A change that cannot be checked by any of these is worth saying so in the pull

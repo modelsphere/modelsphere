@@ -2,7 +2,8 @@
 
 The complete GPU suite, reporting tools and `e2e-gpu` GitHub workflow now live
 in **[modelsphere/modelsphere-e2e](https://github.com/modelsphere/modelsphere-e2e)**.
-Use that repository's setup guide and `make test-e2e-gpu` entrypoint.
+Use that repository's [`make test-e2e-gpu`](https://github.com/modelsphere/modelsphere-e2e/blob/main/README.md)
+entrypoint and the [GPU suite guide](https://github.com/modelsphere/modelsphere-e2e/blob/main/GPU_TESTING.md).
 
 This repository retains the deployment Helmfile, shared environments/templates
 and provisioning commands. The destination suite fetches this repository at run
