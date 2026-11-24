@@ -16,8 +16,22 @@ global:
   # whatever else serves it on this cluster.
   enableGatewayAPI: false
 
+# LLM requests are long: a non-streaming answer can take many minutes before
+# its first byte. The chart's 180s downstream idle timeout cuts those off;
+# openresty behind the gateway waits up to 3600s, so the gateway does too.
+downstream:
+  idleTimeout: {{ $g.idleTimeoutSeconds }}
+
 gateway:
   replicas: {{ $g.replicas }}
+  # A rollout must not cut streams in flight. New pods first (maxUnavailable 0),
+  # and an old pod exits once its last connection is gone rather than at the
+  # first SIGTERM -- bounded by terminationGracePeriodSeconds, which the chart
+  # has no value for: the release's postsync hook sets it
+  # (higress.gateway.terminationGracePeriodSeconds).
+  rollingMaxUnavailable: 0
+  env:
+    EXIT_ON_ZERO_ACTIVE_CONNECTIONS: "true"
   service:
     type: {{ $g.serviceType }}
     ports:

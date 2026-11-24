@@ -810,6 +810,23 @@ releases:
 {{- with dig "higress" "coreOverrides" nil .Values }}
       - {{ toJson . }}
 {{- end }}
+    hooks:
+      # The chart has no value for the gateway's terminationGracePeriodSeconds,
+      # and the default 30s ends every stream still open when a pod is replaced
+      # (EXIT_ON_ZERO_ACTIVE_CONNECTIONS only waits within that bound). The
+      # chart never renders the field, so a later upgrade leaves it alone.
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args:
+          - "-n"
+          - "{{ .Values.namespaces.higress }}"
+          - "patch"
+          - "deployment"
+          - "higress-gateway"
+          - "--type=merge"
+          - "-p"
+          - '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":{{ int64 .Values.higress.gateway.terminationGracePeriodSeconds }}}}}}'
 
   - name: higress-llm
     namespace: {{ .Values.namespaces.higress }}

@@ -471,6 +471,13 @@ higress:
     # Empty: Kubernetes picks a port.
     httpNodePort: ""
     httpsNodePort: ""
+    # Seconds an idle client connection is kept; a request still waiting for
+    # its first byte counts as idle. Match the longest generation openresty
+    # allows (its proxy_read_timeout).
+    idleTimeoutSeconds: 3600
+    # How long a gateway pod being replaced may keep serving the streams it
+    # already has. Same bound as above.
+    terminationGracePeriodSeconds: 3600
   # Values passed to the higress-core chart as-is, merged last.
   # coreOverrides: {}
 
