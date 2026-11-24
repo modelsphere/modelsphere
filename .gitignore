@@ -4,4 +4,3 @@
 # nobody else's business and would go stale in the repo. Copy the .example files.
 environments/offline-*.yaml
 inventory-local*.ini
-test/e2e/gpu/reports/

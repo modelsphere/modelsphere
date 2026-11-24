@@ -126,12 +126,6 @@ Labels available to `SELECTOR`: `tier` (`cni`, `storage`, `observability`, `gpu`
 `llmgate`, `scheduler`), `name`, and `part` (`infra`, `product`). `tier=model`
 has no `part`.
 
-The three `part` targets ignore `SELECTOR`. helmfile ORs separate `-l` groups,
-so a caller selector cannot be appended without widening the set, and
-`helm-destroy-product` must not be pointable at the CNI. There is no target
-that uninstalls `part=infra`. What goes in which set, and why, is in
-[`test/e2e/gpu`](../test/e2e/gpu/README.md).
-
 Changing a component is a two-file job at most: edit its `overrides.yaml`, bump
 its version in `environments/default.yaml`, `make helm-diff`, `make helm-apply`.
 

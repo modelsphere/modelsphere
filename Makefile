@@ -2,7 +2,6 @@
         helm-deps helm-bootstrap helm-diff helm-apply helm-template helm-list helm-status \
         helm-apply-infra helm-apply-product helm-destroy-product \
         offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind \
-        test-e2e-gpu
 
 INVENTORY ?= inventory.ini
 LIMIT ?= all
@@ -81,10 +80,6 @@ help:
 	@echo "End-to-end test on kind (see test/e2e/kind/README.md):"
 	@echo "  make test-e2e-kind      - Kind cluster, helmfile -e kind apply, run test/e2e/kind (KEEP_CLUSTER=1 keeps it)"
 	@echo "  make cleanup-test-e2e-kind - Delete the kind cluster"
-	@echo ""
-	@echo "End-to-end test on an existing GPU cluster (see test/e2e/gpu/README.md):"
-	@echo "  make test-e2e-gpu       - helmfile -e test-gpu -l part=product, then test/e2e/gpu"
-	@echo "                            Does not create or delete a cluster. Needs KUBECONFIG."
 	@echo ""
 	@echo "Options:"
 	@echo "  LIMIT=node1,node2       - Limit execution to specific hosts (default: all)"
@@ -325,25 +320,3 @@ endif
 
 cleanup-test-e2e-kind:
 	$(KIND) delete cluster --name $(KIND_CLUSTER)
-
-# test/e2e/gpu. The cluster already exists and already has part=infra; this
-# target never creates or deletes one. E2E_TIMEOUT stays 45m for the kind
-# suite above. A weight download does not fit in that, so an E2E_TIMEOUT that
-# was not set on the command line or in the environment is 210m here only.
-E2E_GPU_TIMEOUT := $(if $(filter command line environment,$(origin E2E_TIMEOUT)),$(E2E_TIMEOUT),210m)
-E2E_REPORT_DIR ?= test/e2e/gpu/reports
-
-test-e2e-gpu:
-	@report_dir="$(abspath $(E2E_REPORT_DIR))"; \
-	rm -rf "$$report_dir" && mkdir -p "$$report_dir"; \
-	rc=0; \
-	(cd test/e2e/gpu && E2E_VERBOSE=$(E2E_VERBOSE) \
-	  go test -tags=e2e . -v -ginkgo.v \
-	  -ginkgo.json-report="$$report_dir/ginkgo-report.json" \
-	  -timeout $(E2E_GPU_TIMEOUT) $(E2E_ARGS)) || rc=$$?; \
-	step_outcome="success"; [ "$$rc" -ne 0 ] && step_outcome="failure"; \
-	(cd test/e2e/gpu && go run ./cmd/report \
-	  -input "$$report_dir/ginkgo-report.json" \
-	  -html "$$report_dir/index.html" \
-	  -step-outcome "$$step_outcome") || true; \
-	exit $$rc

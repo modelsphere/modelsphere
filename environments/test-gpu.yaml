@@ -1,4 +1,3 @@
-# test-gpu: the helmfile environment for test/e2e/gpu (make test-e2e-gpu).
 # The test- prefix is the point: this is not a site cluster. A real cluster
 # copies environments/private.yaml.example and registers its own name.
 # Layered over default.yaml.
@@ -60,9 +59,6 @@ storage:
   className: REPLACE_ME
 
 llmGateway:
-  # Same map a Deployment writes under nodeSelector. test/e2e/gpu labels one
-  # node with these labels before apply. Empty keeps the hostname pin
-  # (llmGateway.node).
   bodylogNodeSelector:
     modelsphere.dev/bodylog: "true"
   # The directory on that node. kubelet creates it. Change it if the site
