@@ -1,0 +1,154 @@
+{{- $v := .Values }}
+{{- $ns := $v.upstream.namespace }}
+---
+# Writes the request body's `model` into x-higress-llm-model, which the model
+# routes match on. Global: it has to run before a route is chosen, so it cannot
+# be bound to the routes it chooses between. It only acts on POSTs to
+# /completions, /embeddings, /messages and similar, and overwrites a
+# client-supplied header of the same name there.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: model-router
+  namespace: {{ .Release.Namespace }}
+spec:
+  url: {{ $v.plugins.modelRouter }}
+  phase: AUTHN
+  priority: 900
+  failStrategy: FAIL_OPEN
+  defaultConfig:
+    modelToHeader: x-higress-llm-model
+{{- if $v.models }}
+---
+# Who may call which model. Each consumer's credentials are compared with the
+# whole Authorization header. A route's allow list names its consumers; with
+# global_auth false a route without one is open (the chart refuses to render
+# a model without an allow list).
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: key-auth
+  namespace: {{ .Release.Namespace }}
+spec:
+  url: {{ $v.plugins.keyAuth }}
+  phase: AUTHN
+  priority: 310
+  # An authentication plugin that cannot run must not let requests through.
+  failStrategy: FAIL_CLOSE
+  defaultConfigDisable: false
+  defaultConfig:
+    # Placeholder: every consumer names its own header below.
+    keys: [x-higress-dummy-key]
+    global_auth: {{ $v.globalAuth }}
+    consumers:
+{{- range $v.consumers }}
+    - name: {{ .name | quote }}
+      keys: [Authorization]
+      in_header: true
+      in_query: false
+      credentials:
+{{- range .credentials }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+  matchRules:
+{{- range $v.models }}
+  - ingress: [{{ printf "%s/%s" $ns (include "higress-llm.ingressName" .name) }}]
+    configDisable: false
+    config:
+      allow: {{ toJson .allow }}
+{{- end }}
+---
+# Token metrics and the per-request ai_log line. requested_model is the model
+# the client asked for; the metrics' ai_model label comes from the response.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-statistics
+  namespace: {{ .Release.Namespace }}
+spec:
+  url: {{ $v.plugins.aiStatistics }}
+  priority: 200
+  failStrategy: FAIL_OPEN
+  defaultConfigDisable: true
+  matchRules:
+  - ingress:
+{{- include "higress-llm.ingressRefs" . | indent 4 }}
+    configDisable: false
+    config:
+      # Not together with use_default_attributes: attributes would be ignored.
+      attributes:
+      - key: requested_model
+        value_source: request_body
+        value: model
+        apply_to_log: true
+---
+# Replaces the caller's key with the one openresty accepts, and converts
+# /v1/messages (Anthropic) to chat completions and back. It does not choose the
+# backend: the route (and ai-backend-router) do.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-proxy
+  namespace: {{ .Release.Namespace }}
+spec:
+  url: {{ $v.plugins.aiProxy }}
+  priority: 100
+  failStrategy: FAIL_OPEN
+  defaultConfigDisable: true
+  matchRules:
+  - ingress:
+{{- include "higress-llm.ingressRefs" . | indent 4 }}
+    configDisable: false
+    config:
+      provider:
+        type: openai
+        apiTokens:
+        - {{ $v.upstreamKey | quote }}
+{{- if $v.backendRouter.enabled }}
+---
+# Picks a model's backend (an openresty route prefix) by tier, then weight, and
+# prefixes the path with it. A backend answering one of retryCodes marks the
+# response, and the spill EnvoyFilter replays the original request, which then
+# skips what it already tried. Priority 90: after ai-proxy, whose path it prefixes.
+apiVersion: extensions.higress.io/v1alpha1
+kind: WasmPlugin
+metadata:
+  name: ai-backend-router
+  namespace: {{ .Release.Namespace }}
+spec:
+  url: {{ $v.plugins.aiBackendRouter }}
+  priority: 90
+  # Unrouted, a request would reach openresty without a route prefix.
+  failStrategy: FAIL_CLOSE
+  defaultConfigDisable: true
+  matchRules:
+  - ingress:
+{{- include "higress-llm.ingressRefs" . | indent 4 }}
+    configDisable: false
+    config:
+      retry:
+        codes: {{ toJson $v.backendRouter.retryCodes }}
+        exclude: {{ $v.backendRouter.exclude }}
+      limits:
+        maxRequestBodyBytes: {{ int64 $v.backendRouter.maxRequestBodyBytes }}
+      decisions:
+        static:
+          version: {{ printf "helm-%s" (toJson $v.models | sha256sum | trunc 12) | quote }}
+          models:
+{{- range $v.models }}
+            {{ .name | quote }}:
+              default: {{ (index .backends 0).id | quote }}
+              backends:
+{{- range .backends }}
+              - id: {{ .id | quote }}
+                target: {path: {{ .path | quote }}}
+                tier: {{ int64 (default 0 .tier) }}
+                weight: {{ int64 (ternary .weight 100 (hasKey . "weight")) }}
+{{- if hasKey . "enabled" }}
+                enabled: {{ .enabled }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

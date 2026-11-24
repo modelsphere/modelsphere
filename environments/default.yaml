@@ -170,6 +170,10 @@ versions:
 
   condition2taint: "0.2.0"
   alertWebhook: "0.2.1"
+  # higress.io/helm-charts. The `higress-core` chart (gateway + controller), not
+  # the `higress` umbrella: that one always brings the console, and the console
+  # creates objects of its own on start (see llmgateway/higress.yaml.gotmpl).
+  higress: "2.2.6"
 
 # ---------------------------------------------------------------- namespaces
 namespaces:
@@ -196,6 +200,7 @@ namespaces:
                                   # the release name has to stay `volcano` too.
   condition2taint: "node-problem-detector"
   alertWebhook: "monitoring"
+  higress: higress-system
 
 # ---------------------------------------------------------------- what to install
 # Anything false here is rendered but not applied. Flip a flag and re-run
@@ -253,6 +258,12 @@ enabled:
   lws: true
 
   openresty: true
+  # Higress as the OpenAI-compatible entry in front of openresty: clients call
+  # /v1/... with the model in the body; Higress picks the model's route,
+  # authenticates the caller, counts tokens and forwards to openresty. Off by
+  # default: it needs the `higress:` block below filled in (models, consumers,
+  # the upstream key). Supported with registryMode: upstream only.
+  higress: false
   bodylog: true
   bodylogExporter: true
   # Vector next to the bodylog pod, shipping each record into VictoriaLogs so the
@@ -450,6 +461,63 @@ llmGateway:
   # Values passed to the openresty chart as-is, over llmgateway/openresty.yaml.gotmpl,
   # e.g. replicas and resources on a small cluster (environments/kind.yaml).
   # openrestyOverrides: {}
+
+# enabled.higress only. Rendered by llmgateway/higress.yaml.gotmpl (the gateway)
+# and llmgateway/higress-llm.yaml.gotmpl (plugins, routes).
+higress:
+  gateway:
+    replicas: 2
+    serviceType: NodePort
+    # Empty: Kubernetes picks a port.
+    httpNodePort: ""
+    httpsNodePort: ""
+  # Values passed to the higress-core chart as-is, merged last.
+  # coreOverrides: {}
+
+  # The API key openresty accepts. ai-proxy replaces the caller's key with it,
+  # so openresty only ever sees this one; callers' keys live in `consumers`.
+  # Required as soon as `models` is not empty. It ends up in plain text in a
+  # WasmPlugin in the higress namespace: keep this in a private environment file.
+  upstreamKey: ""
+
+  # Who may call. Each credential is the whole Authorization header value,
+  # "Bearer sk-...", compared as a string (case-sensitive). Several credentials
+  # per consumer allow rotating a key without downtime. Never list upstreamKey.
+  consumers: []
+  #  - name: tenant-a
+  #    credentials: ["Bearer sk-tenant-a"]
+
+  # false: a route without an allow list is open. Set true only once every
+  # model has its allow list and every existing client has a consumer.
+  globalAuth: false
+
+  # One entry per model clients can ask for.
+  models: []
+  #  - name: qwen-trial          # the `model` clients send, exact match
+  #    allow: [tenant-a]         # consumers that may call it
+  #    backends:                 # openresty routes serving it (path prefix, no trailing /)
+  #    - {id: qwen-trial, path: /qwen-trial, tier: 0, weight: 100}
+
+  # ai-backend-router: chooses among a model's backends by tier, then weight,
+  # and moves a request on to the next tier when a backend answers 429/502/503/504.
+  # Off: each model must have exactly one backend, reached through a route-level
+  # path rewrite instead.
+  backendRouter:
+    enabled: false
+    retryCodes: [429, 502, 503, 504]
+    exclude: tier                # or `backend`
+    # Largest request body the gateway accepts while it is on (413 above it);
+    # every in-flight request keeps its body in gateway memory.
+    maxRequestBodyBytes: 16777216
+
+  # Plugin images, pulled by the gateway pods themselves (not by the node's
+  # container runtime, so node registry mirrors do not apply).
+  plugins:
+    modelRouter: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/model-router:2.0.4
+    keyAuth: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/key-auth:2.0.0
+    aiStatistics: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-statistics:2.0.3
+    aiProxy: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-proxy:2.0.4
+    aiBackendRouter: oci://modelsphere.tencentcloudcr.com/4pdosc/higress-plugin-ai-backend-router:1.0.0
 
 # swissd's RBAC, the swiss chart's rbac.scope.
 #   cluster     one ClusterRole. Simpler: any namespace works and none has to

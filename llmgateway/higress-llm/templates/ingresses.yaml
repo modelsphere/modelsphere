@@ -1,0 +1,38 @@
+{{- include "higress-llm.validate" . }}
+{{- $v := .Values }}
+{{- range $v.models }}
+---
+# Model {{ .name }}. No host: every model route sits in the gateway's wildcard
+# route table and is matched by path and header only. The header is written by
+# model-router from the request body before routing.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "higress-llm.ingressName" .name }}
+  namespace: {{ $v.upstream.namespace }}
+  annotations:
+    higress.io/exact-match-header-x-higress-llm-model: {{ .name | quote }}
+{{- if not $v.backendRouter.enabled }}
+    # One backend: the route itself prefixes the path with its openresty route
+    # (/v1/chat/completions -> {{ (index .backends 0).path }}/v1/chat/completions).
+    higress.io/rewrite-path: {{ printf "%s/" (index .backends 0).path | quote }}
+{{- end }}
+    # Long generations and streams; openresty itself waits up to 3600s.
+    higress.io/proxy-read-timeout: "3600"
+    higress.io/proxy-send-timeout: "3600"
+    # No route-level retries: they would retry the same backend. Moving on to
+    # another backend is ai-backend-router's job.
+    higress.io/proxy-next-upstream: "off"
+spec:
+  ingressClassName: higress
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ $v.upstream.service }}
+            port:
+              number: {{ $v.upstream.port }}
+{{- end }}

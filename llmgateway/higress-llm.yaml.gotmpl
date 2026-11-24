@@ -1,0 +1,13 @@
+{{- /* environments/*.yaml `higress:` -> the higress-llm chart (llmgateway/higress-llm).
+       Routes point at the openresty Service of this stack. */}}
+{{- $h := .Values.higress }}
+upstream:
+  namespace: {{ .Values.namespaces.llmRoute }}
+  service: openresty
+  port: 8080
+upstreamKey: {{ $h.upstreamKey | quote }}
+globalAuth: {{ $h.globalAuth }}
+consumers: {{ toJson $h.consumers }}
+models: {{ toJson $h.models }}
+backendRouter: {{ toJson $h.backendRouter }}
+plugins: {{ toJson $h.plugins }}

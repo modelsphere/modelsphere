@@ -1,0 +1,37 @@
+{{- /*
+     Values for the higress-core chart: the gateway (Envoy) and its controller.
+
+     Not the `higress` umbrella chart. That one always installs the console
+     (its dependency has no condition), and the console creates objects of its
+     own when it starts: a built-in `key-auth.internal` WasmPlugin, which then
+     competes with the key-auth that llmgateway/higress-llm configures, and an
+     Ingress `default` that serves the console page on `/` of the data-plane
+     port for any Host. Saving a consumer in the console also resets key-auth's
+     global_auth to false. Everything here is declared in git instead.
+*/}}
+{{- $g := .Values.higress.gateway }}
+global:
+  ingressClass: higress
+  # Routes are Ingress objects (llmgateway/higress-llm); Gateway API is left to
+  # whatever else serves it on this cluster.
+  enableGatewayAPI: false
+
+gateway:
+  replicas: {{ $g.replicas }}
+  service:
+    type: {{ $g.serviceType }}
+    ports:
+      - name: http2
+        port: 80
+        protocol: TCP
+        targetPort: 80
+{{- if $g.httpNodePort }}
+        nodePort: {{ $g.httpNodePort }}
+{{- end }}
+      - name: https
+        port: 443
+        protocol: TCP
+        targetPort: 443
+{{- if $g.httpsNodePort }}
+        nodePort: {{ $g.httpsNodePort }}
+{{- end }}

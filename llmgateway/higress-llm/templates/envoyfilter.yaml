@@ -1,0 +1,73 @@
+{{- if and .Values.backendRouter.enabled .Values.models }}
+---
+# Lets ai-backend-router move a request on to the next backend. The plugin only
+# marks a response (x-higress-spill: 1); custom_response, which Higress already
+# puts first in the HTTP filter chain, turns the mark into an internal redirect
+# that replays the original request through the whole chain. The buffer filter
+# keeps the request body for that replay. Matches the plugin's marker only, so
+# other routes are unaffected.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ai-backend-router-spill
+  namespace: {{ .Release.Namespace }}
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter: {name: envoy.filters.http.custom_response}
+    patch:
+      operation: MERGE
+      value:
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.custom_response.v3.CustomResponse
+          custom_response_matcher:
+            matcher_list:
+              matchers:
+              - predicate:
+                  single_predicate:
+                    input:
+                      name: spill
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.type.matcher.v3.HttpResponseHeaderMatchInput
+                        header_name: x-higress-spill
+                    value_match: {exact: "1"}
+                on_match:
+                  action:
+                    name: ai-backend-router-spill
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.http.custom_response.redirect_policy.v3.RedirectPolicy
+                      use_original_request_uri: true
+                      # The client's body, not the one ai-proxy converted:
+                      # replaying the converted one converts it a second time.
+                      use_original_request_body: true
+                      # Status and body of the same (final) pass.
+                      keep_original_response_code: false
+                      only_redirect_upstream_code: false
+                      max_internal_redirects: 16
+                      request_headers_to_add:
+                      # ai-proxy restores the caller's key on a replay when it
+                      # sees this, so key-auth authenticates the pass again.
+                      - header: {key: x-higress-fallback-from, value: ai-backend-router}
+                        append_action: OVERWRITE_IF_EXISTS_OR_ADD
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+            subFilter: {name: envoy.filters.http.custom_response}
+    patch:
+      operation: INSERT_AFTER
+      value:
+        name: envoy.filters.http.buffer
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+          max_request_bytes: {{ int64 .Values.backendRouter.maxRequestBodyBytes }}
+{{- end }}

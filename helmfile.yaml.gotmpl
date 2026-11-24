@@ -110,6 +110,14 @@ environments:
        Deliberately FALSE under mirror: there the addresses stay upstream and
        the redirect happens on the node, in /etc/containerd/certs.d. */}}
 {{- $rewrite := eq $mode "rewrite" }}
+{{- /* Higress pulls its wasm plugins from inside the gateway pods (istio-agent),
+       not through containerd: neither a node mirror nor the image rewrite
+       reaches them, and one plugin URL the gateway cannot fetch stalls the
+       config of every plugin on it. Until the plugins are part of the bundle,
+       refuse rather than render an install that hangs on the node. */}}
+{{- if and .Values.enabled.higress (ne $mode "upstream") }}
+{{-   fail (printf "enabled.higress needs registryMode: upstream (this is %q): the gateway fetches its wasm plugins itself, from higress.plugins.* URLs, which neither the bundle nor a node mirror covers yet." $mode) }}
+{{- end }}
 {{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
        the console it serves. */}}
 {{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
@@ -182,6 +190,8 @@ repositories:
 {{- if not $localCharts }}
   - name: volcano-sh
     url: https://volcano-sh.github.io/helm-charts
+  - name: higress
+    url: https://higress.io/helm-charts
   # kube-prometheus-stack, node-problem-detector and lws are pulled straight from
   # OCI registries (oci:// in `chart:` below) and need no entry here.
 {{- end }}
@@ -197,6 +207,7 @@ repositories:
 {{- $ngc     := ternary "modelsphere" "nvidia-ngc"   $localCharts }}
 {{- $desched := ternary "modelsphere" "descheduler"  $localCharts }}
 {{- $volcano := ternary "modelsphere" "volcano-sh"   $localCharts }}
+{{- $higress := ternary "modelsphere" "higress"      $localCharts }}
 # These three have no repo alias to swap -- they are pulled by full OCI URL --
 # so the entire `chart:` value changes rather than just its first segment.
 {{- $kps := ternary "modelsphere/kube-prometheus-stack" "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack" $localCharts }}
@@ -781,6 +792,36 @@ releases:
         metrics:
           serviceMonitor:
             enabled: {{ if kindIs "bool" (dig "serviceMonitor" "" .Values.autoconfig) }}{{ dig "serviceMonitor" false .Values.autoconfig }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
+
+  # Higress in front of openresty: the OpenAI-compatible entry that picks a
+  # model's route from the request body, authenticates the caller and counts
+  # tokens. Two releases: the gateway itself, and our plugins and routes, which
+  # need the gateway's CRDs (WasmPlugin, EnvoyFilter) first.
+  - name: higress
+    namespace: {{ .Values.namespaces.higress }}
+    chart: {{ template "chartref" (dict "local" $local "name" "higress-core" "ver" .Values.versions.higress "fallback" (printf "%s/higress-core" $higress)) }}
+    version: {{ .Values.versions.higress | quote }}
+    installed: {{ .Values.enabled.higress }}
+    labels:
+      tier: llmgate
+      part: product
+    values:
+      - llmgateway/higress.yaml.gotmpl
+{{- with dig "higress" "coreOverrides" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
+
+  - name: higress-llm
+    namespace: {{ .Values.namespaces.higress }}
+    chart: ./llmgateway/higress-llm
+    installed: {{ .Values.enabled.higress }}
+    needs:
+      - {{ .Values.namespaces.higress }}/higress
+    labels:
+      tier: llmgate
+      part: product
+    values:
+      - llmgateway/higress-llm.yaml.gotmpl
 
   # ────────────────────────────────────────────────────────────────── operators
   - name: llm-slo
