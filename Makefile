@@ -1,7 +1,7 @@
 .PHONY: help setup-k8s-online setup-k8s-offline setup-disk setup-mirror setup-offline-node audit-gpu gpu-prep setup-all \
         helm-deps helm-bootstrap helm-diff helm-apply helm-template helm-list helm-status \
         helm-apply-infra helm-apply-product helm-destroy-product \
-        offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind
+        offline-bundle offline-load setup-test-e2e-kind test-e2e-kind cleanup-test-e2e-kind \
 
 INVENTORY ?= inventory.ini
 LIMIT ?= all
@@ -80,9 +80,6 @@ help:
 	@echo "End-to-end test on kind (see test/e2e/kind/README.md):"
 	@echo "  make test-e2e-kind      - Kind cluster, helmfile -e kind apply, run test/e2e/kind (KEEP_CLUSTER=1 keeps it)"
 	@echo "  make cleanup-test-e2e-kind - Delete the kind cluster"
-	@echo ""
-	@echo "Real-GPU e2e tests: https://github.com/modelsphere/modelsphere-e2e"
-	@echo "                            Does not create or delete a cluster. Needs KUBECONFIG."
 	@echo ""
 	@echo "Options:"
 	@echo "  LIMIT=node1,node2       - Limit execution to specific hosts (default: all)"

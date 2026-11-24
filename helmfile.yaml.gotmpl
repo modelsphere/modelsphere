@@ -76,8 +76,6 @@ environments:
     values:
       - environments/default.yaml
       - environments/offline-rewrite.yaml
-  # The standalone modelsphere-e2e GPU suite. Named test-gpu so it is not
-  # a site cluster. Fill the placeholders in environments/test-gpu.yaml.
   # The per-run suite selects part=product only; it does not apply this whole
   # environment.
   test-gpu:
@@ -248,8 +246,6 @@ helmDefaults:
   cleanupOnFail: true
   historyMax: 10
 
-# `part` is which install set a release belongs to. modelsphere-e2e installs and
-# uninstalls `part=product` on every run and never selects `part=infra`.
 #
 # infra is the cluster base, rebuilt rarely and never by that suite: the CNI,
 # Ceph, the monitoring CRDs and the PrometheusRule/dashboard hooks, the GPU
