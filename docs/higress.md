@@ -114,9 +114,10 @@ What that costs:
   `terminationGracePeriodSeconds` set by the release's postsync hook (the
   chart has no value for it): a gateway rollout does not cut streams in flight.
 - **`globalAuth`.** With `false`, key-auth only checks routes that have an allow
-  list: a ModelFleet without `authConsumers`, or any route while `consumers` is
-  empty (no key-auth at all), is open. Set it `true` once every client has a
-  consumer.
+  list: a ModelFleet without `authConsumers` is open. With `consumers` empty
+  there is no key-auth plugin, and a fleet that names `authConsumers` fails to
+  sync (`GatewaySynced=False`) rather than being served unauthenticated. Set it
+  `true` once every client has a consumer.
 - **Metrics are per gateway pod.** `ai-statistics` counters live in each pod's
   memory: aggregate with `sum by (...) (increase(...))`. For billing use the
   per-request `ai_log` in the access log.

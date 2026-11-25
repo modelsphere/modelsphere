@@ -485,7 +485,9 @@ higress:
   # "Bearer sk-...", compared as a string (case-sensitive). Several credentials
   # per consumer allow rotating a key without downtime. Never list openresty's
   # own key. Which consumers may call a model is the ModelFleet's
-  # spec.gateway.authConsumers. Empty: no key-auth plugin, every model is open.
+  # spec.gateway.authConsumers. Empty: no key-auth plugin; a ModelFleet that
+  # names authConsumers then fails to sync (GatewaySynced=False) instead of
+  # being served unauthenticated.
   consumers: []
   #  - name: tenant-a
   #    credentials: ["Bearer sk-tenant-a"]
