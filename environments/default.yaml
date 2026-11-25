@@ -481,40 +481,27 @@ higress:
   # Values passed to the higress-core chart as-is, merged last.
   # coreOverrides: {}
 
-  # The API key openresty accepts. ai-proxy replaces the caller's key with it,
-  # so openresty only ever sees this one; callers' keys live in `consumers`.
-  # Required as soon as `models` is not empty. It ends up in plain text in a
-  # WasmPlugin in the higress namespace: keep this in a private environment file.
-  upstreamKey: ""
-
   # Who may call. Each credential is the whole Authorization header value,
   # "Bearer sk-...", compared as a string (case-sensitive). Several credentials
-  # per consumer allow rotating a key without downtime. Never list upstreamKey.
+  # per consumer allow rotating a key without downtime. Never list openresty's
+  # own key. Which consumers may call a model is the ModelFleet's
+  # spec.gateway.authConsumers. Empty: no key-auth plugin, every model is open.
   consumers: []
   #  - name: tenant-a
   #    credentials: ["Bearer sk-tenant-a"]
 
   # false: a route without an allow list is open. Set true only once every
-  # model has its allow list and every existing client has a consumer.
+  # ModelFleet names its consumers and every existing client has one.
   globalAuth: false
 
-  # One entry per model clients can ask for.
-  models: []
-  #  - name: qwen-trial          # the `model` clients send, exact match
-  #    allow: [tenant-a]         # consumers that may call it
-  #    backends:                 # openresty routes serving it (path prefix, no trailing /)
-  #    - {id: qwen-trial, path: /qwen-trial, tier: 0, weight: 100}
-
-  # ai-backend-router: chooses among a model's backends by tier, then weight,
-  # and moves a request on to the next tier when a backend answers 429/502/503/504.
-  # Off: each model must have exactly one backend, reached through a route-level
-  # path rewrite instead.
+  # Models are not listed here. Each model clients can ask for is a ModelFleet
+  # (routing.modelsphere.dev/v1alpha1, a single member for single-hardware
+  # models); autoconfig turns it into an Ingress llm-fleet-<name> plus one rule
+  # in each plugin below. This release only deploys the plugins and the
+  # ai-backend-router spill EnvoyFilter.
   backendRouter:
-    enabled: false
-    retryCodes: [429, 502, 503, 504]
-    exclude: tier                # or `backend`
-    # Largest request body the gateway accepts while it is on (413 above it);
-    # every in-flight request keeps its body in gateway memory.
+    # Largest request body the gateway buffers for a spill replay (413 above
+    # it). Not below the router's own limit (16 MiB, set by autoconfig).
     maxRequestBodyBytes: 16777216
 
   # Plugin images, pulled by the gateway pods themselves (not by the node's

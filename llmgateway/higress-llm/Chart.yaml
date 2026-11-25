@@ -1,5 +1,5 @@
 apiVersion: v2
 name: higress-llm
-description: Plugins and per-model routes that put Higress in front of openresty as an OpenAI-compatible entry
+description: Gateway-wide plugins that put Higress in front of openresty as an OpenAI-compatible entry; per-model routes come from ModelFleet objects via autoconfig
 type: application
-version: 0.1.0
+version: 0.2.0

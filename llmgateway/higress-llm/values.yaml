@@ -1,18 +1,10 @@
 # Filled in by ../higress-llm.yaml.gotmpl from environments/*.yaml (`higress:`);
 # the comments there describe each field. Defaults here only make the chart
-# render on its own (`helm template`): no models, nothing but model-router.
-upstream:
-  namespace: llm-route
-  service: openresty
-  port: 8080
-upstreamKey: ""
+# render on its own (`helm template`). Models are not here: they are ModelFleet
+# objects, routed by autoconfig.
 consumers: []
 globalAuth: false
-models: []
 backendRouter:
-  enabled: false
-  retryCodes: [429, 502, 503, 504]
-  exclude: tier
   maxRequestBodyBytes: 16777216
 plugins:
   modelRouter: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/model-router:2.0.4

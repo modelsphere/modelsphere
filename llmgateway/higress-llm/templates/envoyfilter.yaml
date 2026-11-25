@@ -1,4 +1,3 @@
-{{- if and .Values.backendRouter.enabled .Values.models }}
 ---
 # Lets ai-backend-router move a request on to the next backend. The plugin only
 # marks a response (x-higress-spill: 1); custom_response, which Higress already
@@ -69,5 +68,7 @@ spec:
         name: envoy.filters.http.buffer
         typed_config:
           "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+          # Not below the router's own limit (limits.maxRequestBodyBytes in the
+          # rule autoconfig writes, 16 MiB), or a body the router accepts cannot
+          # be replayed.
           max_request_bytes: {{ int64 .Values.backendRouter.maxRequestBodyBytes }}
-{{- end }}

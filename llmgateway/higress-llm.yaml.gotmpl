@@ -1,13 +1,14 @@
-{{- /* environments/*.yaml `higress:` -> the higress-llm chart (llmgateway/higress-llm).
-       Routes point at the openresty Service of this stack. */}}
+{{- /* environments/*.yaml `higress:` -> the higress-llm chart (llmgateway/higress-llm):
+       the gateway-wide plugin config. Routes come from ModelFleet objects via autoconfig.
+       models / upstreamKey are passed on only so the chart can refuse them. */}}
 {{- $h := .Values.higress }}
-upstream:
-  namespace: {{ .Values.namespaces.llmRoute }}
-  service: openresty
-  port: 8080
-upstreamKey: {{ $h.upstreamKey | quote }}
 globalAuth: {{ $h.globalAuth }}
 consumers: {{ toJson $h.consumers }}
-models: {{ toJson $h.models }}
 backendRouter: {{ toJson $h.backendRouter }}
 plugins: {{ toJson $h.plugins }}
+{{- if hasKey $h "models" }}
+models: {{ toJson $h.models }}
+{{- end }}
+{{- if hasKey $h "upstreamKey" }}
+upstreamKey: {{ $h.upstreamKey | quote }}
+{{- end }}
