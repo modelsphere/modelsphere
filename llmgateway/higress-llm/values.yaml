@@ -5,6 +5,7 @@
 consumers: []
 globalAuth: false
 backendRouter:
+  spill: true
   maxRequestBodyBytes: 16777216
 plugins:
   modelRouter: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/model-router:2.0.4

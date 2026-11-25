@@ -55,8 +55,15 @@ higress:
 
 Then `make helm-apply ENV=<env>` (or `helmfile -e <env> -l name=higress -l name=higress-llm apply`),
 and create a ModelFleet per model. Which consumers may call it is the fleet's
-`spec.gateway.authConsumers`; openresty's key is the Secret named by
-`spec.gateway.upstreamAuthSecretRef`, so it is not in any values file.
+`spec.gateway.authConsumers` (a name not in `higress.consumers` is denied);
+openresty's key is the Secret named by `spec.gateway.upstreamAuthSecretRef`, so
+it is not in any values file. A fleet's `spec.gateway.namespace` must be the
+namespace of this release (`namespaces.higress`): autoconfig looks for the
+plugins there, and a fleet whose plugins it cannot find is not synced.
+
+This needs an autoconfig release with the ModelFleet controller, and its CRD
+applied by hand on an existing cluster (`helm upgrade` does not update a chart's
+`crds/`).
 
 The chart refuses values from the earlier per-model layout (`higress.models`,
 `higress.upstreamKey`, `higress.backendRouter.enabled/retryCodes/exclude`)
@@ -65,8 +72,12 @@ instead of ignoring them, and a credential without the `Bearer ` prefix
 
 **Upgrading from chart 0.1.x** deletes the chart's `llm-model-*` Ingresses and
 its plugin rules: those models stop being served until their ModelFleets exist.
-Create the fleets first (autoconfig keeps rules it did not write, so they
-coexist with the old ones until the upgrade), then upgrade.
+Create the fleets first, then upgrade, and expect a short gap: depending on how
+helm applies the release, the upgrade can clear each plugin's whole rule list,
+the fleets' rules included, until autoconfig's next resync (up to 30s) writes
+them back. Meanwhile fleet routes answer 404 or 401, and are open while
+`globalAuth` is false. Upgrade outside peak hours, or force a resync right
+after.
 
 Check it:
 
@@ -85,15 +96,17 @@ gateway's access log (`route_name`, `response_code_details`), not the body.
 When a member answers 429, 502, 503 or 504, ai-backend-router marks the
 response and an EnvoyFilter (`ai-backend-router-spill`) replays the original
 request, which then skips the tier it already tried, invisibly to the client.
-What that costs:
+It is on by default (`higress.backendRouter.spill`). What that costs:
 
 - every pass runs the whole filter chain again: authentication, `ai-proxy`,
   `ai-statistics`; a request-count rate limit counts a spilled request twice;
 - only errors before the first response byte move on; a stream that breaks
   midway reaches the client;
 - request bodies are buffered for the replay, up to
-  `backendRouter.maxRequestBodyBytes` (16 MiB; larger requests get 413). Keep it
-  at least the router's own limit, which autoconfig sets to 16 MiB;
+  `backendRouter.maxRequestBodyBytes` (16 MiB; larger requests get 413), on
+  **every route of the gateway**, not only fleet routes. The chart refuses a
+  limit below the router's own (16 MiB). `spill: false` drops the buffer and the
+  replay; a member's 429/5xx then reaches the client;
 - a spilled request writes one access-log line per pass with the same
   `x-request-id`; for billing keep the line whose `response_code_details`
   does not start with `internal_redirect:`.
@@ -104,7 +117,9 @@ What that costs:
   themselves (`higress.plugins.*`), which neither the offline bundle nor a node
   registry mirror covers; the helmfile refuses the other modes. One plugin URL
   the gateway cannot fetch stalls configuration updates for every plugin on it,
-  so check a new URL on a test cluster first.
+  so check a new URL on a test cluster first. All five plugins are always
+  deployed, `ai-backend-router` included, so its image must be reachable from
+  the gateway pods even before any fleet exists.
 - **No console.** The umbrella `higress` chart always installs it, and the
   console creates a `key-auth.internal` plugin and an Ingress `default` that
   serves its page on `/` of the data-plane port, and resets key-auth's
@@ -114,9 +129,9 @@ What that costs:
   `terminationGracePeriodSeconds` set by the release's postsync hook (the
   chart has no value for it): a gateway rollout does not cut streams in flight.
 - **`globalAuth`.** With `false`, key-auth only checks routes that have an allow
-  list: a ModelFleet without `authConsumers` is open. With `consumers` empty
-  there is no key-auth plugin, and a fleet that names `authConsumers` fails to
-  sync (`GatewaySynced=False`) rather than being served unauthenticated. Set it
+  list: a ModelFleet without `authConsumers` is open. key-auth is deployed even
+  with no consumers, so a fleet that names `authConsumers` is never served
+  unauthenticated; with no matching consumer every caller is denied. Set it
   `true` once every client has a consumer.
 - **Metrics are per gateway pod.** `ai-statistics` counters live in each pod's
   memory: aggregate with `sum by (...) (increase(...))`. For billing use the

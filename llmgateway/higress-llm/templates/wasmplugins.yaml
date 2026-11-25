@@ -5,7 +5,8 @@
   route to key-auth, ai-statistics, ai-proxy and ai-backend-router, and keeps
   every rule it did not write. It only edits plugins that exist, so the chart
   creates all of them, unbound (defaultConfigDisable) where a plugin only acts
-  on fleet routes.
+  on fleet routes. autoconfig looks for them in the fleet's
+  spec.gateway.namespace: it must be this release's namespace.
 */}}
 ---
 # Writes the request body's `model` into x-higress-llm-model, which the model
@@ -25,12 +26,14 @@ spec:
   failStrategy: FAIL_OPEN
   defaultConfig:
     modelToHeader: x-higress-llm-model
-{{- if $v.consumers }}
 ---
 # Who may call. Each consumer's credentials are compared with the whole
 # Authorization header. A fleet route's rule (spec.gateway.authConsumers of the
 # ModelFleet) names the consumers allowed on it; with global_auth false a route
-# without a rule is open.
+# without a rule is open. Rendered even with no consumers: autoconfig writes the
+# route before the plugin rules, so a missing key-auth would leave a fleet that
+# asked for authentication served without it. With no consumers such a fleet's
+# callers are all denied instead.
 apiVersion: extensions.higress.io/v1alpha1
 kind: WasmPlugin
 metadata:
@@ -47,7 +50,11 @@ spec:
     # Placeholder: every consumer names its own header below.
     keys: [x-higress-dummy-key]
     global_auth: {{ $v.globalAuth }}
+{{- if not $v.consumers }}
+    consumers: []
+{{- else }}
     consumers:
+{{- end }}
 {{- range $v.consumers }}
     - name: {{ .name | quote }}
       keys: [Authorization]
@@ -56,7 +63,6 @@ spec:
       credentials:
 {{- range .credentials }}
       - {{ . | quote }}
-{{- end }}
 {{- end }}
 {{- end }}
 ---
@@ -98,6 +104,9 @@ metadata:
 spec:
   url: {{ $v.plugins.aiBackendRouter }}
   priority: 90
-  # Unrouted, a request would reach openresty without a route prefix.
+  # Unrouted, a request would reach openresty without a route prefix. The
+  # gateway pods fetch this module themselves: check the URL is reachable from
+  # them before changing it (one module that cannot load stalls configuration
+  # updates for every plugin on the gateway).
   failStrategy: FAIL_CLOSE
   defaultConfigDisable: true

@@ -795,8 +795,9 @@ releases:
 
   # Higress in front of openresty: the OpenAI-compatible entry that picks a
   # model's route from the request body, authenticates the caller and counts
-  # tokens. Two releases: the gateway itself, and our plugins and routes, which
-  # need the gateway's CRDs (WasmPlugin, EnvoyFilter) first.
+  # tokens. Two releases: the gateway itself, and our gateway-wide plugins, which
+  # need the gateway's CRDs (WasmPlugin, EnvoyFilter) first. Per-model routes
+  # come from ModelFleet objects via autoconfig.
   - name: higress
     namespace: {{ .Values.namespaces.higress }}
     chart: {{ template "chartref" (dict "local" $local "name" "higress-core" "ver" .Values.versions.higress "fallback" (printf "%s/higress-core" $higress)) }}

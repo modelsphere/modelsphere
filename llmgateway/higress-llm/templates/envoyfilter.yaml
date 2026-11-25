@@ -1,10 +1,13 @@
+{{- if .Values.backendRouter.spill }}
 ---
 # Lets ai-backend-router move a request on to the next backend. The plugin only
 # marks a response (x-higress-spill: 1); custom_response, which Higress already
 # puts first in the HTTP filter chain, turns the mark into an internal redirect
 # that replays the original request through the whole chain. The buffer filter
-# keeps the request body for that replay. Matches the plugin's marker only, so
-# other routes are unaffected.
+# keeps the request body for that replay; it applies to every route on the
+# gateway (Envoy has no per-Ingress scope here), so every request body is held
+# in gateway memory up to maxRequestBodyBytes. The redirect matches the
+# plugin's marker only.
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
@@ -72,3 +75,4 @@ spec:
           # rule autoconfig writes, 16 MiB), or a body the router accepts cannot
           # be replayed.
           max_request_bytes: {{ int64 .Values.backendRouter.maxRequestBodyBytes }}
+{{- end }}

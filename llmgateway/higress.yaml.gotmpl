@@ -12,7 +12,7 @@
 {{- $g := .Values.higress.gateway }}
 global:
   ingressClass: higress
-  # Routes are Ingress objects (llmgateway/higress-llm); Gateway API is left to
+  # Routes are Ingress objects (written by autoconfig from ModelFleet); Gateway API is left to
   # whatever else serves it on this cluster.
   enableGatewayAPI: false
 

@@ -15,8 +15,9 @@
 {{- if $v.models }}{{ fail "higress.models is gone: models are ModelFleet objects now (routing.modelsphere.dev/v1alpha1), rendered into the gateway by autoconfig. Create one ModelFleet per model (a single member for single-hardware models) and remove higress.models." }}{{ end }}
 {{- if $v.upstreamKey }}{{ fail "higress.upstreamKey is gone: each ModelFleet names the openresty key in spec.gateway.upstreamAuthSecretRef. Remove higress.upstreamKey." }}{{ end }}
 {{- range $k := list "enabled" "retryCodes" "exclude" }}
-{{-   if hasKey $v.backendRouter $k }}{{ fail (printf "higress.backendRouter.%s is gone: ai-backend-router is always deployed and autoconfig writes its per-route config. Keep only backendRouter.maxRequestBodyBytes." $k) }}{{ end }}
+{{-   if hasKey $v.backendRouter $k }}{{ fail (printf "higress.backendRouter.%s is gone: ai-backend-router is always deployed and autoconfig writes its per-route config. Keep only backendRouter.spill and backendRouter.maxRequestBodyBytes." $k) }}{{ end }}
 {{- end }}
+{{- if lt (int64 $v.backendRouter.maxRequestBodyBytes) 16777216 }}{{ fail (printf "higress.backendRouter.maxRequestBodyBytes %v is below ai-backend-router's own limit (16777216, set by autoconfig): a body the router accepts could not be replayed on spill." $v.backendRouter.maxRequestBodyBytes) }}{{ end }}
 {{- $consumers := dict -}}
 {{- range $v.consumers }}
 {{-   if not .name }}{{ fail "higress.consumers: an entry has no name." }}{{ end }}

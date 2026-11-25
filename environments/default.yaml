@@ -261,8 +261,9 @@ enabled:
   # Higress as the OpenAI-compatible entry in front of openresty: clients call
   # /v1/... with the model in the body; Higress picks the model's route,
   # authenticates the caller, counts tokens and forwards to openresty. Off by
-  # default: it needs the `higress:` block below filled in (models, consumers,
-  # the upstream key). Supported with registryMode: upstream only.
+  # default: it needs the `higress:` block below (consumers), and serves a model
+  # once a ModelFleet exists for it (autoconfig). Supported with registryMode:
+  # upstream only.
   higress: false
   bodylog: true
   bodylogExporter: true
@@ -463,7 +464,9 @@ llmGateway:
   # openrestyOverrides: {}
 
 # enabled.higress only. Rendered by llmgateway/higress.yaml.gotmpl (the gateway)
-# and llmgateway/higress-llm.yaml.gotmpl (plugins, routes).
+# and llmgateway/higress-llm.yaml.gotmpl (gateway-wide plugin config). Routes
+# are written by autoconfig from ModelFleet objects; a fleet's
+# spec.gateway.namespace must be namespaces.higress.
 higress:
   gateway:
     replicas: 2
@@ -485,9 +488,7 @@ higress:
   # "Bearer sk-...", compared as a string (case-sensitive). Several credentials
   # per consumer allow rotating a key without downtime. Never list openresty's
   # own key. Which consumers may call a model is the ModelFleet's
-  # spec.gateway.authConsumers. Empty: no key-auth plugin; a ModelFleet that
-  # names authConsumers then fails to sync (GatewaySynced=False) instead of
-  # being served unauthenticated.
+  # spec.gateway.authConsumers; a name not listed here is denied.
   consumers: []
   #  - name: tenant-a
   #    credentials: ["Bearer sk-tenant-a"]
@@ -502,8 +503,13 @@ higress:
   # in each plugin below. This release only deploys the plugins and the
   # ai-backend-router spill EnvoyFilter.
   backendRouter:
-    # Largest request body the gateway buffers for a spill replay (413 above
-    # it). Not below the router's own limit (16 MiB, set by autoconfig).
+    # Spilling to the next tier replays the request, so the gateway keeps every
+    # request body in memory, on every route of this gateway, up to
+    # maxRequestBodyBytes (413 above it). false: no replay (no buffer); a
+    # member's 429/5xx then reaches the client.
+    spill: true
+    # Not below the router's own limit (16 MiB, set by autoconfig): the chart
+    # refuses less.
     maxRequestBodyBytes: 16777216
 
   # Plugin images, pulled by the gateway pods themselves (not by the node's
