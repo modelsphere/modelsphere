@@ -72,12 +72,21 @@ instead of ignoring them, and a credential without the `Bearer ` prefix
 
 **Upgrading from chart 0.1.x** deletes the chart's `llm-model-*` Ingresses and
 its plugin rules: those models stop being served until their ModelFleets exist.
-Create the fleets first, then upgrade, and expect a short gap: depending on how
-helm applies the release, the upgrade can clear each plugin's whole rule list,
-the fleets' rules included, until autoconfig's next resync (up to 30s) writes
-them back. Meanwhile fleet routes answer 404 or 401, and are open while
-`globalAuth` is false. Upgrade outside peak hours, or force a resync right
-after.
+Create the fleets first, then upgrade. What happens to the chart's old rules
+depends on how helm applies the release:
+
+- **helm 4 (server-side apply), measured on a test cluster:** once autoconfig
+  has written a fleet's rule, it owns each plugin's whole `matchRules` list,
+  so the upgrade neither clears the fleets' rules (no gap) nor removes the
+  chart's old ones. Those old rules point at the deleted `llm-model-*`
+  Ingresses and do nothing, but ai-proxy's still holds openresty's key in
+  plain text: remove every rule whose Ingresses are all gone `llm-model-*`
+  ones after the upgrade.
+- **helm 3 (three-way merge):** the upgrade can clear each plugin's whole rule
+  list, the fleets' rules included, until autoconfig's next resync (up to 30s)
+  writes them back. Meanwhile fleet routes answer 404 or 401, and are open
+  while `globalAuth` is false. Upgrade outside peak hours, or force a resync
+  right after.
 
 Check it:
 
