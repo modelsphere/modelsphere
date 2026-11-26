@@ -85,9 +85,11 @@ controllers, and their CRDs applied by hand on an existing cluster (`helm upgrad
 without it: the list has a single owner under server-side apply, and a value from
 the chart would be written over autoconfig's on every upgrade. key-auth refuses a
 config without the list and fails closed, for the whole gateway, so autoconfig adds
-an empty one when it is missing. Install autoconfig before (or together with)
-`enabled.higress`: until it adds the list, key-auth rejects every request on the
-gateway. Each key may belong to one consumer only: key-auth rejects the whole config
+an empty one when it is missing. This needs autoconfig 0.4.4 or later (the
+helmfile refuses an older `versions.autoconfig`): an earlier release never adds
+the list, and the gateway stays closed. Install or upgrade autoconfig first
+(the helmfile orders the releases that way): until it adds the list, key-auth
+rejects every request on the gateway. Each key may belong to one consumer only: key-auth rejects the whole config
 on a duplicate credential.
 
 Check it:

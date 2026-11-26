@@ -121,6 +121,11 @@ environments:
 {{- if and .Values.enabled.higress (not .Values.enabled.autoconfig) }}
 {{-   fail "enabled.higress needs enabled.autoconfig: autoconfig writes key-auth's consumer list (the higress-llm chart leaves it out), and key-auth without it rejects every request on the gateway." }}
 {{- end }}
+{{- /* An older autoconfig has no APIConsumer controller and never adds the
+       list, so key-auth would stay broken, the whole gateway with it. */}}
+{{- if and .Values.enabled.higress (not (semverCompare ">=0.4.4-0" (toString .Values.versions.autoconfig))) }}
+{{-   fail (printf "enabled.higress needs autoconfig 0.4.4 or later (versions.autoconfig is %v): earlier releases do not add key-auth's consumer list, and key-auth without it rejects every request on the gateway." .Values.versions.autoconfig) }}
+{{- end }}
 {{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
        the console it serves. */}}
 {{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
