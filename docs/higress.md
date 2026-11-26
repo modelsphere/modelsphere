@@ -99,7 +99,7 @@ it is running need `kubectl rollout restart` of its deployment.
 without it: the list has a single owner under server-side apply, and a value
 from the chart would be written over autoconfig's on every upgrade. key-auth
 refuses a config without the list and fails closed, for the whole gateway, so
-autoconfig adds an empty one when it is missing. This needs autoconfig 0.4.4 or
+autoconfig adds an empty one when it is missing. This needs autoconfig 0.5.0 or
 later (the helmfile refuses an older `versions.autoconfig`): an earlier release
 never adds the list, and the gateway stays closed. The helmfile installs
 `higress` (which brings the WasmPlugin CRD), then autoconfig, then
