@@ -46,29 +46,63 @@ enabled:
 higress:
   gateway:
     httpNodePort: 31080          # optional
-  consumers:
-  - name: tenant-a
-    credentials: ["Bearer sk-tenant-a"]
-  - name: ops
-    credentials: ["Bearer sk-ops", "Bearer sk-ops-next"]   # two keys: rotation
 ```
 
 Then `make helm-apply ENV=<env>` (or `helmfile -e <env> -l name=higress -l name=higress-llm apply`),
-and create a ModelFleet per model. Which consumers may call it is the fleet's
-`spec.gateway.authConsumers` (a name not in `higress.consumers` is denied);
-openresty's key is the Secret named by `spec.gateway.upstreamAuthSecretRef`, so
+then create an APIConsumer per caller and a ModelFleet per model.
+
+**Callers are not configured here either.** Each is an `APIConsumer`
+(`routing.modelsphere.dev/v1alpha1`) whose keys are the values of a Secret in its
+namespace; autoconfig writes every APIConsumer into key-auth's consumer list.
+Adding a tenant or rotating a key (add the new value to the Secret, remove the
+old one once the caller has moved) needs no release:
+
+```bash
+kubectl -n llm-route create secret generic tenant-a-keys --from-literal=current=sk-tenant-a
+kubectl apply -f - <<'YAML'
+apiVersion: routing.modelsphere.dev/v1alpha1
+kind: APIConsumer
+metadata: {name: tenant-a, namespace: llm-route}
+spec:
+  gateway: {namespace: higress-system}
+  credentialsSecretRef: tenant-a-keys
+YAML
+```
+
+Clients send the key as `Authorization: Bearer <key>`. The keys end up in plain
+text in the key-auth WasmPlugin (its config is pushed to the data plane as is).
+Which consumers may call a model is the fleet's `spec.gateway.authConsumers`
+(a name with no APIConsumer is denied); openresty's key is the Secret named by `spec.gateway.upstreamAuthSecretRef`, so
 it is not in any values file. A fleet's `spec.gateway.namespace` must be the
 namespace of this release (`namespaces.higress`): autoconfig looks for the
 plugins there, and a fleet whose plugins it cannot find is not synced.
 
-This needs an autoconfig release with the ModelFleet controller, and its CRD
-applied by hand on an existing cluster (`helm upgrade` does not update a chart's
+This needs an autoconfig release with the ModelFleet and APIConsumer
+controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
 `crds/`).
 
 The chart refuses values from the earlier per-model layout (`higress.models`,
-`higress.upstreamKey`, `higress.backendRouter.enabled/retryCodes/exclude`)
-instead of ignoring them, and a credential without the `Bearer ` prefix
-(key-auth compares the whole `Authorization` header).
+`higress.upstreamKey`, `higress.consumers`,
+`higress.backendRouter.enabled/retryCodes/exclude`) instead of ignoring them.
+
+**Upgrading from chart 0.2.x** moves key-auth's consumer list from the chart to
+autoconfig. The list has a single owner under server-side apply, and key-auth
+refuses a config without it (and fails closed, for the whole gateway), so the
+chart looks at the live key-auth before rendering:
+
+- autoconfig already owns `defaultConfig.consumers`: the chart leaves it out;
+- the chart still owns it and it is empty: the chart keeps the empty list;
+- the chart still owns it and it holds consumers: **the upgrade fails**, since
+  rendering an empty list would deny them all and leaving it out would delete
+  the field.
+
+So migrate first: create an APIConsumer (and its Secret) for every entry of the
+old `higress.consumers`, with the same name and the key without `Bearer `, wait
+until autoconfig owns the field (`kubectl -n higress-system get wasmplugin
+key-auth --show-managed-fields -o yaml`: `f:consumers` under the `autoconfig`
+manager), then remove `higress.consumers` and upgrade. `helm template` and
+`helmfile diff` cannot see the live object, so they show `consumers: []` even
+when the upgrade will leave it out.
 
 **Upgrading from chart 0.1.x** deletes the chart's `llm-model-*` Ingresses and
 its plugin rules: those models stop being served until their ModelFleets exist.
@@ -139,9 +173,9 @@ It is on by default (`higress.backendRouter.spill`). What that costs:
   chart has no value for it): a gateway rollout does not cut streams in flight.
 - **`globalAuth`.** With `false`, key-auth only checks routes that have an allow
   list: a ModelFleet without `authConsumers` is open. key-auth is deployed even
-  with no consumers, so a fleet that names `authConsumers` is never served
+  with no APIConsumer, so a fleet that names `authConsumers` is never served
   unauthenticated; with no matching consumer every caller is denied. Set it
-  `true` once every client has a consumer.
+  `true` once every client has an APIConsumer.
 - **Metrics are per gateway pod.** `ai-statistics` counters live in each pod's
   memory: aggregate with `sum by (...) (increase(...))`. For billing use the
   per-request `ai_log` in the access log.

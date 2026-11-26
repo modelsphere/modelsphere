@@ -1,8 +1,7 @@
 # Filled in by ../higress-llm.yaml.gotmpl from environments/*.yaml (`higress:`);
 # the comments there describe each field. Defaults here only make the chart
-# render on its own (`helm template`). Models are not here: they are ModelFleet
-# objects, routed by autoconfig.
-consumers: []
+# render on its own (`helm template`). Models and consumers are not here: they are
+# ModelFleet and APIConsumer objects, written into the gateway by autoconfig.
 globalAuth: false
 backendRouter:
   spill: true

@@ -261,8 +261,8 @@ enabled:
   # Higress as the OpenAI-compatible entry in front of openresty: clients call
   # /v1/... with the model in the body; Higress picks the model's route,
   # authenticates the caller, counts tokens and forwards to openresty. Off by
-  # default: it needs the `higress:` block below (consumers), and serves a model
-  # once a ModelFleet exists for it (autoconfig). Supported with registryMode:
+  # default: it serves a model once a ModelFleet exists for it, and a caller once
+  # an APIConsumer exists for it (both via autoconfig). Supported with registryMode:
   # upstream only.
   higress: false
   bodylog: true
@@ -484,14 +484,10 @@ higress:
   # Values passed to the higress-core chart as-is, merged last.
   # coreOverrides: {}
 
-  # Who may call. Each credential is the whole Authorization header value,
-  # "Bearer sk-...", compared as a string (case-sensitive). Several credentials
-  # per consumer allow rotating a key without downtime. Never list openresty's
-  # own key. Which consumers may call a model is the ModelFleet's
-  # spec.gateway.authConsumers; a name not listed here is denied.
-  consumers: []
-  #  - name: tenant-a
-  #    credentials: ["Bearer sk-tenant-a"]
+  # Callers are not listed here: each is an APIConsumer object with its keys in
+  # a Secret, written into key-auth by autoconfig (add a tenant or rotate a key
+  # without a release). Which consumers may call a model is the ModelFleet's
+  # spec.gateway.authConsumers.
 
   # false: a route without an allow list is open. Set true only once every
   # ModelFleet names its consumers and every existing client has one.

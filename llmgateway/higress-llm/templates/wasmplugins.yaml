@@ -27,13 +27,47 @@ spec:
   defaultConfig:
     modelToHeader: x-higress-llm-model
 ---
-# Who may call. Each consumer's credentials are compared with the whole
-# Authorization header. A fleet route's rule (spec.gateway.authConsumers of the
-# ModelFleet) names the consumers allowed on it; with global_auth false a route
-# without a rule is open. Rendered even with no consumers: autoconfig writes the
-# route before the plugin rules, so a missing key-auth would leave a fleet that
-# asked for authentication served without it. With no consumers such a fleet's
-# callers are all denied instead.
+# Who may call. The consumers (callers and their keys) belong to autoconfig: it
+# renders one per APIConsumer object (routing.modelsphere.dev/v1alpha1) into
+# defaultConfig.consumers, so adding a tenant or rotating a key needs no release.
+# A fleet route's rule (spec.gateway.authConsumers of the ModelFleet) names the
+# consumers allowed on it; with global_auth false a route without a rule is open.
+# Rendered even before any APIConsumer exists: autoconfig writes the route before
+# the plugin rules, so a missing key-auth would leave a fleet that asked for
+# authentication served without it. With no consumers its callers are denied.
+{{- /*
+  defaultConfig.consumers is a list, so server-side apply gives it one owner.
+  key-auth refuses a config with neither consumers nor credentials, and the
+  plugin fails closed, so the key must always be there; which side writes it
+  depends on who owns it in the live object:
+  - no key-auth yet (first install; also helm template and client-side
+    dry runs, where lookup returns nothing): render an empty list;
+  - this chart still owns it and it is empty: keep rendering the empty list
+    (same value, no change). Not rendering it would make helm remove the field;
+  - this chart still owns it and it is not empty: fail. Those are consumers
+    from an earlier chart's values; rendering [] would deny all of them, and
+    not rendering would remove the field. autoconfig has to take it over first;
+  - anyone else owns it (autoconfig): leave it out.
+*/}}
+{{- $consumersLine := true }}
+{{- $live := lookup "extensions.higress.io/v1alpha1" "WasmPlugin" .Release.Namespace "key-auth" }}
+{{- if $live }}
+{{-   $chartOwns := false }}
+{{-   $someoneOwns := false }}
+{{-   range $mf := (dig "metadata" "managedFields" list $live) }}
+{{-     $dc := dig "f:spec" "f:defaultConfig" dict (default dict $mf.fieldsV1) }}
+{{-     if hasKey $dc "f:consumers" }}
+{{-       $someoneOwns = true }}
+{{-       if eq $mf.manager "helm" }}{{ $chartOwns = true }}{{ end }}
+{{-     end }}
+{{-   end }}
+{{-   $liveConsumers := dig "spec" "defaultConfig" "consumers" list $live }}
+{{-   if $chartOwns }}
+{{-     if $liveConsumers }}{{ fail (printf "key-auth in %s still has %d consumers owned by this release, from an earlier chart's higress.consumers. Consumers are APIConsumer objects now, written by autoconfig: create one per consumer (credentials in a Secret) with an autoconfig release that has the APIConsumer controller, wait until autoconfig owns key-auth's defaultConfig.consumers (metadata.managedFields), then upgrade." .Release.Namespace (len $liveConsumers)) }}{{ end }}
+{{-   else if $someoneOwns }}
+{{-     $consumersLine = false }}
+{{-   end }}
+{{- end }}
 apiVersion: extensions.higress.io/v1alpha1
 kind: WasmPlugin
 metadata:
@@ -47,23 +81,11 @@ spec:
   failStrategy: FAIL_CLOSE
   defaultConfigDisable: false
   defaultConfig:
-    # Placeholder: every consumer names its own header below.
+    # Placeholder: every consumer names its own header.
     keys: [x-higress-dummy-key]
     global_auth: {{ $v.globalAuth }}
-{{- if not $v.consumers }}
+{{- if $consumersLine }}
     consumers: []
-{{- else }}
-    consumers:
-{{- end }}
-{{- range $v.consumers }}
-    - name: {{ .name | quote }}
-      keys: [Authorization]
-      in_header: true
-      in_query: false
-      credentials:
-{{- range .credentials }}
-      - {{ . | quote }}
-{{- end }}
 {{- end }}
 ---
 # Token metrics and the per-request ai_log line, on fleet routes.

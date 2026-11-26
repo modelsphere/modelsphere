@@ -1,13 +1,16 @@
 {{- /* environments/*.yaml `higress:` -> the higress-llm chart (llmgateway/higress-llm):
        the gateway-wide plugin config. Routes come from ModelFleet objects via autoconfig.
-       models / upstreamKey are passed on only so the chart can refuse them. */}}
+       Consumers come from APIConsumer objects, also via autoconfig.
+       models / upstreamKey / consumers are passed on only so the chart can refuse them. */}}
 {{- $h := .Values.higress }}
 globalAuth: {{ $h.globalAuth }}
-consumers: {{ toJson $h.consumers }}
 backendRouter: {{ toJson $h.backendRouter }}
 plugins: {{ toJson $h.plugins }}
 {{- if hasKey $h "models" }}
 models: {{ toJson $h.models }}
+{{- end }}
+{{- if hasKey $h "consumers" }}
+consumers: {{ toJson $h.consumers }}
 {{- end }}
 {{- if hasKey $h "upstreamKey" }}
 upstreamKey: {{ $h.upstreamKey | quote }}
