@@ -66,7 +66,7 @@ spec:
 {{-   if $otherOwns }}
 {{-     $consumersLine = false }}
 {{-   else if $chartOwns }}
-{{-     if $liveConsumers }}{{ fail (printf "key-auth in %s still has %d consumers owned by this release, from an earlier chart's higress.consumers. Consumers are APIConsumer objects now, written by autoconfig: create one per consumer (credentials in a Secret) with an autoconfig release that has the APIConsumer controller, wait until autoconfig owns key-auth's defaultConfig.consumers (metadata.managedFields), then upgrade." .Release.Namespace (len $liveConsumers)) }}{{ end }}
+{{-     if $liveConsumers }}{{ fail (printf "key-auth in %s holds %d consumers owned by helm alone; rendering an empty list would deny them all and leaving it out would delete the field. Consumers are APIConsumer objects now, written by autoconfig: create one per consumer (credentials in a Secret) with an autoconfig release that has the APIConsumer controller, wait until autoconfig owns key-auth's defaultConfig.consumers (metadata.managedFields), then upgrade." .Release.Namespace (len $liveConsumers)) }}{{ end }}
 {{-   end }}
 {{- end }}
 apiVersion: extensions.higress.io/v1alpha1

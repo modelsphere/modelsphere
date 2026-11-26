@@ -81,46 +81,19 @@ This needs an autoconfig release with the ModelFleet and APIConsumer
 controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
 `crds/`).
 
-The chart refuses values from the earlier per-model layout (`higress.models`,
-`higress.upstreamKey`, `higress.consumers`,
-`higress.backendRouter.enabled/retryCodes/exclude`) instead of ignoring them.
+The chart refuses `higress.models`, `higress.upstreamKey`, `higress.consumers`
+and `higress.backendRouter.enabled/retryCodes/exclude` instead of ignoring them:
+models and callers are ModelFleet and APIConsumer objects.
 
-**Upgrading from chart 0.2.x** moves key-auth's consumer list from the chart to
-autoconfig. The list has a single owner under server-side apply, and key-auth
-refuses a config without it (and fails closed, for the whole gateway), so the
-chart looks at the live key-auth before rendering:
-
-- autoconfig already owns `defaultConfig.consumers`: the chart leaves it out;
-- the chart still owns it and it is empty: the chart keeps the empty list;
-- the chart still owns it and it holds consumers: **the upgrade fails**, since
-  rendering an empty list would deny them all and leaving it out would delete
-  the field.
-
-So migrate first: create an APIConsumer (and its Secret) for every entry of the
-old `higress.consumers`, with the same name and the key without `Bearer `, wait
-until autoconfig owns the field (`kubectl -n higress-system get wasmplugin
-key-auth --show-managed-fields -o yaml`: `f:consumers` under the `autoconfig`
-manager), then remove `higress.consumers` and upgrade. `helm template` and
-`helmfile diff` cannot see the live object, so they show `consumers: []` even
-when the upgrade will leave it out.
-
-**Upgrading from chart 0.1.x** deletes the chart's `llm-model-*` Ingresses and
-its plugin rules: those models stop being served until their ModelFleets exist.
-Create the fleets first, then upgrade. What happens to the chart's old rules
-depends on how helm applies the release:
-
-- **helm 4 (server-side apply), measured on a test cluster:** once autoconfig
-  has written a fleet's rule, it owns each plugin's whole `matchRules` list,
-  so the upgrade neither clears the fleets' rules (no gap) nor removes the
-  chart's old ones. Those old rules point at the deleted `llm-model-*`
-  Ingresses and do nothing, but ai-proxy's still holds openresty's key in
-  plain text: remove every rule whose Ingresses are all gone `llm-model-*`
-  ones after the upgrade.
-- **helm 3 (three-way merge):** the upgrade can clear each plugin's whole rule
-  list, the fleets' rules included, until autoconfig's next resync (up to 30s)
-  writes them back. Meanwhile fleet routes answer 404 or 401, and are open
-  while `globalAuth` is false. Upgrade outside peak hours, or force a resync
-  right after.
+**key-auth's consumer list belongs to autoconfig.** The list has a single owner
+under server-side apply, and key-auth refuses a config without it (failing
+closed, for the whole gateway), so the chart looks at the live key-auth before
+rendering: it writes an empty list when there is no key-auth yet or when helm
+alone owns an empty one, leaves the list out once any other manager owns it,
+and refuses to render when helm alone owns a non-empty list (an empty list
+would deny every caller, leaving it out would delete the field). `helm
+template` and `helmfile diff` cannot see the live object, so they show
+`consumers: []` even when an upgrade will leave it out.
 
 Check it:
 
