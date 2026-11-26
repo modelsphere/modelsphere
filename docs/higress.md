@@ -93,8 +93,10 @@ helmfile refuses an older `versions.autoconfig`): an earlier release never adds
 the list, and the gateway stays closed. The helmfile installs `higress` (which brings the WasmPlugin
 CRD), then autoconfig, then `higress-llm`: until autoconfig adds the list, key-auth
 rejects every request on the gateway. With the CRD already there autoconfig sees
-key-auth appear and adds the list at once; an autoconfig started before Higress
-picks it up on its next periodic pass, without a restart. Each key may belong to one consumer only: key-auth rejects the whole config
+key-auth appear and adds the list: measured about 5 s for the first key-auth after
+autoconfig starts (its watch is set up on that first event) and about 0.3 s after
+that. An autoconfig started before Higress picks key-auth up on its next periodic
+pass instead, without a restart. Each key may belong to one consumer only: key-auth rejects the whole config
 on a duplicate credential.
 
 Check it:
