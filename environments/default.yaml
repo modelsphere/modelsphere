@@ -140,10 +140,10 @@ versions:
   # observability/grafana-victorialogs-plugin/ -- no release workflow, because
   # it holds nothing of ours.
   grafanaVictorialogsPlugin: "0.32.0"
-  # TODO: raise to 0.5.0 once it is released. enabled.higress is refused below
-  # 0.5.0 (no ModelFleet/APIConsumer controllers, key-auth's consumer list never
-  # added), so the Higress gateway cannot be turned on until this bump.
-  autoconfig: "0.4.3"
+  # 0.5.0 adds the ModelFleet/APIConsumer controllers and key-auth's consumer
+  # list that enabled.higress needs (the helmfile refuses an older one). On an
+  # existing cluster apply its CRDs by hand before upgrading (docs/higress.md).
+  autoconfig: "0.5.0"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
   # governs that the way it does for everything else. The bundle pulls both, in
