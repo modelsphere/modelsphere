@@ -8,7 +8,8 @@
   nothing.
 
   Everything else that would go wrong quietly at runtime fails too: a consumer
-  without credentials, a credential key-auth can never match.
+  without credentials, a credential key-auth can never match, a credential
+  shared by two consumers (key-auth then refuses its whole config).
 */}}
 {{- define "higress-llm.validate" -}}
 {{- $v := .Values -}}
@@ -19,13 +20,21 @@
 {{- end }}
 {{- if lt (int64 $v.backendRouter.maxRequestBodyBytes) 16777216 }}{{ fail (printf "higress.backendRouter.maxRequestBodyBytes %v is below ai-backend-router's own limit (16777216, set by autoconfig): a body the router accepts could not be replayed on spill." $v.backendRouter.maxRequestBodyBytes) }}{{ end }}
 {{- $consumers := dict -}}
-{{- range $v.consumers }}
-{{-   if not .name }}{{ fail "higress.consumers: an entry has no name." }}{{ end }}
-{{-   if hasKey $consumers .name }}{{ fail (printf "higress.consumers: %q is listed twice." .name) }}{{ end }}
-{{-   if not .credentials }}{{ fail (printf "higress.consumers[%s]: no credentials." .name) }}{{ end }}
-{{-   range .credentials }}
-{{-     if not (hasPrefix "Bearer " .) }}{{ fail (printf "higress.consumers: credential %q does not start with \"Bearer \": key-auth compares the whole Authorization header." .) }}{{ end }}
+{{- $seen := dict -}}
+{{- range $c := $v.consumers }}
+{{-   if not $c.name }}{{ fail "higress.consumers: an entry has no name." }}{{ end }}
+{{-   if hasKey $consumers $c.name }}{{ fail (printf "higress.consumers: %q is listed twice." $c.name) }}{{ end }}
+{{-   if not $c.credentials }}{{ fail (printf "higress.consumers[%s]: no credentials." $c.name) }}{{ end }}
+{{-   range $i, $cred := $c.credentials }}
+{{- /* Messages name the consumer and index, never the credential: helm prints them to CI logs. */}}
+{{-     if not (hasPrefix "Bearer " $cred) }}{{ fail (printf "higress.consumers[%s].credentials[%d] does not start with \"Bearer \": key-auth compares the whole Authorization header." $c.name $i) }}{{ end }}
+{{- /* key-auth rejects the whole config when one credential appears twice (plugin.cc,
+           "duplicate consumer credential"), and the plugin is FAIL_CLOSE: every request
+           on the gateway fails, not just the two consumers involved. */}}
+{{-     $h := sha256sum $cred }}
+{{-     if hasKey $seen $h }}{{ fail (printf "higress.consumers[%s].credentials[%d] is also used by %s: key-auth refuses the whole config on a duplicate credential, and it fails closed." $c.name $i (get $seen $h)) }}{{ end }}
+{{-     $_ := set $seen $h (printf "%s[%d]" $c.name $i) }}
 {{-   end }}
-{{-   $_ := set $consumers .name true }}
+{{-   $_ := set $consumers $c.name true }}
 {{- end }}
 {{- end -}}
