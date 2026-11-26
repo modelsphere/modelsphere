@@ -140,7 +140,10 @@ versions:
   # observability/grafana-victorialogs-plugin/ -- no release workflow, because
   # it holds nothing of ours.
   grafanaVictorialogsPlugin: "0.32.0"
-  autoconfig: "0.4.3"
+  # 0.5.0 adds the ModelFleet/APIConsumer controllers and key-auth's consumer
+  # list that enabled.higress needs (the helmfile refuses an older one). On an
+  # existing cluster apply its CRDs by hand before upgrading (docs/higress.md).
+  autoconfig: "0.5.0"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
   # governs that the way it does for everything else. The bundle pulls both, in
@@ -170,6 +173,13 @@ versions:
 
   condition2taint: "0.2.0"
   alertWebhook: "0.2.1"
+  # higress.io/helm-charts. The `higress-core` chart (gateway + controller), not
+  # the `higress` umbrella: that one always brings the console, and the console
+  # creates objects of its own on start (see llmgateway/higress.yaml.gotmpl).
+  higress: "2.2.6"
+  # modelsphere/helm-charts: the gateway-wide plugin config on that gateway.
+  # Needs an autoconfig with the ModelFleet and APIConsumer controllers.
+  higressLlm: "0.1.0"
 
 # ---------------------------------------------------------------- namespaces
 namespaces:
@@ -196,6 +206,7 @@ namespaces:
                                   # the release name has to stay `volcano` too.
   condition2taint: "node-problem-detector"
   alertWebhook: "monitoring"
+  higress: higress-system
 
 # ---------------------------------------------------------------- what to install
 # Anything false here is rendered but not applied. Flip a flag and re-run
@@ -253,6 +264,13 @@ enabled:
   lws: true
 
   openresty: true
+  # Higress as the OpenAI-compatible entry in front of openresty: clients call
+  # /v1/... with the model in the body; Higress picks the model's route,
+  # authenticates the caller, counts tokens and forwards to openresty. Off by
+  # default: it serves a model once a ModelFleet exists for it, and a caller once
+  # an APIConsumer exists for it (both via autoconfig). Supported with registryMode:
+  # upstream only.
+  higress: false
   bodylog: true
   bodylogExporter: true
   # Vector next to the bodylog pod, shipping each record into VictoriaLogs so the
@@ -450,6 +468,75 @@ llmGateway:
   # Values passed to the openresty chart as-is, over llmgateway/openresty.yaml.gotmpl,
   # e.g. replicas and resources on a small cluster (environments/kind.yaml).
   # openrestyOverrides: {}
+
+# enabled.higress only. Rendered by llmgateway/higress.yaml.gotmpl (the gateway)
+# and llmgateway/higress-llm.yaml.gotmpl (the higress-llm chart: gateway-wide plugin config). Routes
+# are written by autoconfig from ModelFleet objects; a fleet's
+# spec.gateway.namespace must be namespaces.higress.
+higress:
+  gateway:
+    replicas: 2
+    serviceType: NodePort
+    # Empty: Kubernetes picks a port.
+    httpNodePort: ""
+    httpsNodePort: ""
+    # Seconds an idle client connection is kept; a request still waiting for
+    # its first byte counts as idle. Match the longest generation openresty
+    # allows (its proxy_read_timeout).
+    idleTimeoutSeconds: 3600
+    # How long a gateway pod being replaced may keep serving the streams it
+    # already has. Same bound as above.
+    terminationGracePeriodSeconds: 3600
+  # Values passed to the higress-core chart as-is, merged last.
+  # coreOverrides: {}
+
+  # Callers are not listed here: each is an APIConsumer object with its keys in
+  # a Secret, written into key-auth by autoconfig (add a tenant or rotate a key
+  # without a release). Which consumers may call a model is the ModelFleet's
+  # spec.gateway.authConsumers.
+
+  # false: a route without an allow list is open. Set true only once every
+  # ModelFleet names its consumers and every existing client has one.
+  globalAuth: false
+
+  # Models are not listed here. Each model clients can ask for is a ModelFleet
+  # (routing.modelsphere.dev/v1alpha1, a single member for single-hardware
+  # models); autoconfig turns it into an Ingress llm-fleet-<name> plus one rule
+  # in each plugin below. This release only deploys the plugins and the
+  # ai-backend-router spill EnvoyFilter.
+  backendRouter:
+    # Spilling to the next tier replays the request, so the gateway keeps every
+    # request body in memory, on every route of this gateway, up to
+    # maxRequestBodyBytes (413 above it). false: no replay (no buffer); a
+    # member's 429/5xx then reaches the client.
+    spill: true
+    # Not below the router's own limit (16 MiB, set by autoconfig): the chart
+    # refuses less.
+    maxRequestBodyBytes: 16777216
+
+  # ai-stream-guard: cuts a streamed answer stuck in a repetition loop
+  # (finish_reason content_filter), on every fleet route unless the ModelFleet sets
+  # spec.gateway.streamGuard.disabled. autoconfig copies these into each fleet's
+  # rule (a rule without detectors makes the plugin fail to load); the chart
+  # refuses an empty list.
+  streamGuard:
+    # 512 identical text chunks in a row.
+    detectors:
+      - type: repetition
+        max_period: 1
+        min_repeated_chunks: 512
+    # What the client gets on a cut; {} = finish_reason content_filter.
+    cutoff: {}
+
+  # Plugin images, pulled by the gateway pods themselves (not by the node's
+  # container runtime, so node registry mirrors do not apply).
+  plugins:
+    modelRouter: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/model-router:2.0.4
+    keyAuth: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/key-auth:2.0.0
+    aiStatistics: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-statistics:2.0.3
+    aiProxy: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-proxy:2.0.4
+    aiBackendRouter: oci://modelsphere.tencentcloudcr.com/4pdosc/higress-plugin-ai-backend-router:1.0.0
+    aiStreamGuard: oci://modelsphere.tencentcloudcr.com/4pdosc/higress-plugin-ai-stream-guard:1.0.0
 
 # swissd's RBAC, the swiss chart's rbac.scope.
 #   cluster     one ClusterRole. Simpler: any namespace works and none has to

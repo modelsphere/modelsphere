@@ -1,0 +1,51 @@
+{{- /*
+     Values for the higress-core chart: the gateway (Envoy) and its controller.
+
+     Not the `higress` umbrella chart. That one always installs the console
+     (its dependency has no condition), and the console creates objects of its
+     own when it starts: a built-in `key-auth.internal` WasmPlugin, which then
+     competes with the key-auth that the higress-llm chart configures, and an
+     Ingress `default` that serves the console page on `/` of the data-plane
+     port for any Host. Saving a consumer in the console also resets key-auth's
+     global_auth to false. Everything here is declared in git instead.
+*/}}
+{{- $g := .Values.higress.gateway }}
+global:
+  ingressClass: higress
+  # Routes are Ingress objects (written by autoconfig from ModelFleet); Gateway API is left to
+  # whatever else serves it on this cluster.
+  enableGatewayAPI: false
+
+# LLM requests are long: a non-streaming answer can take many minutes before
+# its first byte. The chart's 180s downstream idle timeout cuts those off;
+# openresty behind the gateway waits up to 3600s, so the gateway does too.
+downstream:
+  idleTimeout: {{ $g.idleTimeoutSeconds }}
+
+gateway:
+  replicas: {{ $g.replicas }}
+  # A rollout must not cut streams in flight. New pods first (maxUnavailable 0),
+  # and an old pod exits once its last connection is gone rather than at the
+  # first SIGTERM -- bounded by terminationGracePeriodSeconds, which the chart
+  # has no value for: the release's postsync hook sets it
+  # (higress.gateway.terminationGracePeriodSeconds).
+  rollingMaxUnavailable: 0
+  env:
+    EXIT_ON_ZERO_ACTIVE_CONNECTIONS: "true"
+  service:
+    type: {{ $g.serviceType }}
+    ports:
+      - name: http2
+        port: 80
+        protocol: TCP
+        targetPort: 80
+{{- if $g.httpNodePort }}
+        nodePort: {{ $g.httpNodePort }}
+{{- end }}
+      - name: https
+        port: 443
+        protocol: TCP
+        targetPort: 443
+{{- if $g.httpsNodePort }}
+        nodePort: {{ $g.httpsNodePort }}
+{{- end }}

@@ -110,6 +110,22 @@ environments:
        Deliberately FALSE under mirror: there the addresses stay upstream and
        the redirect happens on the node, in /etc/containerd/certs.d. */}}
 {{- $rewrite := eq $mode "rewrite" }}
+{{- /* Higress pulls its wasm plugins from inside the gateway pods (istio-agent),
+       not through containerd: neither a node mirror nor the image rewrite
+       reaches them, and one plugin URL the gateway cannot fetch stalls the
+       config of every plugin on it. Until the plugins are part of the bundle,
+       refuse rather than render an install that hangs on the node. */}}
+{{- if and .Values.enabled.higress (ne $mode "upstream") }}
+{{-   fail (printf "enabled.higress needs registryMode: upstream (this is %q): the gateway fetches its wasm plugins itself, from higress.plugins.* URLs, which neither the bundle nor a node mirror covers yet." $mode) }}
+{{- end }}
+{{- if and .Values.enabled.higress (not .Values.enabled.autoconfig) }}
+{{-   fail "enabled.higress needs enabled.autoconfig: autoconfig writes key-auth's consumer list (the higress-llm chart leaves it out), and key-auth without it rejects every request on the gateway." }}
+{{- end }}
+{{- /* An older autoconfig has no APIConsumer controller and never adds the
+       list, so key-auth would stay broken, the whole gateway with it. */}}
+{{- if and .Values.enabled.higress (not (semverCompare ">=0.5.0-0" (toString .Values.versions.autoconfig))) }}
+{{-   fail (printf "enabled.higress needs autoconfig 0.5.0 or later (versions.autoconfig is %v): earlier releases do not add key-auth's consumer list, and key-auth without it rejects every request on the gateway." .Values.versions.autoconfig) }}
+{{- end }}
 {{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
        the console it serves. */}}
 {{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
@@ -182,6 +198,10 @@ repositories:
 {{- if not $localCharts }}
   - name: volcano-sh
     url: https://volcano-sh.github.io/helm-charts
+{{- if .Values.enabled.higress }}
+  - name: higress
+    url: https://higress.io/helm-charts
+{{- end }}
   # kube-prometheus-stack, node-problem-detector and lws are pulled straight from
   # OCI registries (oci:// in `chart:` below) and need no entry here.
 {{- end }}
@@ -197,6 +217,7 @@ repositories:
 {{- $ngc     := ternary "modelsphere" "nvidia-ngc"   $localCharts }}
 {{- $desched := ternary "modelsphere" "descheduler"  $localCharts }}
 {{- $volcano := ternary "modelsphere" "volcano-sh"   $localCharts }}
+{{- $higress := ternary "modelsphere" "higress"      $localCharts }}
 # These three have no repo alias to swap -- they are pulled by full OCI URL --
 # so the entire `chart:` value changes rather than just its first segment.
 {{- $kps := ternary "modelsphere/kube-prometheus-stack" "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack" $localCharts }}
@@ -751,13 +772,22 @@ releases:
     chart: {{ template "chartref" (dict "local" $local "name" "autoconfig" "ver" .Values.versions.autoconfig "fallback" "modelsphere/autoconfig") }}
     version: {{ .Values.versions.autoconfig | quote }}
     installed: {{ .Values.enabled.autoconfig }}
-{{- if .Values.enabled.kubePrometheusStack }}
-    # Renders a ServiceMonitor; that CRD ships with kube-prometheus-stack.
-    # Losing autoconfig is not a lone missing pod: it is the controller that
-    # writes each CART's workers.yaml from its ModelRoute, so every CART then
-    # crash-loops on "Failed to read config file /workspace/configs/workers.yaml".
+{{- if or .Values.enabled.kubePrometheusStack .Values.enabled.higress }}
     needs:
+{{- end }}
+{{- if .Values.enabled.kubePrometheusStack }}
+      # Renders a ServiceMonitor; that CRD ships with kube-prometheus-stack.
+      # Losing autoconfig is not a lone missing pod: it is the controller that
+      # writes each CART's workers.yaml from its ModelRoute, so every CART then
+      # crash-loops on "Failed to read config file /workspace/configs/workers.yaml".
       - {{ .Values.namespaces.monitoring }}/kube-prometheus-stack
+{{- end }}
+{{- if .Values.enabled.higress }}
+      # The WasmPlugin CRD comes with higress-core. With it in place when
+      # autoconfig starts, autoconfig watches key-auth and adds its consumer list
+      # within one event; started earlier, it finds key-auth on its next
+      # periodic pass instead. higress-llm in turn needs autoconfig.
+      - {{ .Values.namespaces.higress }}/higress
 {{- end }}
     labels:
       tier: llmgate
@@ -781,6 +811,62 @@ releases:
         metrics:
           serviceMonitor:
             enabled: {{ if kindIs "bool" (dig "serviceMonitor" "" .Values.autoconfig) }}{{ dig "serviceMonitor" false .Values.autoconfig }}{{ else }}{{ .Values.enabled.kubePrometheusStack }}{{ end }}
+
+  # Higress in front of openresty: the OpenAI-compatible entry that picks a
+  # model's route from the request body, authenticates the caller and counts
+  # tokens. Two releases: the gateway itself, and our gateway-wide plugins, which
+  # need the gateway's CRDs (WasmPlugin, EnvoyFilter) first. Per-model routes
+  # come from ModelFleet objects via autoconfig.
+  - name: higress
+    namespace: {{ .Values.namespaces.higress }}
+    chart: {{ template "chartref" (dict "local" $local "name" "higress-core" "ver" .Values.versions.higress "fallback" (printf "%s/higress-core" $higress)) }}
+    version: {{ .Values.versions.higress | quote }}
+    installed: {{ .Values.enabled.higress }}
+    labels:
+      tier: llmgate
+      part: product
+    values:
+      - llmgateway/higress.yaml.gotmpl
+{{- with dig "higress" "coreOverrides" nil .Values }}
+      - {{ toJson . }}
+{{- end }}
+{{- if .Values.enabled.higress }}
+    # Only when installed: the patch fails without the deployment, and this
+    # keeps it out of any event helmfile fires for a release it deletes.
+    hooks:
+      # The chart has no value for the gateway's terminationGracePeriodSeconds,
+      # and the default 30s ends every stream still open when a pod is replaced
+      # (EXIT_ON_ZERO_ACTIVE_CONNECTIONS only waits within that bound). The
+      # chart never renders the field, so a later upgrade leaves it alone.
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args:
+          - "-n"
+          - "{{ .Values.namespaces.higress }}"
+          - "patch"
+          - "deployment"
+          - "higress-gateway"
+          - "--type=merge"
+          - "-p"
+          - '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":{{ int64 .Values.higress.gateway.terminationGracePeriodSeconds }}}}}}'
+{{- end }}
+
+  - name: higress-llm
+    namespace: {{ .Values.namespaces.higress }}
+    chart: {{ template "chartref" (dict "local" $local "name" "higress-llm" "ver" .Values.versions.higressLlm "fallback" "modelsphere/higress-llm") }}
+    version: {{ .Values.versions.higressLlm | quote }}
+    installed: {{ .Values.enabled.higress }}
+    needs:
+      - {{ .Values.namespaces.higress }}/higress
+      # autoconfig adds key-auth's consumer list; until it runs, key-auth
+      # rejects every request on the gateway.
+      - {{ .Values.namespaces.llmRoute }}/autoconfig
+    labels:
+      tier: llmgate
+      part: product
+    values:
+      - llmgateway/higress-llm.yaml.gotmpl
 
   # ────────────────────────────────────────────────────────────────── operators
   - name: llm-slo
