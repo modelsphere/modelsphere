@@ -4,4 +4,5 @@
 {{- $h := .Values.higress }}
 globalAuth: {{ $h.globalAuth }}
 backendRouter: {{ toJson $h.backendRouter }}
+streamGuard: {{ toJson $h.streamGuard }}
 plugins: {{ toJson $h.plugins }}

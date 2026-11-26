@@ -11,7 +11,10 @@ with the model in the request body, and Higress
    openresty keeps a single key while callers each have their own;
 5. picks one of the model's backends (openresty routes) by tier and weight and
    forwards under its prefix, moving on to the next tier when it answers
-   429/502/503/504 (`ai-backend-router`).
+   429/502/503/504 (`ai-backend-router`);
+6. cuts a streamed answer stuck in a repetition loop (`ai-stream-guard`,
+   `finish_reason: content_filter`; on by default, a fleet opts out with
+   `spec.gateway.streamGuard.disabled: true`, detectors in `higress.streamGuard`).
 
 ```
 client POST /v1/chat/completions {"model":"qwen-trial",...}
@@ -24,7 +27,7 @@ client POST /v1/chat/completions {"model":"qwen-trial",...}
 It is off by default (`enabled.higress`). Two releases: `higress` (the
 `higress-core` chart: gateway and controller, no console) and `higress-llm`
 (`modelsphere/higress-llm` from [helm-charts](https://github.com/modelsphere/helm-charts/tree/main/charts/higress-llm):
-the five plugins and the spill EnvoyFilter, with their gateway-wide settings only).
+the six plugins and the spill EnvoyFilter, with their gateway-wide settings only).
 
 **Models are not configured here.** Each model clients can ask for is a
 `ModelFleet` (`routing.modelsphere.dev/v1alpha1`): one or more members, each a
@@ -137,7 +140,7 @@ It is on by default (`higress.backendRouter.spill`). What that costs:
   themselves (`higress.plugins.*`), which neither the offline bundle nor a node
   registry mirror covers; the helmfile refuses the other modes. One plugin URL
   the gateway cannot fetch stalls configuration updates for every plugin on it,
-  so check a new URL on a test cluster first. All five plugins are always
+  so check a new URL on a test cluster first. All six plugins are always
   deployed, `ai-backend-router` included, so its image must be reachable from
   the gateway pods even before any fleet exists.
 - **No console.** The umbrella `higress` chart always installs it, and the

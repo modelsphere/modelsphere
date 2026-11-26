@@ -511,6 +511,20 @@ higress:
     # refuses less.
     maxRequestBodyBytes: 16777216
 
+  # ai-stream-guard: cuts a streamed answer stuck in a repetition loop
+  # (finish_reason content_filter), on every fleet route unless the ModelFleet sets
+  # spec.gateway.streamGuard.disabled. autoconfig copies these into each fleet's
+  # rule (a rule without detectors makes the plugin fail to load); the chart
+  # refuses an empty list.
+  streamGuard:
+    # 512 identical text chunks in a row.
+    detectors:
+      - type: repetition
+        max_period: 1
+        min_repeated_chunks: 512
+    # What the client gets on a cut; {} = finish_reason content_filter.
+    cutoff: {}
+
   # Plugin images, pulled by the gateway pods themselves (not by the node's
   # container runtime, so node registry mirrors do not apply).
   plugins:
@@ -519,6 +533,7 @@ higress:
     aiStatistics: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-statistics:2.0.3
     aiProxy: oci://higress-registry.cn-hangzhou.cr.aliyuncs.com/plugins/ai-proxy:2.0.4
     aiBackendRouter: oci://modelsphere.tencentcloudcr.com/4pdosc/higress-plugin-ai-backend-router:1.0.0
+    aiStreamGuard: oci://modelsphere.tencentcloudcr.com/4pdosc/higress-plugin-ai-stream-guard:1.0.0
 
 # swissd's RBAC, the swiss chart's rbac.scope.
 #   cluster     one ClusterRole. Simpler: any namespace works and none has to
