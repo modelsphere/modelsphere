@@ -81,10 +81,6 @@ This needs an autoconfig release with the ModelFleet and APIConsumer
 controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
 `crds/`).
 
-The chart refuses `higress.models`, `higress.upstreamKey`, `higress.consumers`
-and `higress.backendRouter.enabled/retryCodes/exclude` instead of ignoring them:
-models and callers are ModelFleet and APIConsumer objects.
-
 **key-auth's consumer list belongs to autoconfig.** The list has a single owner
 under server-side apply, and key-auth refuses a config without it (failing
 closed, for the whole gateway), so the chart looks at the live key-auth before
