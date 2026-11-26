@@ -87,9 +87,11 @@ the chart would be written over autoconfig's on every upgrade. key-auth refuses 
 config without the list and fails closed, for the whole gateway, so autoconfig adds
 an empty one when it is missing. This needs autoconfig 0.4.4 or later (the
 helmfile refuses an older `versions.autoconfig`): an earlier release never adds
-the list, and the gateway stays closed. Install or upgrade autoconfig first
-(the helmfile orders the releases that way): until it adds the list, key-auth
-rejects every request on the gateway. Each key may belong to one consumer only: key-auth rejects the whole config
+the list, and the gateway stays closed. The helmfile installs `higress` (which brings the WasmPlugin
+CRD), then autoconfig, then `higress-llm`: until autoconfig adds the list, key-auth
+rejects every request on the gateway. With the CRD already there autoconfig sees
+key-auth appear and adds the list at once; an autoconfig started before Higress
+picks it up on its next periodic pass, without a restart. Each key may belong to one consumer only: key-auth rejects the whole config
 on a duplicate credential.
 
 Check it:
