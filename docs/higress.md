@@ -159,5 +159,17 @@ It is on by default (`higress.backendRouter.spill`). What that costs:
 - **Metrics are per gateway pod.** `ai-statistics` counters live in each pod's
   memory: aggregate with `sum by (...) (increase(...))`. For billing use the
   per-request `ai_log` in the access log.
+- **Repetition cuts (`ai-stream-guard`).** On by default on every fleet route
+  (`spec.gateway.streamGuard.disabled: true` opts a fleet out; detectors in
+  `higress.streamGuard`, picked up by autoconfig within a resync, at most 30 s). The
+  client gets `finish_reason: content_filter` and `[DONE]` with no usage chunk;
+  `/v1/messages` clients get `stop_reason: "content_filter"` and a `message_delta`
+  without `usage`, which the Anthropic TypeScript SDK reports as an error. **A cut
+  stream is not billed:** neither `ai_log` nor the bodylog has its tokens (the usage
+  chunk never arrives), and the bodylog has no `finish_reason` and no marker for it.
+  Find cuts in `ai_log` (`stream_guard_action: cut`) or in the gateway's
+  `ai-stream-guard: cut stream` warn line. The plugin is `FAIL_OPEN`: if it cannot load
+  (look for `ai-stream-guard ... failed to load` in the gateway log), streams pass uncut
+  and nothing else shows it.
 - **Unknown models.** A request whose `model` matches no Ingress falls through
   to whatever else the gateway routes; with nothing else, it gets 404.
