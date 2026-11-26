@@ -42,30 +42,31 @@ spec:
   depends on who owns it in the live object:
   - no key-auth yet (first install; also helm template and client-side
     dry runs, where lookup returns nothing): render an empty list;
-  - this chart still owns it and it is empty: keep rendering the empty list
+  - anyone else owns it (autoconfig), alone or together with this chart:
+    leave it out. A field is only removed when its last owner drops it, so
+    dropping the chart's share leaves autoconfig's list in place;
+  - only this chart owns it and it is empty: keep rendering the empty list
     (same value, no change). Not rendering it would make helm remove the field;
-  - this chart still owns it and it is not empty: fail. Those are consumers
+  - only this chart owns it and it is not empty: fail. Those are consumers
     from an earlier chart's values; rendering [] would deny all of them, and
-    not rendering would remove the field. autoconfig has to take it over first;
-  - anyone else owns it (autoconfig): leave it out.
+    not rendering would remove the field. autoconfig has to take it over first.
 */}}
 {{- $consumersLine := true }}
 {{- $live := lookup "extensions.higress.io/v1alpha1" "WasmPlugin" .Release.Namespace "key-auth" }}
 {{- if $live }}
 {{-   $chartOwns := false }}
-{{-   $someoneOwns := false }}
+{{-   $otherOwns := false }}
 {{-   range $mf := (dig "metadata" "managedFields" list $live) }}
 {{-     $dc := dig "f:spec" "f:defaultConfig" dict (default dict $mf.fieldsV1) }}
 {{-     if hasKey $dc "f:consumers" }}
-{{-       $someoneOwns = true }}
-{{-       if eq $mf.manager "helm" }}{{ $chartOwns = true }}{{ end }}
+{{-       if eq $mf.manager "helm" }}{{ $chartOwns = true }}{{ else }}{{ $otherOwns = true }}{{ end }}
 {{-     end }}
 {{-   end }}
 {{-   $liveConsumers := dig "spec" "defaultConfig" "consumers" list $live }}
-{{-   if $chartOwns }}
-{{-     if $liveConsumers }}{{ fail (printf "key-auth in %s still has %d consumers owned by this release, from an earlier chart's higress.consumers. Consumers are APIConsumer objects now, written by autoconfig: create one per consumer (credentials in a Secret) with an autoconfig release that has the APIConsumer controller, wait until autoconfig owns key-auth's defaultConfig.consumers (metadata.managedFields), then upgrade." .Release.Namespace (len $liveConsumers)) }}{{ end }}
-{{-   else if $someoneOwns }}
+{{-   if $otherOwns }}
 {{-     $consumersLine = false }}
+{{-   else if $chartOwns }}
+{{-     if $liveConsumers }}{{ fail (printf "key-auth in %s still has %d consumers owned by this release, from an earlier chart's higress.consumers. Consumers are APIConsumer objects now, written by autoconfig: create one per consumer (credentials in a Secret) with an autoconfig release that has the APIConsumer controller, wait until autoconfig owns key-auth's defaultConfig.consumers (metadata.managedFields), then upgrade." .Release.Namespace (len $liveConsumers)) }}{{ end }}
 {{-   end }}
 {{- end }}
 apiVersion: extensions.higress.io/v1alpha1
