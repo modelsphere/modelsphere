@@ -26,8 +26,10 @@ client POST /v1/chat/completions {"model":"qwen-trial",...}
 
 It is off by default (`enabled.higress`). Two releases: `higress` (the
 `higress-core` chart: gateway and controller, no console) and `higress-llm`
-(`modelsphere/higress-llm` from [helm-charts](https://github.com/modelsphere/helm-charts/tree/main/charts/higress-llm):
-the six plugins and the spill EnvoyFilter, with their gateway-wide settings only).
+(`modelsphere/higress-llm` from
+[helm-charts](https://github.com/modelsphere/helm-charts/tree/main/charts/higress-llm):
+the six plugins and the spill EnvoyFilter, with their gateway-wide settings
+only).
 
 **Models are not configured here.** Each model clients can ask for is a
 `ModelFleet` (`routing.modelsphere.dev/v1alpha1`): one or more members, each a
@@ -51,8 +53,13 @@ higress:
     httpNodePort: 31080          # optional
 ```
 
-Then `make helm-apply ENV=<env>` (or `helmfile -e <env> -l name=higress -l name=autoconfig -l name=higress-llm apply`:
-select autoconfig too, since a release outside the selection is not ordered),
+Then `make helm-apply ENV=<env>`, or
+
+```bash
+helmfile -e <env> -l name=higress -l name=autoconfig -l name=higress-llm apply
+```
+
+(select autoconfig too, since a release outside the selection is not ordered),
 then create an APIConsumer per caller and a ModelFleet per model.
 
 **Callers are not configured here either.** Each is an `APIConsumer`
@@ -75,32 +82,34 @@ YAML
 
 Clients send the key as `Authorization: Bearer <key>`. The keys end up in plain
 text in the key-auth WasmPlugin (its config is pushed to the data plane as is).
-Which consumers may call a model is the fleet's `spec.gateway.authConsumers`
-(a name with no APIConsumer is denied); openresty's key is the Secret named by `spec.gateway.upstreamAuthSecretRef`, so
-it is not in any values file. A fleet's `spec.gateway.namespace` must be the
-namespace of this release (`namespaces.higress`): autoconfig looks for the
-plugins there, and a fleet whose plugins it cannot find is not synced.
+Which consumers may call a model is the fleet's `spec.gateway.authConsumers` (a
+name with no APIConsumer is denied); openresty's key is the Secret named by
+`spec.gateway.upstreamAuthSecretRef`, so it is not in any values file. A fleet's
+`spec.gateway.namespace` must be the namespace of this release
+(`namespaces.higress`): autoconfig looks for the plugins there, and a fleet
+whose plugins it cannot find is not synced.
 
 This needs an autoconfig release with the ModelFleet and APIConsumer
-controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
-`crds/`). Apply them before upgrading autoconfig: autoconfig looks for the CRDs
-when it starts, so CRDs applied after it is running need `kubectl rollout restart`
-of its deployment.
+controllers, and their CRDs applied by hand on an existing cluster
+(`helm upgrade` does not update a chart's `crds/`). Apply them before upgrading
+autoconfig: autoconfig looks for the CRDs when it starts, so CRDs applied after
+it is running need `kubectl rollout restart` of its deployment.
 
 **key-auth's consumer list belongs to autoconfig.** The chart renders key-auth
-without it: the list has a single owner under server-side apply, and a value from
-the chart would be written over autoconfig's on every upgrade. key-auth refuses a
-config without the list and fails closed, for the whole gateway, so autoconfig adds
-an empty one when it is missing. This needs autoconfig 0.4.4 or later (the
-helmfile refuses an older `versions.autoconfig`): an earlier release never adds
-the list, and the gateway stays closed. The helmfile installs `higress` (which brings the WasmPlugin
-CRD), then autoconfig, then `higress-llm`: until autoconfig adds the list, key-auth
-rejects every request on the gateway. With the CRD already there autoconfig sees
-key-auth appear and adds the list: measured about 5 s for the first key-auth after
-autoconfig starts (its watch is set up on that first event) and about 0.3 s after
-that. An autoconfig started before Higress picks key-auth up on its next periodic
-pass instead, without a restart. Each key may belong to one consumer only: key-auth rejects the whole config
-on a duplicate credential.
+without it: the list has a single owner under server-side apply, and a value
+from the chart would be written over autoconfig's on every upgrade. key-auth
+refuses a config without the list and fails closed, for the whole gateway, so
+autoconfig adds an empty one when it is missing. This needs autoconfig 0.4.4 or
+later (the helmfile refuses an older `versions.autoconfig`): an earlier release
+never adds the list, and the gateway stays closed. The helmfile installs
+`higress` (which brings the WasmPlugin CRD), then autoconfig, then
+`higress-llm`: until autoconfig adds the list, key-auth rejects every request on
+the gateway. With the CRD already there autoconfig sees key-auth appear and adds
+the list: measured about 5 s for the first key-auth after autoconfig starts (its
+watch is set up on that first event) and about 0.3 s after that. An autoconfig
+started before Higress picks key-auth up on its next periodic pass instead,
+without a restart. Each key may belong to one consumer only: key-auth rejects
+the whole config on a duplicate credential.
 
 Check it:
 
@@ -151,6 +160,8 @@ It is on by default (`higress.backendRouter.spill`). What that costs:
   `maxUnavailable: 0`, `EXIT_ON_ZERO_ACTIVE_CONNECTIONS`, and a 3600s
   `terminationGracePeriodSeconds` set by the release's postsync hook (the
   chart has no value for it): a gateway rollout does not cut streams in flight.
+  The hook changes the pod template, so right after the first install the
+  gateway rolls once more (one pod at a time, as above).
 - **`globalAuth`.** With `false`, key-auth only checks routes that have an allow
   list: a ModelFleet without `authConsumers` is open. key-auth is deployed even
   with no APIConsumer, so a fleet that names `authConsumers` is never served

@@ -140,6 +140,9 @@ versions:
   # observability/grafana-victorialogs-plugin/ -- no release workflow, because
   # it holds nothing of ours.
   grafanaVictorialogsPlugin: "0.32.0"
+  # TODO: raise to 0.4.4 once it is released. enabled.higress is refused below
+  # 0.4.4 (no ModelFleet/APIConsumer controllers, key-auth's consumer list never
+  # added), so the Higress gateway cannot be turned on until this bump.
   autoconfig: "0.4.3"
   # The inference engines. They are charts of ours like any other here: a
   # `models:` entry picks WHICH engine it wants, not which version, so the repo
