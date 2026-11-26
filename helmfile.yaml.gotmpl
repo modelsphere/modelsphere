@@ -118,6 +118,9 @@ environments:
 {{- if and .Values.enabled.higress (ne $mode "upstream") }}
 {{-   fail (printf "enabled.higress needs registryMode: upstream (this is %q): the gateway fetches its wasm plugins itself, from higress.plugins.* URLs, which neither the bundle nor a node mirror covers yet." $mode) }}
 {{- end }}
+{{- if and .Values.enabled.higress (not .Values.enabled.autoconfig) }}
+{{-   fail "enabled.higress needs enabled.autoconfig: autoconfig writes key-auth's consumer list (the higress-llm chart leaves it out), and key-auth without it rejects every request on the gateway." }}
+{{- end }}
 {{- /* swissd deploys from catalog-mirror instead of GitHub Pages. Only with
        the console it serves. */}}
 {{- $catalogMirror := and .Values.enabled.console (dig "enabled" "catalogMirror" false .Values) }}
@@ -836,6 +839,9 @@ releases:
     installed: {{ .Values.enabled.higress }}
     needs:
       - {{ .Values.namespaces.higress }}/higress
+      # autoconfig adds key-auth's consumer list; until it runs, key-auth
+      # rejects every request on the gateway.
+      - {{ .Values.namespaces.llmRoute }}/autoconfig
     labels:
       tier: llmgate
       part: product

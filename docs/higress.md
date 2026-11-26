@@ -81,19 +81,14 @@ This needs an autoconfig release with the ModelFleet and APIConsumer
 controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
 `crds/`).
 
-**key-auth's consumer list belongs to autoconfig.** The list has a single owner
-under server-side apply, and key-auth refuses a config without it (failing
-closed, for the whole gateway), so the chart looks at the live key-auth before
-rendering: it writes an empty list when there is no key-auth yet or when helm
-alone owns an empty one, leaves the list out once any other manager owns it,
-and refuses to render when helm alone owns a non-empty list (an empty list
-would deny every caller, leaving it out would delete the field). `helm
-template` and `helmfile diff` cannot see the live object, so they show
-`consumers: []` even when an upgrade will leave it out. For the same reason the
-release must not be applied from an offline render (`helm template | kubectl
-apply`, Argo CD): that writes `[]` over autoconfig's list, and every route with an
-allow list answers 401 until autoconfig's next resync. Each key may belong to one
-consumer only: key-auth rejects the whole config on a duplicate credential.
+**key-auth's consumer list belongs to autoconfig.** The chart renders key-auth
+without it: the list has a single owner under server-side apply, and a value from
+the chart would be written over autoconfig's on every upgrade. key-auth refuses a
+config without the list and fails closed, for the whole gateway, so autoconfig adds
+an empty one when it is missing. Install autoconfig before (or together with)
+`enabled.higress`: until it adds the list, key-auth rejects every request on the
+gateway. Each key may belong to one consumer only: key-auth rejects the whole config
+on a duplicate credential.
 
 Check it:
 
