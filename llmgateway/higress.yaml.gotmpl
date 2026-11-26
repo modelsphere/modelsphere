@@ -4,7 +4,7 @@
      Not the `higress` umbrella chart. That one always installs the console
      (its dependency has no condition), and the console creates objects of its
      own when it starts: a built-in `key-auth.internal` WasmPlugin, which then
-     competes with the key-auth that llmgateway/higress-llm configures, and an
+     competes with the key-auth that the higress-llm chart configures, and an
      Ingress `default` that serves the console page on `/` of the data-plane
      port for any Host. Saving a consumer in the console also resets key-auth's
      global_auth to false. Everything here is declared in git instead.

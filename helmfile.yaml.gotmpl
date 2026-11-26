@@ -831,7 +831,8 @@ releases:
 
   - name: higress-llm
     namespace: {{ .Values.namespaces.higress }}
-    chart: ./llmgateway/higress-llm
+    chart: {{ template "chartref" (dict "local" $local "name" "higress-llm" "ver" .Values.versions.higressLlm "fallback" "modelsphere/higress-llm") }}
+    version: {{ .Values.versions.higressLlm | quote }}
     installed: {{ .Values.enabled.higress }}
     needs:
       - {{ .Values.namespaces.higress }}/higress

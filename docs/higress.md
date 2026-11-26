@@ -23,8 +23,8 @@ client POST /v1/chat/completions {"model":"qwen-trial",...}
 
 It is off by default (`enabled.higress`). Two releases: `higress` (the
 `higress-core` chart: gateway and controller, no console) and `higress-llm`
-(`llmgateway/higress-llm`: the five plugins and the spill EnvoyFilter, with
-their gateway-wide settings only).
+(`modelsphere/higress-llm` from [helm-charts](https://github.com/modelsphere/helm-charts/tree/main/charts/higress-llm):
+the five plugins and the spill EnvoyFilter, with their gateway-wide settings only).
 
 **Models are not configured here.** Each model clients can ask for is a
 `ModelFleet` (`routing.modelsphere.dev/v1alpha1`): one or more members, each a
@@ -89,7 +89,11 @@ alone owns an empty one, leaves the list out once any other manager owns it,
 and refuses to render when helm alone owns a non-empty list (an empty list
 would deny every caller, leaving it out would delete the field). `helm
 template` and `helmfile diff` cannot see the live object, so they show
-`consumers: []` even when an upgrade will leave it out.
+`consumers: []` even when an upgrade will leave it out. For the same reason the
+release must not be applied from an offline render (`helm template | kubectl
+apply`, Argo CD): that writes `[]` over autoconfig's list, and every route with an
+allow list answers 401 until autoconfig's next resync. Each key may belong to one
+consumer only: key-auth rejects the whole config on a duplicate credential.
 
 Check it:
 
