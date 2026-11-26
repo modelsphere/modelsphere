@@ -48,7 +48,8 @@ higress:
     httpNodePort: 31080          # optional
 ```
 
-Then `make helm-apply ENV=<env>` (or `helmfile -e <env> -l name=higress -l name=higress-llm apply`),
+Then `make helm-apply ENV=<env>` (or `helmfile -e <env> -l name=higress -l name=autoconfig -l name=higress-llm apply`:
+select autoconfig too, since a release outside the selection is not ordered),
 then create an APIConsumer per caller and a ModelFleet per model.
 
 **Callers are not configured here either.** Each is an `APIConsumer`
@@ -79,7 +80,9 @@ plugins there, and a fleet whose plugins it cannot find is not synced.
 
 This needs an autoconfig release with the ModelFleet and APIConsumer
 controllers, and their CRDs applied by hand on an existing cluster (`helm upgrade` does not update a chart's
-`crds/`).
+`crds/`). Apply them before upgrading autoconfig: autoconfig looks for the CRDs
+when it starts, so CRDs applied after it is running need `kubectl rollout restart`
+of its deployment.
 
 **key-auth's consumer list belongs to autoconfig.** The chart renders key-auth
 without it: the list has a single owner under server-side apply, and a value from
