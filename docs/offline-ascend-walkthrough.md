@@ -673,7 +673,7 @@ not needed; with keys configured, add `-H 'Authorization: Bearer <key>'`
 | Change replicas | **Edit SLO** at the top right of the service's details page; change the **Bounds** minimum and maximum |
 | Upgrade the variant, change deploy settings | **Upgrade** at the top right of the details page; change it, regenerate the plan and confirm |
 | Remove the model | **Uninstall** at the top right of the details page |
-| Deploy another model | on the build host, `crane pull` the engine image its variant names in the model library; on site, `crane push` it to the local registry under the last segment of its address; then deploy it from the console |
+| Deploy another model | find the model and variant in the **Model library**. Its engine image is the `image:` of that variant's file in [model-catalog](https://github.com/modelsphere/model-catalog/tree/master/models) (the console does not show it): `crane pull` it on the build host, `crane push` it on site under the last segment of its address (as in 3.5 and 4.5), put the weights in place, then deploy as in section 7 |
 | Upgrade ModelSphere | on the build host, rebuild the bundle from the new repository version; on site, `make offline-load`, then `make helm-apply ENV=offline-rewrite MODELS= SKIP_DEPS=1` |
 | Engine logs | `kubectl -n models logs <pod>` |
 | Monitoring | Grafana is in the `monitoring` namespace, reachable with `kubectl port-forward` |

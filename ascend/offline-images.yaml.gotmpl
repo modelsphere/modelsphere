@@ -1,0 +1,12 @@
+# Offline image addresses for the ascend-device-plugin release. Referenced from
+# helmfile.yaml.gotmpl only when registryMode is `rewrite`.
+#
+# The device plugin is the one image this chart runs (ascend/overrides.yaml
+# turns everything else off). Host off, path kept, as for every third-party
+# image: docker.io/ascendai/ascend-k8sdeviceplugin becomes
+# <registry>/ascendai/ascend-k8sdeviceplugin, where offline_load.sh pushed it.
+# Without this a rewrite cluster still asks Docker Hub for it, and with no NPU
+# advertised no model can be scheduled.
+ascend-device-plugin:
+  image:
+    repository: {{ .Values.registry }}/ascendai/ascend-k8sdeviceplugin
